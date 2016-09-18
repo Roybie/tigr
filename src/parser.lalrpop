@@ -1,0 +1,174 @@
+use ast::*;
+
+grammar;
+
+pub Block: Box<Expr> = {
+    <v:(<Expr> ";")+> <e:Expr?> => Box::new(Expr::Block(v, match e {
+        None => Box::new(Expr::Type(Type::Null)),
+        Some(e) => e,
+    })),
+    Expr,
+};
+
+Expr: Box<Expr> = {
+    ExprAss,
+};
+
+ExprAss: Box<Expr> = {
+    ExprPlusMinus,
+    ExprAss AssOp ExprPlusMinus => Box::new(Expr::BinOp(<>)),
+};
+
+ExprPlusMinus: Box<Expr> = {
+    ExprMulDiv,
+    ExprPlusMinus SumOp ExprMulDiv => Box::new(Expr::BinOp(<>)),
+};
+
+ExprMulDiv: Box<Expr> = {
+    ExprPrefix,
+    ExprMulDiv ProdOp ExprPrefix => Box::new(Expr::BinOp(<>)),
+};
+
+ExprPrefix: Box<Expr> = {
+    ExprAtom,
+    UnOp ExprAtom => Box::new(Expr::UnOp(<>)),
+};
+
+ExprAtom: Box<Expr> = {
+    Lit,
+    ExprControl,
+    ExprSpread,
+    Args => Box::new(Expr::Args(<>)),
+    "#null" => Box::new(Expr::Type(Type::Null)),
+    paren,
+    scope,
+};
+
+paren: Box<Expr> = {
+   "(" <Block> ")",
+};
+
+scope: Box<Expr> = {
+    "{" <Block> "}" => Box::new(Expr::Scope(<>)),
+};
+
+Lit: Box<Expr> = {
+    Var => Box::new(Expr::Type(Type::Id(<>))),
+    Num => Box::new(Expr::Type(Type::Number(<>))),
+    Float => Box::new(Expr::Type(Type::Float(<>))),
+    Bool => Box::new(Expr::Type(Type::Bool(<>))),
+    Str => Box::new(Expr::Type(Type::String(<>))),
+    Array => Box::new(Expr::Type(Type::Array(<>))),
+};
+
+ExprControl: Box<Expr> = {
+    ExprIf,
+    ExprFor,
+};
+
+ExprIf: Box<Expr> = {
+    "if" <paren> <scope> => Box::new(Expr::If(<>, Box::new(Expr::Scope(Box::new(Expr::Type(Type::Null)))))),
+    "if" <paren> <scope> "else" <scopeOrIf> => Box::new(Expr::If(<>)),
+};
+
+scopeOrIf: Box<Expr> = {
+    scope,
+    ExprIf,
+};
+
+ExprFor: Box<Expr> = {
+    "for" <ExprForArgs> <scope> => Box::new(Expr::For(<>)),
+    "for[]" <ExprForArgs> <scope> => Box::new(Expr::ForA(<>)),
+};
+
+ExprForArgs: Box<Expr> = {
+    "(" <i:Var?> "," <j:Var?> "," <f:Expr> "_" <t:Expr>  <s:(":" <Expr>)?> ")" => Box::new(
+        Expr::Args(vec!(
+            Box::new(Expr::Type(match i {
+                None => Type::Null,
+                Some(i) => Type::Id(i),
+            })),
+            Box::new(Expr::Type(match j {
+                None => Type::Null,
+                Some(j) => Type::Id(j),
+            })),
+            Box::new(Expr::Range(f, t, match s {
+                None => Box::new(Expr::Type(Type::Number(1))),
+                Some(e) => e,
+            }))
+        ))
+    ),
+};
+
+ExprSpread: Box<Expr> = {
+};
+
+Args = {
+    "(" <Separated<",">> ")",
+};
+
+Array = {
+    "[" <Separated<",">> "]",
+};
+
+Separated<S>: Vec<Box<Expr>> = {
+    <v:(<Expr> S)+> <e:Expr?> => match e {
+        None => v,
+        Some(e) => {
+            let mut v = v;
+            v.push(e);
+            v
+        },
+    },
+};
+
+Var: String = {
+    r"[:alpha:]+" => <>.to_owned(),
+};
+
+Num: i64 = {
+    r"[:digit:]+" => <>.parse::<i64>().unwrap(),
+};
+
+Float: f64 = {
+    r"[:digit:]+\.[:digit:]+" => <>.parse::<f64>().unwrap(),
+};
+
+Bool: bool = {
+    r"#true|#false" => match <> {
+        "#true" => true,
+        _ => false,
+    }
+};
+
+Str: String = {
+    r##""[:alpha:]+""## => <>.to_owned(),
+};
+
+UnOp: UnOpCode = {
+    "-" => UnOpCode::Neg,
+    "!" => UnOpCode::Not,
+};
+
+EqOp: BinOpCode = {
+    "==" => BinOpCode::Equ,
+    "!=" => BinOpCode::Neq,
+    "<" => BinOpCode::Lt,
+    "<=" => BinOpCode::LEt,
+    ">" => BinOpCode::Gt,
+    ">=" => BinOpCode::GEt,
+};
+
+AssOp: BinOpCode = {
+    "=" => BinOpCode::Ass,
+};
+
+SumOp: BinOpCode = {
+    "+" => BinOpCode::Add,
+    "-" => BinOpCode::Sub,
+};
+
+ProdOp: BinOpCode = {
+    "*" => BinOpCode::Mul,
+    "/" => BinOpCode::Div,
+};

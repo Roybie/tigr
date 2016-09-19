@@ -116,7 +116,7 @@ impl Debug for Type {
             Id(ref i) => write!(fmt, "Var[{:?}]", i),
             Number(n) => write!(fmt, "{}", n),
             Float(f) => write!(fmt, "{}", f),
-            String(ref s) => write!(fmt, "{}", s),
+            String(ref s) => write!(fmt, "'{}'", s),
             Bool(b) => write!(fmt, "{}", b),
             Array(ref a) => {
                 write!(fmt, "Arr[");

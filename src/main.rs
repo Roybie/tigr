@@ -4,11 +4,12 @@ mod syntax;
 mod scanner;
 
 fn main() {
-    let src = r#"
-        for (enum, iter, 0..100:10) { true };
+    let src = r"
+        for[] (enum, iter, 0..100:10) { true };
         for (iter, 0..100:10) { true };
-        for (0..100) { true }
-    "#;
+        for (0..100) { true };
+        'Some String \'Hello!\''
+    ";
     let tok = scanner::scan(src);
     println!("{:?}", parser::parse_Block(src, tok));
 }

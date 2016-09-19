@@ -16,18 +16,16 @@ Expr: Box<Expr> = {
 
 ExprAss: Box<Expr> = {
     ExprPlusMinus,
-    ExprAss AssOp ExprPlusMinus => Box::new(Expr::BinOp(<>)),
+    <v:Var> <o:AssOp> <e:ExprPlusMinus> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
 };
 
-ExprPlusMinus: Box<Expr> = {
-    ExprMulDiv,
-    ExprPlusMinus SumOp ExprMulDiv => Box::new(Expr::BinOp(<>)),
+BinOpTier<Op, NextTier>: Box<Expr> = {
+    NextTier,
+    BinOpTier<Op, NextTier> Op NextTier => Box::new(Expr::BinOp(<>)),
 };
 
-ExprMulDiv: Box<Expr> = {
-    ExprPrefix,
-    ExprMulDiv ProdOp ExprPrefix => Box::new(Expr::BinOp(<>)),
-};
+ExprPlusMinus = BinOpTier<SumOp, ExprMulDiv>;
+ExprMulDiv = BinOpTier<ProdOp, ExprPrefix>;
 
 ExprPrefix: Box<Expr> = {
     ExprAtom,
@@ -82,7 +80,7 @@ ExprFor: Box<Expr> = {
 };
 
 ExprForArgs: Box<Expr> = {
-    "(" <i:Var?> "," <j:Var?> "," <f:Expr> "_" <t:Expr>  <s:(":" <Expr>)?> ")" => Box::new(
+    "(" <i:Var?> "," <j:Var?> "," <f:Expr> ".." <t:Expr>  <s:(":" <Expr>)?> ")" => Box::new(
         Expr::Args(vec!(
             Box::new(Expr::Type(match i {
                 None => Type::Null,
@@ -92,6 +90,26 @@ ExprForArgs: Box<Expr> = {
                 None => Type::Null,
                 Some(j) => Type::Id(j),
             })),
+            Box::new(Expr::Range(f, t, match s {
+                None => Box::new(Expr::Type(Type::Number(1))),
+                Some(e) => e,
+            }))
+        ))
+    ),
+    "(" <j:Var?> "," <f:Expr> ".." <t:Expr>  <s:(":" <Expr>)?> ")" => Box::new(
+        Expr::Args(vec!(
+            Box::new(Expr::Type(match j {
+                None => Type::Null,
+                Some(j) => Type::Id(j),
+            })),
+            Box::new(Expr::Range(f, t, match s {
+                None => Box::new(Expr::Type(Type::Number(1))),
+                Some(e) => e,
+            }))
+        ))
+    ),
+    "(" <f:Expr> ".." <t:Expr>  <s:(":" <Expr>)?> ")" => Box::new(
+        Expr::Args(vec!(
             Box::new(Expr::Range(f, t, match s {
                 None => Box::new(Expr::Type(Type::Number(1))),
                 Some(e) => e,

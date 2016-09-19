@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Formatter, Error};
 
+#[derive(PartialEq)]
 pub enum Expr {
     Type(Type),
     UnOp(UnOpCode, Box<Expr>),
@@ -14,6 +15,7 @@ pub enum Expr {
     ForA(Box<Expr>, Box<Expr>),
 }
 
+#[derive(PartialEq)]
 pub enum Type {
     Id(String),
     Number(i64),
@@ -24,7 +26,7 @@ pub enum Type {
     Null,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum BinOpCode {
     Ass,
     Mul,
@@ -39,7 +41,7 @@ pub enum BinOpCode {
     GEt,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum UnOpCode {
     Neg,
     Not,
@@ -59,13 +61,20 @@ impl Debug for Expr {
                 };
                 write!(fmt, "{:?}", r)
             },
-            Args(ref e) => write!(fmt, "Args( {:?} ) ", e),
+            Args(ref e) => {
+                write!(fmt, "(");
+                for (i, expr) in e.iter().enumerate() {
+                    write!(fmt, "{:?}", expr);
+                    if i < e.len() - 1 { write!(fmt, ", "); }
+                }
+                write!(fmt, ")")
+            },
             Spread(ref e) => write!(fmt, "{:?}", e),
             Scope(ref e) => write!(fmt, "{{ {:?} }}", e),
-            Range(ref from, ref to, ref step) => write!(fmt, "Range ({:?} to {:?} by {:?})", from, to, step),
+            Range(ref from, ref to, ref step) => write!(fmt, "Range({:?} to {:?} by {:?})", from, to, step),
             If(ref check, ref if_branch, ref else_branch) => write!(fmt, "if({:?}) {:?} else {:?}", check, if_branch, else_branch),
-            For(ref f, ref e) => write!(fmt, "For {:?} {:?}", f, e),
-            ForA(ref f, ref e) => write!(fmt, "For[] {:?} {:?}", f, e),
+            For(ref f, ref e) => write!(fmt, "for {:?} {:?}", f, e),
+            ForA(ref f, ref e) => write!(fmt, "for[] {:?} {:?}", f, e),
         }
     }
 }
@@ -111,8 +120,9 @@ impl Debug for Type {
             Bool(b) => write!(fmt, "{}", b),
             Array(ref a) => {
                 write!(fmt, "Arr[");
-                for e in a {
-                    write!(fmt, "{:?}, ", e);
+                for (i, e) in a.iter().enumerate() {
+                    write!(fmt, "{:?}", e);
+                    if i < a.len() - 1 { write!(fmt, ", "); }
                 }
                 write!(fmt, "]")
             },

@@ -1,6 +1,7 @@
 use ast::*;
 
-grammar;
+#[LALR]
+#[recursive_ascent] grammar;
 
 pub Block: Box<Expr> = {
     <v:(<Expr> ";")+> <e:Expr?> => Box::new(Expr::Block(v, match e {

@@ -1,0 +1,8 @@
+//Fibonacci sequence
+
+//Variables for holding sequence
+o = 0; //old value
+n = 1; //new value
+
+// for [] returns an array of expressions in the loop
+for[] (0..10) {n = o + (o = n) }

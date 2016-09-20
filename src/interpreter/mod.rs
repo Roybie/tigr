@@ -38,6 +38,15 @@ impl Eval {
         println!("Env:\n{:?}", self.env);
     }
 
+    fn remove_scope(&mut self) {
+        let old_scope = self.env.remove(0);
+        for (var, val) in &old_scope.0 {
+            if self.env[0].0.contains_key(var) {
+                self.env[0].add(var.clone(), val.clone());
+            }
+        }
+    }
+
     fn expr_to_bool(&mut self, e: Expr) -> Type {
         match self.eval(e) {
             Type::Bool(b) => Type::Bool(b),
@@ -84,7 +93,7 @@ impl Eval {
                 self.env.insert(0, new_scope);
                 let t = self.eval(*e);
                 // remove new scope
-                self.env.remove(0);
+                self.remove_scope();
                 t
             },
             Expr::If(condition, met_branch, else_branch) => {
@@ -153,7 +162,7 @@ impl Eval {
                         range_from += range_step;
                     }
                     //remove new scope
-                    self.env.remove(0);
+                    self.remove_scope();
                     result
                 } else {
                     Type::Null
@@ -219,7 +228,7 @@ impl Eval {
                         range_from += range_step;
                     }
                     //remove new scope
-                    self.env.remove(0);
+                    self.remove_scope();
                     Type::Array(result)
                 } else {
                     Type::Null

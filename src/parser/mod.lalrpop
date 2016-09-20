@@ -17,8 +17,8 @@ Expr: Box<Expr> = {
 };
 
 ExprAss: Box<Expr> = {
-    ExprPlusMinus,
-    <v:Id> <o:AssOp> <e:ExprPlusMinus> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
+    ExprEquality,
+    <v:Id> <o:AssOp> <e:ExprEquality> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
 };
 
 BinOpTier<Op, NextTier>: Box<Expr> = {
@@ -26,6 +26,7 @@ BinOpTier<Op, NextTier>: Box<Expr> = {
     BinOpTier<Op, NextTier> Op NextTier => Box::new(Expr::BinOp(<>)),
 };
 
+ExprEquality = BinOpTier<EqOp, ExprPlusMinus>;
 ExprPlusMinus = BinOpTier<SumOp, ExprMulDiv>;
 ExprMulDiv = BinOpTier<ProdOp, ExprPrefix>;
 
@@ -87,8 +88,8 @@ ExprControl: Box<Expr> = {
 };
 
 ExprIf: Box<Expr> = {
-    If <paren> <scope> => Box::new(Expr::If(<>, Box::new(Expr::Scope(Box::new(Expr::Type(Type::Null)))))),
-    If <paren> <scope> Else <scopeOrIf> => Box::new(Expr::If(<>)),
+    If <Expr> <scope> => Box::new(Expr::If(<>, Box::new(Expr::Scope(Box::new(Expr::Type(Type::Null)))))),
+    If <Expr> <scope> Else <scopeOrIf> => Box::new(Expr::If(<>)),
 };
 
 scopeOrIf: Box<Expr> = {
@@ -163,8 +164,8 @@ Separated<S>: Vec<Box<Expr>> = {
 };
 
 UnOp: UnOpCode = {
-    Minus => UnOpCode::Neg,
-    Not => UnOpCode::Not,
+    Minus       => UnOpCode::Neg,
+    Not         => UnOpCode::Not,
 };
 
 EqOp: BinOpCode = {
@@ -177,17 +178,17 @@ EqOp: BinOpCode = {
 };
 
 AssOp: BinOpCode = {
-    Equal => BinOpCode::Ass,
+    Equal       => BinOpCode::Ass,
 };
 
 SumOp: BinOpCode = {
-    Plus => BinOpCode::Add,
-    Minus => BinOpCode::Sub,
+    Plus        => BinOpCode::Add,
+    Minus       => BinOpCode::Sub,
 };
 
 ProdOp: BinOpCode = {
-    Mult => BinOpCode::Mul,
-    Divide => BinOpCode::Div,
+    Mult        => BinOpCode::Mul,
+    Divide      => BinOpCode::Div,
 };
 
 extern {

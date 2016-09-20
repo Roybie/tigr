@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter, Error};
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Expr {
     Type(Type),
     UnOp(UnOpCode, Box<Expr>),
@@ -15,7 +15,7 @@ pub enum Expr {
     ForA(Box<Expr>, Box<Expr>),
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Type {
     Id(String),
     Number(i64),

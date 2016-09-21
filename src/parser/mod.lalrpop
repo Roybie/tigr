@@ -168,6 +168,8 @@ Args = {
 };
 
 Array = {
+    Lbrack Rbrack => vec!(),
+    Lbrack <Expr> Rbrack => vec!(<>),
     Lbrack <Separated<Comma>> Rbrack,
 };
 

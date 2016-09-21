@@ -488,11 +488,12 @@ impl Eval {
             BinOpCode::Div => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => {
-                        match n1.checked_rem(n2) {
-                            Some(_)    => Type::Float(n1 as f64 / n2 as f64),
-                            None    => Type::Number(n1 / n2),
+                        if n1 % n2 == 0 {
+                            Type::Number(n1 / n2)
+                        } else {
+                            Type::Float(n1 as f64 / n2 as f64)
                         }
-                    }
+                    },
                     (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 / f),
                     (Type::Float(f), Type::Number(n)) => Type::Float(f / n as f64),
                     (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 / f2),

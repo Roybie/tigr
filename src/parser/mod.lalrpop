@@ -94,6 +94,7 @@ String: String = {
 
 ExprControl: Box<Expr> = {
     ExprIf,
+    ExprWhile,
     ExprFor,
 };
 
@@ -105,6 +106,10 @@ ExprIf: Box<Expr> = {
 scopeOrIf: Box<Expr> = {
     scope,
     ExprIf,
+};
+
+ExprWhile: Box<Expr> = {
+    While <Expr> <scope> => Box::new(Expr::While(<>)),
 };
 
 ExprFor: Box<Expr> = {
@@ -198,6 +203,7 @@ AssOp: BinOpCode = {
     PlusEq      => BinOpCode::AddEq,
     MultEq      => BinOpCode::MulEq,
     DivideEq    => BinOpCode::DivEq,
+    ModEq       => BinOpCode::ModEq,
 };
 
 SumOp: BinOpCode = {
@@ -208,12 +214,14 @@ SumOp: BinOpCode = {
 ProdOp: BinOpCode = {
     Mult        => BinOpCode::Mul,
     Divide      => BinOpCode::Div,
+    Mod         => BinOpCode::Mod,
 };
 
 extern {
     enum Token<'input> {
         Null        => Token::Null,
         For         => Token::KeyFor,
+        While       => Token::KeyWhile,
         If          => Token::KeyIf,
         Else        => Token::KeyElse,
 
@@ -232,6 +240,7 @@ extern {
         DivideEq    =>  Token::OpDivideEq,
         MultEq      =>  Token::OpMultEq,
         Mod         =>  Token::OpMod,
+        ModEq       =>  Token::OpModEq,
         Power       =>  Token::OpPower,
         Land        =>  Token::OpLand,
         Lor         =>  Token::OpLor,

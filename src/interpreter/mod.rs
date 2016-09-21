@@ -118,6 +118,16 @@ impl Eval {
                     _ => self.eval(*else_branch),
                 }
             },
+            Expr::While(condition, scope) => {
+                let mut result = Type::Null;
+                while match self.expr_to_bool(*condition.clone()) {
+                    Type::Bool(true) => true,
+                    _ => false,
+                } {
+                    result = self.eval(*scope.clone());
+                }
+                result
+            },
             Expr::For(for_args, for_scope) => {
                 if let Expr::Args(ref for_args) = *for_args {
                     //create new scope
@@ -435,6 +445,37 @@ impl Eval {
                     _ => panic!("Invalid assignment, LHS not a valid assignee"),
                 }
             },
+            BinOpCode::ModEq => {
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let current_val = self.env[0].get(id.clone());
+                        let new_value = self.eval(Expr::BinOp(Box::new(Expr::Type(current_val)),BinOpCode::Mod, Box::new(e2.clone())));
+                        self.env[0].add(id, new_value.clone());
+                        new_value
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => panic!("Invalid assignment"),
+                        };
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                let current_val = *arr[index as usize].clone();
+                                let new_value = self.eval(Expr::BinOp(Box::new(current_val),BinOpCode::Mod, Box::new(e2.clone())));
+                                *arr[index as usize] = Expr::Type(new_value.clone());
+                                self.env[0].add(id, Type::Array(arr));
+                                new_value
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        }
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
+            },
             BinOpCode::Mul => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 * n2),
@@ -481,6 +522,15 @@ impl Eval {
                     (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 - f),
                     (Type::Float(f), Type::Number(n)) => Type::Float(f - n as f64),
                     (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 - f2),
+                    _ => Type::Null,
+                }
+            },
+            BinOpCode::Mod => {
+                match (self.eval(e1), self.eval(e2)) {
+                    (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 % n2),
+                    (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 % f),
+                    (Type::Float(f), Type::Number(n)) => Type::Float(f % n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 % f2),
                     _ => Type::Null,
                 }
             },

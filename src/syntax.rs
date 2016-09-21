@@ -9,6 +9,7 @@ pub enum Token <'a> {
     Null,
 
     KeyFor,
+    KeyWhile,
     KeyIf,
     KeyElse,
 
@@ -33,6 +34,7 @@ pub enum Token <'a> {
     OpPlusEq,
     OpDivideEq,
     OpMultEq,
+    OpModEq,
 
     // Assignment
     OpEqual,
@@ -58,14 +60,15 @@ pub enum Token <'a> {
     OpLength,
 }
 
-pub const KEYWORDS : [(&'static str, Token<'static>); 4] = [
+pub const KEYWORDS : [(&'static str, Token<'static>); 5] = [
     ("null",    Token::Null),
     ("for",     Token::KeyFor),
+    ("while",   Token::KeyWhile),
     ("if",      Token::KeyIf),
     ("else",    Token::KeyElse),
 ];
 
-pub const OPERATORS : [(&'static str, Token<'static>); 23] = [
+pub const OPERATORS : [(&'static str, Token<'static>); 24] = [
     ("-",        Token::OpMinus),
     ("+",        Token::OpPlus),
     ("/",        Token::OpDivide),
@@ -78,6 +81,7 @@ pub const OPERATORS : [(&'static str, Token<'static>); 23] = [
     ("+=",       Token::OpPlusEq),
     ("/=",       Token::OpDivideEq),
     ("*=",       Token::OpMultEq),
+    ("%=",       Token::OpModEq),
     ("=",        Token::OpEqual),
     ("==",       Token::OpEquiv),
     ("!",        Token::OpNot),

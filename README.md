@@ -16,13 +16,13 @@ Arrays : `[1, 'string', true]`
 Null : `null`
 
 ##Arithmetic
-The usual `+`, `-`, `/`, `*`
+The usual `+`, `-`, `/`, `*` and `%`
 
 ##Variable Assignment
 
 `variable = 0;`
 
-Also `+=`, `-=`, `/=` and `*=`
+Also `+=`, `-=`, `/=`, `*=` and `%=`
 
 ##Arrays
 Arrays can be a mix of all types. Expressions can also be used.
@@ -97,6 +97,15 @@ if true { 10 } // = 10
 if false { 10 } // = null
 if (a=10;b=100;a>b) { false } else if b == 99 { false } else { true } // = true
 ```
+##while
+While loop takes the form:
+
+`while expression scope`
+
+repeats scope until expression is false.
+returns the value of scope in the last iteration
+
+(`while[]` to be implemented, see `for[]` below)
 
 ##for
 For takes the form:

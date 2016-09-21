@@ -3,6 +3,7 @@ use std::fmt::{Debug, Formatter, Error};
 #[derive(Clone, PartialEq)]
 pub enum Expr {
     Type(Type),
+    Index(Box<Expr>, Box<Expr>),
     UnOp(UnOpCode, Box<Expr>),
     BinOp(Box<Expr>, BinOpCode, Box<Expr>),
     Block(Vec<Box<Expr>>, Box<Expr>),
@@ -33,6 +34,10 @@ pub enum BinOpCode {
     Div,
     Add,
     Sub,
+    MulEq,
+    DivEq,
+    AddEq,
+    SubEq,
     Equ,
     Neq,
     Lt,
@@ -45,6 +50,7 @@ pub enum BinOpCode {
 pub enum UnOpCode {
     Neg,
     Not,
+    Len,
 }
 
 #[allow(unused_must_use)]
@@ -55,6 +61,7 @@ impl Debug for Expr {
             UnOp(op, ref r) => write!(fmt, "{:?}{:?}", op, r),
             BinOp(ref l, op, ref r) => write!(fmt, "({:?} {:?} {:?})", l, op, r),
             Type(ref t) => write!(fmt, "{:?}", t),
+            Index(ref a, ref i) => write!(fmt, "{:?}[{:?}]", a, i),
             Block(ref e, ref r) => {
                 for expr in e {
                     write!(fmt, "{:?}; ", expr);
@@ -88,6 +95,10 @@ impl Debug for BinOpCode {
             Div => write!(fmt, "/"),
             Add => write!(fmt, "+"),
             Sub => write!(fmt, "-"),
+            MulEq => write!(fmt, "*="),
+            DivEq => write!(fmt, "/="),
+            AddEq => write!(fmt, "+="),
+            SubEq => write!(fmt, "-="),
             Equ => write!(fmt, "=="),
             Neq => write!(fmt, "!="),
             Lt => write!(fmt, "<"),
@@ -104,6 +115,7 @@ impl Debug for UnOpCode {
         match *self {
             Neg => write!(fmt, "-"),
             Not => write!(fmt, "Not"),
+            Len => write!(fmt, "#"),
         }
     }
 }

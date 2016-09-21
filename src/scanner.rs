@@ -72,6 +72,10 @@ pub fn scan <'a>(source : &'a str) -> Vec<Token> {
             state.scan_string(string,tok);
         }
 
+        for &(string,tok) in &::syntax::TOKENS {
+            state.scan_string(string,tok);
+        }
+
         if state.stop {
             return res
         }

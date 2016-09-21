@@ -29,6 +29,10 @@ pub enum Token <'a> {
     OpPower,
     OpLand,
     OpLor,
+    OpMinusEq,
+    OpPlusEq,
+    OpDivideEq,
+    OpMultEq,
 
     // Assignment
     OpEqual,
@@ -51,6 +55,7 @@ pub enum Token <'a> {
     OpSemicolon,
     OpDot,
     OpRange,
+    OpLength,
 }
 
 pub const KEYWORDS : [(&'static str, Token<'static>); 4] = [
@@ -60,13 +65,7 @@ pub const KEYWORDS : [(&'static str, Token<'static>); 4] = [
     ("else",    Token::KeyElse),
 ];
 
-pub const OPERATORS : [(&'static str,Token<'static>); 29] = [
-    ("(",        Token::OpLparen),
-    (")",        Token::OpRparen),
-    ("{",        Token::OpLbrace),
-    ("}",        Token::OpRbrace),
-    ("[",        Token::OpLbrack),
-    ("]",        Token::OpRbrack),
+pub const OPERATORS : [(&'static str, Token<'static>); 23] = [
     ("-",        Token::OpMinus),
     ("+",        Token::OpPlus),
     ("/",        Token::OpDivide),
@@ -75,6 +74,10 @@ pub const OPERATORS : [(&'static str,Token<'static>); 29] = [
     ("^",        Token::OpPower),
     ("&",        Token::OpLand),
     ("|",        Token::OpLor),
+    ("-=",       Token::OpMinusEq),
+    ("+=",       Token::OpPlusEq),
+    ("/=",       Token::OpDivideEq),
+    ("*=",       Token::OpMultEq),
     ("=",        Token::OpEqual),
     ("==",       Token::OpEquiv),
     ("!",        Token::OpNot),
@@ -85,6 +88,16 @@ pub const OPERATORS : [(&'static str,Token<'static>); 29] = [
     ("<=",       Token::OpLessEqual),
     ("&&",       Token::OpAnd),
     ("||",       Token::OpOr),
+    ("#",        Token::OpLength),
+];
+
+pub const TOKENS : [(&'static str,Token<'static>); 11] = [
+    ("(",        Token::OpLparen),
+    (")",        Token::OpRparen),
+    ("{",        Token::OpLbrace),
+    ("}",        Token::OpRbrace),
+    ("[",        Token::OpLbrack),
+    ("]",        Token::OpRbrack),
     (",",        Token::OpComma),
     (":",        Token::OpColon),
     (";",        Token::OpSemicolon),

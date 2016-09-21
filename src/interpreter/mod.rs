@@ -51,6 +51,7 @@ impl Eval {
         match self.eval(e) {
             Type::Bool(b) => Type::Bool(b),
             Type::Number(n) if n == 0 => Type::Bool(false),
+            Type::Float(f) if f == 0.0 => Type::Bool(false),
             Type::String(ref s) if s == "" => Type::Bool(false),
             Type::Null => Type::Bool(false),
             _ => Type::Bool(true),
@@ -73,6 +74,21 @@ impl Eval {
                         Type::Array(new_vec)
                     },
                     _ => t,
+                }
+            },
+            Expr::Index(a, i) => {
+                let index = match self.eval(*i) {
+                    Type::Number(n) => n,
+                    _ => panic!("Index must be integer"),
+                };
+                match self.eval(*a) {
+                    Type::Array(arr) => {
+                        match arr.get(index as usize) {
+                            Some(v) => self.eval(*v.clone()),
+                            None => Type::Null,
+                        }
+                    },
+                    _ => panic!("Cannot index non-array type"),
                 }
             },
             Expr::Block(v, e) => {
@@ -243,6 +259,7 @@ impl Eval {
             UnOpCode::Neg => {
                 match self.eval(e) {
                     Type::Number(n) => Type::Number(-n),
+                    Type::Float(f) => Type::Float(-f),
                     _ => Type::Null,
                 }
             },
@@ -252,78 +269,266 @@ impl Eval {
                     _ => Type::Bool(false),
                 }
             },
+            UnOpCode::Len => {
+                match self.eval(e) {
+                    Type::Array(a) => Type::Number(a.len() as i64),
+                    _ => Type::Number(0),
+                }
+            },
         }
     }
 
     fn eval_binop(&mut self, e1: Expr, o: BinOpCode, e2: Expr) -> Type {
         match o {
             BinOpCode::Ass => {
-                //e1 must be an Id, from grammar rules
-                let id = match e1 {
-                    Expr::Type(Type::Id(id)) => id,
-                    _ => panic!("Invalid assignment, LHS not an Id"),
-                };
-                let e2 = self.eval(e2);
-                self.env[0].add(id, e2.clone());
-                e2
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let e2 = self.eval(e2);
+                        self.env[0].add(id, e2.clone());
+                        e2
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => "_".to_owned(),
+                        };
+                        let e2 = self.eval(e2);
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                *arr[index as usize] = Expr::Type(e2.clone());
+                                if id != "_" {
+                                    self.env[0].add(id, Type::Array(arr));
+                                };
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        };
+                        e2
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
+            },
+            BinOpCode::AddEq => {
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let current_val = self.env[0].get(id.clone());
+                        let new_value = self.eval(Expr::BinOp(Box::new(Expr::Type(current_val)),BinOpCode::Add, Box::new(e2.clone())));
+                        self.env[0].add(id, new_value.clone());
+                        new_value
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => panic!("Invalid assignment"),
+                        };
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                let current_val = *arr[index as usize].clone();
+                                let new_value = self.eval(Expr::BinOp(Box::new(current_val),BinOpCode::Add, Box::new(e2.clone())));
+                                *arr[index as usize] = Expr::Type(new_value.clone());
+                                self.env[0].add(id, Type::Array(arr));
+                                new_value
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        }
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
+            },
+            BinOpCode::SubEq => {
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let current_val = self.env[0].get(id.clone());
+                        let new_value = self.eval(Expr::BinOp(Box::new(Expr::Type(current_val)),BinOpCode::Sub, Box::new(e2.clone())));
+                        self.env[0].add(id, new_value.clone());
+                        new_value
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => panic!("Invalid assignment"),
+                        };
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                let current_val = *arr[index as usize].clone();
+                                let new_value = self.eval(Expr::BinOp(Box::new(current_val),BinOpCode::Sub, Box::new(e2.clone())));
+                                *arr[index as usize] = Expr::Type(new_value.clone());
+                                self.env[0].add(id, Type::Array(arr));
+                                new_value
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        }
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
+            },
+            BinOpCode::MulEq => {
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let current_val = self.env[0].get(id.clone());
+                        let new_value = self.eval(Expr::BinOp(Box::new(Expr::Type(current_val)),BinOpCode::Mul, Box::new(e2.clone())));
+                        self.env[0].add(id, new_value.clone());
+                        new_value
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => panic!("Invalid assignment"),
+                        };
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                let current_val = *arr[index as usize].clone();
+                                let new_value = self.eval(Expr::BinOp(Box::new(current_val),BinOpCode::Mul, Box::new(e2.clone())));
+                                *arr[index as usize] = Expr::Type(new_value.clone());
+                                self.env[0].add(id, Type::Array(arr));
+                                new_value
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        }
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
+            },
+            BinOpCode::DivEq => {
+                match e1 {
+                    Expr::Type(Type::Id(id)) => {
+                        let current_val = self.env[0].get(id.clone());
+                        let new_value = self.eval(Expr::BinOp(Box::new(Expr::Type(current_val)),BinOpCode::Div, Box::new(e2.clone())));
+                        self.env[0].add(id, new_value.clone());
+                        new_value
+                    },
+                    Expr::Index(a, i) => {
+                        let index = match self.eval(*i) {
+                            Type::Number(n) => n,
+                            _ => panic!("Index must be integer"),
+                        };
+                        let id = match *a {
+                            Expr::Type(Type::Id(ref id)) => id.clone(),
+                            _ => panic!("Invalid assignment"),
+                        };
+                        match self.eval(*a) {
+                            Type::Array(mut arr) => {
+                                let current_val = *arr[index as usize].clone();
+                                let new_value = self.eval(Expr::BinOp(Box::new(current_val),BinOpCode::Div, Box::new(e2.clone())));
+                                *arr[index as usize] = Expr::Type(new_value.clone());
+                                self.env[0].add(id, Type::Array(arr));
+                                new_value
+                            },
+                            _ => panic!("Cannot index non-array type {:?}", id),
+                        }
+                    },
+                    _ => panic!("Invalid assignment, LHS not a valid assignee"),
+                }
             },
             BinOpCode::Mul => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 * n2),
+                    (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 * f),
+                    (Type::Float(f), Type::Number(n)) => Type::Float(f * n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 * f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Div => {
                 match (self.eval(e1), self.eval(e2)) {
-                    (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 / n2),
+                    (Type::Number(n1), Type::Number(n2)) => {
+                        match n1.checked_rem(n2) {
+                            Some(_)    => Type::Float(n1 as f64 / n2 as f64),
+                            None    => Type::Number(n1 / n2),
+                        }
+                    }
+                    (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 / f),
+                    (Type::Float(f), Type::Number(n)) => Type::Float(f / n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 / f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Add => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 + n2),
+                    (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 + f),
+                    (Type::Float(f), Type::Number(n)) => Type::Float(f + n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 + f2),
+                    (Type::Array(ref mut a), Type::Array(ref mut to_add)) => {
+                        a.append(to_add);
+                        Type::Array(a.clone())
+                    },
+                    (Type::Array(mut a), to_add) => {
+                        a.push(Box::new(Expr::Type(to_add)));
+                        Type::Array(a.clone())
+                    },
                     _ => Type::Null,
                 }
             },
             BinOpCode::Sub => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Number(n1 - n2),
+                    (Type::Number(n), Type::Float(f)) => Type::Float(n as f64 - f),
+                    (Type::Float(f), Type::Number(n)) => Type::Float(f - n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Float(f1 - f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Equ => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 == n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f == n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 == f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Neq => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 != n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f != n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 != f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Lt => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 < n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f < n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 < f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::LEt => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 <= n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f <= n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 <= f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::Gt => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 > n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f > n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 > f2),
                     _ => Type::Null,
                 }
             },
             BinOpCode::GEt => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 >= n2),
+                    (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f >= n as f64),
+                    (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 >= f2),
                     _ => Type::Null,
                 }
             },

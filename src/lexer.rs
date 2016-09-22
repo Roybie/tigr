@@ -333,11 +333,11 @@ impl<'a> Iterator for Lexer<'a> {
                 self.scan_string(string,tok);
             }
 
-            let i = self.i;
-            self.i = self.j;
             if self.i >= self.source.len() {
                 return None;
             }
+            let i = self.i;
+            self.i = self.j;
             self.size_left = self.size_right;
             match self.token {
                 Some(Token::IgnoreComment) | Some(Token::IgnoreWhitespace) => continue,

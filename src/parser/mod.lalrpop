@@ -18,16 +18,19 @@ Expr: Box<Expr> = {
 };
 
 ExprAss: Box<Expr> = {
-    ExprEquality,
-    <v:Id> <o:AssOp> <e:ExprEquality> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
-    Index AssOp ExprEquality => Box::new(Expr::BinOp(<>)),
+    ExprFirstTier,
+    <v:Id> <o:AssOp> <e:ExprFirstTier> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
+    Index AssOp ExprFirstTier => Box::new(Expr::BinOp(<>)),
 };
+
+ExprFirstTier = ExprAndOr;
 
 BinOpTier<Op, NextTier>: Box<Expr> = {
     NextTier,
     BinOpTier<Op, NextTier> Op NextTier => Box::new(Expr::BinOp(<>)),
 };
 
+ExprAndOr = BinOpTier<CompOp, ExprEquality>;
 ExprEquality = BinOpTier<EqOp, ExprPlusMinus>;
 ExprPlusMinus = BinOpTier<SumOp, ExprMulDiv>;
 ExprMulDiv = BinOpTier<ProdOp, ExprPrefix>;
@@ -198,6 +201,11 @@ EqOp: BinOpCode = {
     LessEqual   => BinOpCode::LEt,
     Greater     => BinOpCode::Gt,
     GreatEqual  => BinOpCode::GEt,
+};
+
+CompOp: BinOpCode = {
+    And         => BinOpCode::And,
+    Or          => BinOpCode::Or,
 };
 
 AssOp: BinOpCode = {

@@ -535,6 +535,14 @@ impl Eval {
                     _ => Type::Null,
                 }
             },
+            BinOpCode::And => Type::Bool(match (self.expr_to_bool(e1), self.expr_to_bool(e2)) {
+                (Type::Bool(b1), Type::Bool(b2)) => b1 && b2,
+                _ => false,
+            }),
+            BinOpCode::Or => Type::Bool(match (self.expr_to_bool(e1), self.expr_to_bool(e2)) {
+                (Type::Bool(b1), Type::Bool(b2)) => b1 || b2,
+                _ => false,
+            }),
             BinOpCode::Equ => {
                 match (self.eval(e1), self.eval(e2)) {
                     (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 == n2),

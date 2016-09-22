@@ -4,6 +4,5 @@
 terms = 20;
 //Variable for holding sequence
 v = [0,1];
-
 // for [] returns an array of expressions in the loop
-v += for[] (0..terms-#v) { v[1] = v[0] + (v[0] = v[1]) }
+v ~+= for[] (0..terms-#v) { v[1] = v[0] + (v[0] = v[1]) }

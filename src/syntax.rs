@@ -58,6 +58,14 @@ pub enum Token <'a> {
     OpDot,
     OpRange,
     OpLength,
+
+    //lexing error
+    OpUnexpected(char),
+
+    //Ignored by lexer
+    IgnoreComment,
+    IgnoreWhitespace,
+
 }
 
 pub const KEYWORDS : [(&'static str, Token<'static>); 5] = [

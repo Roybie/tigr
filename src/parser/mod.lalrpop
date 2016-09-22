@@ -1,8 +1,9 @@
 use ast::*;
 use syntax::Token;
+use lexer;
 
 #[LALR]
-#[recursive_ascent] grammar<'input>(text: &'input str);
+#[recursive_ascent] grammar<'input>;
 
 pub Block: Box<Expr> = {
     <v:(<Expr> Semicolon)+> <e:Expr?> => Box::new(Expr::Block(v, match e {
@@ -220,6 +221,9 @@ ProdOp: BinOpCode = {
 };
 
 extern {
+    type Location = usize;
+    type Error = lexer::LexicalError<'input>;
+
     enum Token<'input> {
         Null        => Token::Null,
         For         => Token::KeyFor,

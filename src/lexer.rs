@@ -1,105 +1,50 @@
 use syntax::{Token};
 
-#[test]
-fn test_trivial(){
-    assert_eq!(scan(" "), vec![]);
-    assert_eq!(scan(" \n\t"), vec![]);
-    assert_eq!(scan("//x"), vec![]);
-    assert_eq!(scan("// one"), vec![]);
-    assert_eq!(scan("/* \n*/"), vec![]);
-    assert_eq!(scan("123"), vec![Token::Integer("123")]);
-    assert_eq!(scan(".5"), vec![Token::Float(".5")]);
-    assert_eq!(scan("123.456"), vec![Token::Float("123.456")]);
-    assert_eq!(scan("foo_bar2"), vec![Token::Id("foo_bar2")]);
-    assert_eq!(scan("'string'"), vec![Token::String("string")]);
-    assert_eq!(scan(r"'string \'test\''"), vec![Token::String(r"string \'test\'")]);
-    assert_eq!(scan("true"), vec![Token::Bool("true")]);
-    assert_eq!(scan("false"), vec![Token::Bool("false")]);
-    assert_eq!(scan("null"), vec![Token::Null]);
-    assert_eq!(scan("-"), vec![Token::OpMinus]);
-    assert_eq!(scan("="), vec![Token::OpEqual]);
-    assert_eq!(scan("=="), vec![Token::OpEquiv]);
-    assert_eq!(scan("!="), vec![Token::OpNotEquiv]);
-    assert_eq!(scan("!"), vec![Token::OpNot]);
-    assert_eq!(scan("."), vec![Token::OpDot]);
-    assert_eq!(scan(".."), vec![Token::OpRange]);
-}
+pub type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
 
-struct ScannerState <'a> {
+pub struct Lexer <'a> {
     i : usize,
     j : usize,
+    line: usize,
     token : Option<Token<'a>>,
     source : &'a str,
 
     size_left : usize, // in bytes
     size_right : usize, // in bytes
-
-    stop : bool,
 }
 
-pub fn scan <'a>(source : &'a str) -> Vec<Token> {
-    let mut state = ScannerState{
-        i:0,
-        j:0,
-        token : None,
-        source : source,
+#[derive(Debug)]
+pub enum LexicalError<'a> {
+    InvalidToken(usize, Token<'a>, usize),
+}
 
-        size_left : 0,
-        size_right : 0,
+impl<'a> Lexer<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Lexer {
+            i:0,
+            j:0,
+            line:1,
+            token : None,
+            source : source,
 
-        stop : true,
-    };
-    let mut res = vec![];
-    loop {
-
-        state.scan_spaces();
-        state.scan_comment_monoline();
-        state.scan_comment_multiline();
-        state.scan_number();
-        state.scan_string_type();
-
-        for &string in &["true", "false"] {
-            state.scan_bool(string);
+            size_left : 0,
+            size_right : 0,
         }
-
-        for &(string,tok) in &::syntax::KEYWORDS {
-            state.scan_string(string,tok);
-        }
-
-        state.scan_identifier();
-
-        for &(string,tok) in &::syntax::OPERATORS {
-            state.scan_string(string,tok);
-        }
-
-        for &(string,tok) in &::syntax::TOKENS {
-            state.scan_string(string,tok);
-        }
-
-        if state.stop {
-            return res
-        }
-        match state.token {
-            Some(tok) => {res.push(tok);},
-            None => {},
-        }
-        state.i = state.j;
-        state.size_left = state.size_right;
-        state.token = None;
-        state.stop = true;
     }
-}
-
-impl<'a> ScannerState<'a> {
 
     fn scan_spaces(&mut self){
         let mut x = self.i;
         let mut new_right = self.size_left;
         loop {
             match self.source.char_indices().nth(x) {
-                Some((i,' ')) | Some((i,'\t')) | Some((i,'\n')) => {
+                Some((i,' ')) | Some((i,'\t')) => {
                     x += 1;
                     new_right = i + ' '.len_utf8();
+                },
+                Some((i,'\n')) => {
+                    self.line += 1;
+                    x += 1;
+                    new_right = i + '\n'.len_utf8();
                 },
                 _ => break,
             }
@@ -107,8 +52,7 @@ impl<'a> ScannerState<'a> {
         if self.j < x {
             self.j = x;
             self.size_right = new_right;
-            self.token = None;
-            self.stop = false;
+            self.token = Some(Token::IgnoreWhitespace);
         }
     }
 
@@ -133,8 +77,7 @@ impl<'a> ScannerState<'a> {
         if self.j < x {
             self.j = x;
             self.size_right = new_right;
-            self.token = None;
-            self.stop = false;
+            self.token = Some(Token::IgnoreComment);
         }
     }
 
@@ -163,6 +106,12 @@ impl<'a> ScannerState<'a> {
                                         new_right = i + '*'.len_utf8();
                                         continue 'inner;
                                     },
+                                    Some((i,'\n')) => {
+                                        self.line += 1;
+                                        x += 1;
+                                        new_right = i + '\n'.len_utf8();
+                                        continue 'outer;
+                                    },
                                     Some((i,c)) => {
                                         x += 1;
                                         new_right = i + c.len_utf8();
@@ -173,6 +122,12 @@ impl<'a> ScannerState<'a> {
                                     },
                                 }
                             }
+                        },
+                        Some((i,'\n')) => {
+                            self.line += 1;
+                            x += 1;
+                            new_right = i + '\n'.len_utf8();
+                            continue 'outer;
                         },
                         Some((i,c)) => {
                             x += 1;
@@ -188,8 +143,7 @@ impl<'a> ScannerState<'a> {
         if self.j < x {
             self.j = x;
             self.size_right = new_right;
-            self.token = None;
-            self.stop = false;
+            self.token = Some(Token::IgnoreComment);
         }
     }
 
@@ -229,7 +183,6 @@ impl<'a> ScannerState<'a> {
             } else {
                 Some(Token::Integer(content))
             };
-            self.stop = false;
         }
     }
 
@@ -265,7 +218,6 @@ impl<'a> ScannerState<'a> {
             self.size_right = new_right;
             let content = &self.source[self.size_left..self.size_right];
             self.token = Some(Token::Id(content));
-            self.stop = false;
         }
     }
 
@@ -307,7 +259,6 @@ impl<'a> ScannerState<'a> {
             self.size_right = new_right;
             let content = &self.source[new_left..(self.size_right-'\''.len_utf8())];
             self.token = Some(Token::String(content));
-            self.stop = false;
         }
     }
 
@@ -328,7 +279,6 @@ impl<'a> ScannerState<'a> {
             self.j = x;
             self.size_right = new_right;
             self.token = Some(tok);
-            self.stop = false;
         }
     }
 
@@ -349,7 +299,51 @@ impl<'a> ScannerState<'a> {
             self.j = x;
             self.size_right = new_right;
             self.token = Some(Token::Bool(bl));
-            self.stop = false;
+        }
+    }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Spanned<Token<'a>, usize, LexicalError<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.token = None;
+            self.scan_spaces();
+            self.scan_comment_monoline();
+            self.scan_comment_multiline();
+            self.scan_number();
+            self.scan_string_type();
+
+            for &string in &["true", "false"] {
+                self.scan_bool(string);
+            }
+
+            for &(string,tok) in &::syntax::KEYWORDS {
+                self.scan_string(string,tok);
+            }
+
+            self.scan_identifier();
+
+            for &(string,tok) in &::syntax::OPERATORS {
+                self.scan_string(string,tok);
+            }
+
+            for &(string,tok) in &::syntax::TOKENS {
+                self.scan_string(string,tok);
+            }
+
+            let i = self.i;
+            self.i = self.j;
+            if self.i >= self.source.len() {
+                return None;
+            }
+            self.size_left = self.size_right;
+            match self.token {
+                Some(Token::IgnoreComment) | Some(Token::IgnoreWhitespace) => continue,
+                Some(tok) => return Some(Ok((self.line, tok, i))),
+                None => return Some(Err(LexicalError::InvalidToken(self.line, Token::OpUnexpected(self.source.chars().nth(i).unwrap()), i))),
+            }
         }
     }
 }

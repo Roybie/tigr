@@ -88,7 +88,7 @@ impl<'a> Lexer<'a> {
         if iter.nth(x) == Some((new_right,'/')) &&
             iter.next() == Some((new_right+'/'.len_utf8(),'*')) {
                 x += 2;
-                new_right +=  '/'.len_utf8()  + '*'.len_utf8();
+                new_right +=  '/'.len_utf8() + '*'.len_utf8();
                 'outer: loop {
                     match iter.next() {
                         Some((i,'*')) => {
@@ -333,7 +333,7 @@ impl<'a> Iterator for Lexer<'a> {
                 self.scan_string(string,tok);
             }
 
-            if self.i >= self.source.len() {
+            if self.size_right >= self.source.len() {
                 return None;
             }
             let i = self.i;
@@ -342,7 +342,7 @@ impl<'a> Iterator for Lexer<'a> {
             match self.token {
                 Some(Token::IgnoreComment) | Some(Token::IgnoreWhitespace) => continue,
                 Some(tok) => return Some(Ok((self.line, tok, i))),
-                None => return Some(Err(LexicalError::InvalidToken(self.line, Token::OpUnexpected(self.source.chars().nth(i).unwrap()), i))),
+                None => return Some(Err(LexicalError::InvalidToken(self.line, Token::OpUnexpected(self.source.chars().nth(i).unwrap_or(' ')), i))),
             }
         }
     }

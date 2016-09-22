@@ -176,7 +176,7 @@ impl Eval {
                         _ => "_".to_owned(),
                     };
                     let mut enumeration = 0;
-                    while range_from < range_to {
+                    while range_from - range_to > range_step {
                         if en != "_" {
                             self.env[0].add(en.clone(), Type::Number(enumeration));
                         }
@@ -242,7 +242,7 @@ impl Eval {
                         _ => "_".to_owned(),
                     };
                     let mut enumeration = 0;
-                    while range_from < range_to {
+                    while (range_from - range_to).abs() >= range_step.abs() {
                         if en != "_" {
                             self.env[0].add(en.clone(), Type::Number(enumeration));
                         }

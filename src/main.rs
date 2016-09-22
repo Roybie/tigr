@@ -60,7 +60,7 @@ fn output_error(error: ParseError<usize, syntax::Token, lexer::LexicalError>, so
                     error_line = lin;
                     break;
                 }
-                char_index -= lin.len() + 1;
+                char_index -= if char_index >= lin.len() + 1 { lin.len() + 1 } else { char_index };
             }
             println!("Unexpected Character {:?} on line: {}\n", token, line);
             println!("{}", error_line);

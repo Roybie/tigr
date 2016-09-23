@@ -47,6 +47,7 @@ ExprAtom: Box<Expr> = {
     ExprSpread,
     Args => Box::new(Expr::Args(<>)),
     Null => Box::new(Expr::Type(Type::Null)),
+    ExprBreakReturn,
     paren,
     scope,
 };
@@ -56,7 +57,7 @@ paren: Box<Expr> = {
 };
 
 scope: Box<Expr> = {
-    Lbrace <Block> Rbrace => Box::new(Expr::Scope(<>)),
+    Lbrace <Block> Rbrace,
 };
 
 Lit: Box<Expr> = {
@@ -94,6 +95,12 @@ Bool: bool = {
 
 String: String = {
     TokString => <>.to_owned(),
+};
+
+ExprBreakReturn: Box<Expr> = {
+    Break => Box::new(Expr::Type(Type::Break(Box::new(Expr::Type(Type::Null))))),
+    Break <Lit> => Box::new(Expr::Type(Type::Break(<>))),
+    Break <paren> => Box::new(Expr::Type(Type::Break(<>))),
 };
 
 ExprControl: Box<Expr> = {
@@ -238,6 +245,7 @@ extern {
         While       => Token::KeyWhile,
         If          => Token::KeyIf,
         Else        => Token::KeyElse,
+        Break       => Token::KeyBreak,
 
         Lparen      =>  Token::OpLparen,
         Rparen      =>  Token::OpRparen,

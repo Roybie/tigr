@@ -73,6 +73,7 @@ impl Eval {
                         }
                         Type::Array(new_vec)
                     },
+                    Type::Break(b) => Type::Break(Box::new(Expr::Type(self.eval(*b)))),
                     _ => t,
                 }
             },
@@ -184,6 +185,13 @@ impl Eval {
                             self.env[0].add(it.clone(), Type::Number(range_from));
                         }
                         result = self.eval(*for_scope.clone());
+                        match result {
+                            Type::Break(b) => {
+                                result = self.eval(*b);
+                                break
+                            },
+                            _ => (),
+                        }
                         enumeration += 1;
                         range_from += range_step;
                     }
@@ -249,7 +257,16 @@ impl Eval {
                         if it != "_" {
                             self.env[0].add(it.clone(), Type::Number(range_from));
                         }
-                        result.push(Box::new(Expr::Type(self.eval(*for_scope.clone()))));
+                        let mut temp_result = self.eval(*for_scope.clone());
+                        match temp_result {
+                            Type::Break(b) => {
+                                temp_result = self.eval(*b);
+                                result.push(Box::new(Expr::Type(temp_result)));
+                                break
+                            },
+                            _ => (),
+                        }
+                        result.push(Box::new(Expr::Type(temp_result)));
                         enumeration += 1;
                         range_from += range_step;
                     }

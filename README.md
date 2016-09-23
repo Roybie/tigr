@@ -24,6 +24,10 @@ The usual `+`, `-`, `/`, `*` and `%`
 
 Also `+=`, `-=`, `/=`, `*=` and `%=`
 
+##COmparisons
+
+`==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`
+
 ##Arrays
 Arrays can be a mix of all types. Expressions can also be used.
 
@@ -151,3 +155,34 @@ b = for[] (e,i,0..10:2) { e };
 ```
 
 results in `a == 9` and `b = [0,1,2,3,4]`
+
+###break
+Loops can be broken out early using the keyword ``break``
+
+`break` can also take a value to return (default null)
+
+This value can either be a literal type, or an expression in parenthesis.
+
+eg:
+
+```
+for (i,0..10) {
+    if i == 5 { break }
+} // == null
+
+for (i,0..10) {
+    if i == 5 { break i }
+} // == 5
+
+while true {
+    if true { break 6 * 7 } // error, expressions returned from break must be contained in ()
+}
+
+for (i,0..10) {
+    for (j,0..10) {
+        if i * j == 25 {
+            break (break [i,j]) //breaks can be chained to break from outer loops!
+        }
+    }
+} // == [5,5]
+```

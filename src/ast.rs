@@ -25,6 +25,7 @@ pub enum Type {
     String(String),
     Bool(bool),
     Array(Vec<Box<Expr>>),
+    Break(Box<Expr>),
     Null,
 }
 
@@ -148,6 +149,7 @@ impl Debug for Type {
                 }
                 write!(fmt, "]")
             },
+            Break(ref t) => write!(fmt, "break: {:?}", t),
             Null => write!(fmt, "null"),
         }
     }

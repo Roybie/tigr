@@ -13,6 +13,7 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     While(Box<Expr>, Box<Expr>),
+    WhileA(Box<Expr>, Box<Expr>),
     For(Box<Expr>, Box<Expr>),
     ForA(Box<Expr>, Box<Expr>),
 }
@@ -87,6 +88,7 @@ impl Debug for Expr {
             Range(ref from, ref to, ref step) => write!(fmt, "Range({:?} to {:?} by {:?})", from, to, step),
             If(ref check, ref if_branch, ref else_branch) => write!(fmt, "if({:?}) {:?} else {:?}", check, if_branch, else_branch),
             While(ref check, ref branch) => write!(fmt, "while {:?} {:?}", check, branch),
+            WhileA(ref check, ref branch) => write!(fmt, "while[] {:?} {:?}", check, branch),
             For(ref f, ref e) => write!(fmt, "for {:?} {:?}", f, e),
             ForA(ref f, ref e) => write!(fmt, "for[] {:?} {:?}", f, e),
         }

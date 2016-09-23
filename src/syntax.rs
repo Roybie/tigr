@@ -9,7 +9,9 @@ pub enum Token <'a> {
     Null,
 
     KeyFor,
+    KeyForA,
     KeyWhile,
+    KeyWhileA,
     KeyIf,
     KeyElse,
     KeyBreak,
@@ -69,10 +71,12 @@ pub enum Token <'a> {
 
 }
 
-pub const KEYWORDS : [(&'static str, Token<'static>); 6] = [
+pub const KEYWORDS : [(&'static str, Token<'static>); 8] = [
     ("null",    Token::Null),
     ("for",     Token::KeyFor),
+    ("for[]",   Token::KeyForA),
     ("while",   Token::KeyWhile),
+    ("while[]", Token::KeyWhileA),
     ("if",      Token::KeyIf),
     ("else",    Token::KeyElse),
     ("break",   Token::KeyBreak),

@@ -136,6 +136,25 @@ impl Eval {
                 }
                 result
             },
+            Expr::WhileA(condition, scope) => {
+                let mut result: Vec<Box<Expr>> = vec!();
+                while match self.expr_to_bool(*condition.clone()) {
+                    Type::Bool(true) => true,
+                    _ => false,
+                } {
+                    let mut temp_result = self.eval(*scope.clone());
+                    match temp_result {
+                        Type::Break(b) => {
+                            temp_result = self.eval(*b);
+                            result.push(Box::new(Expr::Type(temp_result)));
+                            break
+                        },
+                        _ => (),
+                    }
+                    result.push(Box::new(Expr::Type(temp_result)));
+                }
+                Type::Array(result)
+            },
             Expr::For(for_args, for_scope) => {
                 if let Expr::Args(ref for_args) = *for_args {
                     //create new scope

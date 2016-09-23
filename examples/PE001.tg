@@ -9,4 +9,4 @@ lim = 1000;
 ans = 0;
 
 for (i,0..lim:3) { ans += i };
-for (i,0..lim:5) { if i % 3 != 0 { ans += i } }
+for (i,0..lim:5) { if i % 3 != 0 { ans += i } else { ans } }

@@ -57,7 +57,7 @@ paren: Box<Expr> = {
 };
 
 scope: Box<Expr> = {
-    Lbrace <Block> Rbrace,
+    Lbrace <Block> Rbrace => Box::new(Expr::Scope(<>)),
 };
 
 Lit: Box<Expr> = {

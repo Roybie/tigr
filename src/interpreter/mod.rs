@@ -126,6 +126,13 @@ impl Eval {
                     _ => false,
                 } {
                     result = self.eval(*scope.clone());
+                    match result {
+                        Type::Break(b) => {
+                            result = self.eval(*b);
+                            break
+                        },
+                        _ => (),
+                    }
                 }
                 result
             },
@@ -163,6 +170,11 @@ impl Eval {
                                 range_from = f;
                                 range_to = t;
                                 range_step = s;
+                                if range_from > range_to && range_step > 0 {
+                                    range_step *= -1;
+                                } else if range_from < range_to && range_step < 0 {
+                                    range_step *= -1;
+                                }
                             },
                             _ => panic!("Range parameters must be numbers"),
                         };
@@ -236,6 +248,11 @@ impl Eval {
                                 range_from = f;
                                 range_to = t;
                                 range_step = s;
+                                if range_from > range_to && range_step > 0 {
+                                    range_step *= -1;
+                                } else if range_from < range_to && range_step < 0 {
+                                    range_step *= -1;
+                                }
                             },
                             _ => panic!("Range parameters must be numbers"),
                         };

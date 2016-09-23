@@ -1,7 +1,19 @@
-for (i,0..10) {
-  for (j,0..10) {
-    if (i * j == 25) {
+a =
+for (i,10..0) {
+  for (j,10..0) {
+    if (i * j == 50) {
       break (break [i,j]) //breaks can be chained to break from outer loops!
     }
   }
-} // == [5,5]
+};
+
+b =
+while true {
+    for (i,0..100) {
+        if i == 50 {
+            break (break i)
+        }
+    }
+};
+
+a[0] * a[1] == b

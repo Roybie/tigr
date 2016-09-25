@@ -9,7 +9,7 @@
 lim = 1000;
 for (i, lim..lim-lim/10:-1) {
     for (j, lim..lim-lim/10:-1) {
-        n = (num = i * j);
+        n = num = i * j;
         rev = 0;
         while num > 0 {
             dig = num % 10;

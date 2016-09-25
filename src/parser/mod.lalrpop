@@ -19,8 +19,8 @@ Expr: Box<Expr> = {
 
 ExprAss: Box<Expr> = {
     ExprFirstTier,
-    <v:Id> <o:AssOp> <e:ExprFirstTier> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
-    Index AssOp ExprFirstTier => Box::new(Expr::BinOp(<>)),
+    <v:Id> <o:AssOp> <e:ExprAss> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
+    Index AssOp ExprAss => Box::new(Expr::BinOp(<>)),
 };
 
 ExprFirstTier = ExprAndOr;

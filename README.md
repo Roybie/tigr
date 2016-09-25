@@ -24,7 +24,7 @@ The usual `+`, `-`, `/`, `*` and `%`
 
 Also `+=`, `-=`, `/=`, `*=` and `%=`
 
-##COmparisons
+##Comparisons
 
 `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`
 
@@ -101,16 +101,6 @@ if true { 10 } // = 10
 if false { 10 } // = null
 if (a=10;b=100;a>b) { false } else if b == 99 { false } else { true } // = true
 ```
-##while
-While loop takes the form:
-
-`while expression scope`
-
-repeats scope until expression is false.
-returns the value of scope in the last iteration
-
-(`while[]` to be implemented, see `for[]` below)
-
 ##for
 For takes the form:
 
@@ -143,7 +133,7 @@ for (5-2..(200;false;30):if true { 1 } else { 2 }) { ... } // = 3..30:1
 
 There are two types of for loop:
 
-`for` returning a single value corersponding to the value of the scope at the last iteration
+`for` returning a single value corresponding to the value of the scope at the last iteration
 
 `for[]` returning an array containing the value of the scope at each iteration.
 
@@ -155,6 +145,19 @@ b = for[] (e,i,0..10:2) { e };
 ```
 
 results in `a == 9` and `b = [0,1,2,3,4]`
+
+##while
+While loop takes the form:
+
+`while expression scope`
+
+repeats scope until expression is false.
+
+There are two types of while loop:
+
+`while` returning a single value corresponding to the value of the scope at the last iteration
+
+`while[]` returning an array containing the value of the scope at each iteration.
 
 ###break
 Loops can be broken out early using the keyword ``break``

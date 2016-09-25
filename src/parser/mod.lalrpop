@@ -19,7 +19,7 @@ Expr: Box<Expr> = {
 
 ExprAss: Box<Expr> = {
     ExprFirstTier,
-    <v:Id> <o:AssOp> <e:ExprAss> => Box::new(Expr::BinOp(Box::new(Expr::Type(Type::Id(v))), o, e)),
+    Id AssOp ExprAss => Box::new(Expr::BinOp(<>)),
     Index AssOp ExprAss => Box::new(Expr::BinOp(<>)),
 };
 
@@ -45,7 +45,6 @@ ExprAtom: Box<Expr> = {
     Index,
     ExprControl,
     ExprSpread,
-    Args => Box::new(Expr::Args(<>)),
     Null => Box::new(Expr::Type(Type::Null)),
     ExprBreakReturn,
     paren,
@@ -61,16 +60,17 @@ scope: Box<Expr> = {
 };
 
 Lit: Box<Expr> = {
-    Id => Box::new(Expr::Type(Type::Id(<>))),
+    Id,
     Integer => Box::new(Expr::Type(Type::Number(<>))),
     Float => Box::new(Expr::Type(Type::Float(<>))),
     Bool => Box::new(Expr::Type(Type::Bool(<>))),
     String => Box::new(Expr::Type(Type::String(<>))),
     Array => Box::new(Expr::Type(Type::Array(<>))),
+    ExprFunction,
 };
 
 Index: Box<Expr> = {
-    <i:Id> Lbrack <e:Expr> Rbrack => Box::new(Expr::Index(Box::new(Expr::Type(Type::Id(i))),e)),
+    <i:Id> Lbrack <e:Expr> Rbrack => Box::new(Expr::Index(i,e)),
     <a:Array> Lbrack <e:Expr> Rbrack => Box::new(Expr::Index(Box::new(Expr::Type(Type::Array(a))), e)),
     <ForA> Lbrack <Expr> Rbrack => Box::new(Expr::Index(<>)),
     <WhileA> Lbrack <Expr> Rbrack => Box::new(Expr::Index(<>)),
@@ -78,8 +78,8 @@ Index: Box<Expr> = {
     <scope> Lbrack <Expr> Rbrack => Box::new(Expr::Index(<>)),
 };
 
-Id: String = {
-    TokId => <>.to_owned(),
+Id: Box<Expr> = {
+    TokId => Box::new(Expr::Type(Type::Id(<>.to_owned()))),
 };
 
 Integer: i64 = {
@@ -98,6 +98,10 @@ String: String = {
     TokString => <>.to_owned(),
 };
 
+ExprFunction: Box<Expr> = {
+    Function <Args> <scope> => Box::new(Expr::Type(Type::Function(<>))),
+};
+
 ExprBreakReturn: Box<Expr> = {
     Break => Box::new(Expr::Type(Type::Break(Box::new(Expr::Type(Type::Null))))),
     Break <Lit> => Box::new(Expr::Type(Type::Break(<>))),
@@ -108,6 +112,7 @@ ExprControl: Box<Expr> = {
     ExprIf,
     ExprWhile,
     ExprFor,
+    ExprFuncCall,
 };
 
 ExprIf: Box<Expr> = {
@@ -141,14 +146,14 @@ ForA: Box<Expr> = {
 ExprForArgs: Box<Expr> = {
     Lparen <i:Id?> Comma <j:Id?> Comma <f:Expr> Range <t:Expr>  <s:(Colon <Expr>)?> Rparen => Box::new(
         Expr::Args(vec!(
-            Box::new(Expr::Type(match i {
-                None => Type::Null,
-                Some(i) => Type::Id(i),
-            })),
-            Box::new(Expr::Type(match j {
-                None => Type::Null,
-                Some(j) => Type::Id(j),
-            })),
+            match i {
+                None => Box::new(Expr::Type(Type::Null)),
+                Some(i) => i,
+            },
+            match j {
+                None => Box::new(Expr::Type(Type::Null)),
+                Some(j) => j,
+            },
             Box::new(Expr::Range(f, t, match s {
                 None => Box::new(Expr::Type(Type::Number(1))),
                 Some(e) => e,
@@ -157,10 +162,10 @@ ExprForArgs: Box<Expr> = {
     ),
     Lparen <j:Id?> Comma <f:Expr> Range <t:Expr>  <s:(Colon <Expr>)?> Rparen => Box::new(
         Expr::Args(vec!(
-            Box::new(Expr::Type(match j {
-                None => Type::Null,
-                Some(j) => Type::Id(j),
-            })),
+            match j {
+                None => Box::new(Expr::Type(Type::Null)),
+                Some(j) => j,
+            },
             Box::new(Expr::Range(f, t, match s {
                 None => Box::new(Expr::Type(Type::Number(1))),
                 Some(e) => e,
@@ -180,8 +185,18 @@ ExprForArgs: Box<Expr> = {
 ExprSpread: Box<Expr> = {
 };
 
-Args = {
-    Lparen <Separated<Comma>> Rparen,
+ExprFuncCall: Box<Expr> = {
+    <Id> <Args> => Box::new(Expr::FuncCall(<>)),
+    <paren> <Args> => Box::new(Expr::FuncCall(<>)),
+    <scope> <Args> => Box::new(Expr::FuncCall(<>)),
+    <ExprFunction> <Args> => Box::new(Expr::FuncCall(<>)),
+    <ExprControl> <Args> => Box::new(Expr::FuncCall(<>)),
+}
+;
+Args: Box<Expr> = {
+    Lparen <Separated<Comma>> Rparen => Box::new(Expr::Args(<>)),
+    Lparen <Expr> Rparen => Box::new(Expr::Args(vec!(<>))),
+    Lparen Rparen => Box::new(Expr::Args(vec!())),
 };
 
 Array = {
@@ -254,6 +269,7 @@ extern {
         If          => Token::KeyIf,
         Else        => Token::KeyElse,
         Break       => Token::KeyBreak,
+        Function    => Token::KeyFunction,
 
         Lparen      =>  Token::OpLparen,
         Rparen      =>  Token::OpRparen,

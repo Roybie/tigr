@@ -312,7 +312,38 @@ impl Eval {
                 } else {
                     Type::Null
                 }
-            }
+            },
+            Expr::FuncCall(func, args) => {
+                match self.eval(*func) {
+                    Type::Function (a,s) => {
+                        //create new scope
+                        let new_scope = self.env[0].clone();
+                        self.env.insert(0, new_scope);
+
+                        let mut eval_args: Vec<Type> = vec!();
+                        if let Expr::Args(args) = *args.clone() {
+                            for arg in args.iter() {
+                                eval_args.push(self.eval(*arg.clone()));
+                            }
+                        }
+                        //bind to function definition args
+
+                        if let Expr::Args(args) = *a {
+                            for arg in args.iter() {
+                                match **arg {
+                                    Expr::Type(Type::Id(ref id)) => self.env[0].add(id.clone(), if eval_args.len() > 0 {eval_args.remove(0)} else {Type::Null}),
+                                    _ => (),
+                                }
+                            }
+                        }
+                        let result = self.eval(*s);
+                        //remove new scope
+                        self.env.remove(0);
+                        result
+                    },
+                    e => panic!("Can't call {:?} as a function", e)
+                }
+            },
             _ => Type::Null,
         }
     }

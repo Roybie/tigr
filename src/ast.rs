@@ -16,6 +16,7 @@ pub enum Expr {
     WhileA(Box<Expr>, Box<Expr>),
     For(Box<Expr>, Box<Expr>),
     ForA(Box<Expr>, Box<Expr>),
+    FuncCall(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -25,6 +26,7 @@ pub enum Type {
     Float(f64),
     String(String),
     Bool(bool),
+    Function(Box<Expr>, Box<Expr>),
     Array(Vec<Box<Expr>>),
     Break(Box<Expr>),
     Null,
@@ -91,6 +93,7 @@ impl Debug for Expr {
             WhileA(ref check, ref branch) => write!(fmt, "while[] {:?} {:?}", check, branch),
             For(ref f, ref e) => write!(fmt, "for {:?} {:?}", f, e),
             ForA(ref f, ref e) => write!(fmt, "for[] {:?} {:?}", f, e),
+            FuncCall(ref f, ref a) => write!(fmt, "{:?}{:?}", f, a),
         }
     }
 }
@@ -143,6 +146,7 @@ impl Debug for Type {
             Float(f) => write!(fmt, "{}", f),
             String(ref s) => write!(fmt, "'{}'", s),
             Bool(b) => write!(fmt, "{}", b),
+            Function(ref a, ref s) => write!(fmt, "fn{:?} {:?}", a, s),
             Array(ref a) => {
                 write!(fmt, "Arr[");
                 for (i, e) in a.iter().enumerate() {

@@ -11,11 +11,13 @@ for (i, lim..lim-lim/10:-1) {
     for (j, lim..lim-lim/10:-1) {
         n = num = i * j;
         rev = 0;
-        while num > 0 {
-            dig = num % 10;
-            rev = rev * 10 + dig;
-            num = (num - dig) / 10;
-        };
-        if n == rev { break (break n) }
+        if n == while num > 0 {
+                    dig = num % 10;
+                    num = (num - dig) / 10;
+                    rev = rev * 10 + dig
+                } //end of while
+        {
+            break (break n)
+        }
     }
 }

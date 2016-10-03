@@ -43,7 +43,7 @@ fn output_success(parsed: Box<ast::Expr>) {
     println!("Parsed:\n{:?}\n", parsed);
 
     let mut e = Eval::new();
-    let evaluated = e.eval(*parsed);
+    let evaluated = e.evaluate(*parsed);
 
     println!("Program:\n{:?}\n", evaluated);
     e.print();

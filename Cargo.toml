@@ -1,5 +1,5 @@
 [package]
-name = "testlang"
+name = "tigr"
 version = "0.1.0"
 authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 build = "build.rs"

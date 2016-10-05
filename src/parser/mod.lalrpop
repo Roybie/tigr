@@ -187,6 +187,7 @@ ExprSpread: Box<Expr> = {
 
 ExprFuncCall: Box<Expr> = {
     <Id> <Args> => Box::new(Expr::FuncCall(<>)),
+    <Index> <Args> => Box::new(Expr::FuncCall(<>)),
     <paren> <Args> => Box::new(Expr::FuncCall(<>)),
     <scope> <Args> => Box::new(Expr::FuncCall(<>)),
     <ExprFunction> <Args> => Box::new(Expr::FuncCall(<>)),

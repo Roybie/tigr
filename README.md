@@ -13,6 +13,8 @@ Bool : `true | false`
 
 Arrays : `[1, 'string', true]`
 
+Functions : `fn(argument) { argument * 2 }`
+
 Null : `null`
 
 ##Arithmetic
@@ -53,6 +55,46 @@ Array + Any Other Type will add the other type to the end of the array.
 foo = [1,2,3];
 foo += 4; //equivalent to foo = foo + 4 => foo == [1,2,3,4]
 foo += [5,6]; // results in foo == [1,2,3,4,5,6]
+```
+
+##Functions
+A function is defined with the keyword `fn` and has the form:
+
+`fn (arguments) scope`
+
+Where arguments are an optional comma separated list of variable names.
+
+The function is then called in the usual way.
+
+```
+my_func = fn(a,b) { a + b }; //function returns the sum of the two arguments
+
+my_func(1,2) //equals 3
+```
+
+There is currently no `return` keyword, the function returns the value of the scope that makes up the function body.
+
+There is also currently no tail call optimisation, so recursive functions will VERY quickly overflow the stack.
+
+Functions call be called by passing the `(arguments)` to any expression that equates to a function.
+
+eg
+
+```
+a = fn() { 0 };
+a(); //Can call it on ariable names
+
+fn() { 0 }(); //can call it directly on the function definition
+
+if false {
+    fn() {
+        false
+    }
+} else {
+    fn() {
+        true
+    }
+}(); //can call on if/for/while
 ```
 
 ##Blocks

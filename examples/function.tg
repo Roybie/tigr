@@ -1,0 +1,15 @@
+a=0;
+b=0;
+c=0;
+
+{
+    function_array = [
+        fn(a) { a },
+        fn(a) { a * 2 },
+        fn(a) { a * a },
+    ];
+
+    a = function_array[0](5);
+    b = function_array[1](5);
+    c = function_array[2](5);
+}

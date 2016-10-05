@@ -250,13 +250,13 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     new_env.borrow_mut().define(it.clone(), Type::Number(0));
                 }
                 let mut enumeration = 0;
-                while (range_from - range_to).abs() > range_step.abs() {
-                if en != "_" {
-                    new_env.borrow_mut().set(en.clone(), Type::Number(enumeration));
-                }
-                if it != "_" {
-                    new_env.borrow_mut().set(it.clone(), Type::Number(range_from));
-                }
+                while (range_from - range_to).abs() >= range_step.abs() {
+                    if en != "_" {
+                        new_env.borrow_mut().set(en.clone(), Type::Number(enumeration));
+                    }
+                    if it != "_" {
+                        new_env.borrow_mut().set(it.clone(), Type::Number(range_from));
+                    }
                     result = eval(*for_scope.clone(), new_env.clone());
                     match result {
                         Type::Break(b) => {
@@ -332,10 +332,10 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                 let mut enumeration = 0;
                 while (range_from - range_to).abs() >= range_step.abs() {
                     if en != "_" {
-                        new_env.borrow_mut().define(en.clone(), Type::Number(enumeration));
+                        new_env.borrow_mut().set(en.clone(), Type::Number(enumeration));
                     }
                     if it != "_" {
-                        new_env.borrow_mut().define(it.clone(), Type::Number(range_from));
+                        new_env.borrow_mut().set(it.clone(), Type::Number(range_from));
                     }
                     let mut temp_result = eval(*for_scope.clone(), new_env.clone());
                     match temp_result {

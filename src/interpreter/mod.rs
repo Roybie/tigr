@@ -220,7 +220,7 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     _ => panic!("Invalid arguments to for")
                 };
                 if let Expr::Range(from, to, step) = *ra.clone() {
-                    match (eval(*from, env.clone()), eval(*to, env.clone()), eval(*step, env.clone())) {
+                    match (eval(*from, new_env.clone()), eval(*to, new_env.clone()), eval(*step, new_env.clone())) {
                         (Type::Number(f), Type::Number(t), Type::Number(s)) => {
                             range_from = f;
                             range_to = t;
@@ -300,7 +300,7 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     _ => panic!("Invalid arguments to for")
                 };
                 if let Expr::Range(from, to, step) = *ra.clone() {
-                    match (eval(*from, env.clone()), eval(*to, env.clone()), eval(*step, env.clone())) {
+                    match (eval(*from, new_env.clone()), eval(*to, new_env.clone()), eval(*step, new_env.clone())) {
                         (Type::Number(f), Type::Number(t), Type::Number(s)) => {
                             range_from = f;
                             range_to = t;

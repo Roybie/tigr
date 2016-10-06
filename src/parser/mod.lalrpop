@@ -33,7 +33,8 @@ BinOpTier<Op, NextTier>: Box<Expr> = {
 ExprAndOr = BinOpTier<CompOp, ExprEquality>;
 ExprEquality = BinOpTier<EqOp, ExprPlusMinus>;
 ExprPlusMinus = BinOpTier<SumOp, ExprMulDiv>;
-ExprMulDiv = BinOpTier<ProdOp, ExprPrefix>;
+ExprMulDiv = BinOpTier<ProdOp, ExprPower>;
+ExprPower = BinOpTier<PowOp, ExprPrefix>;
 
 ExprPrefix: Box<Expr> = {
     ExprAtom,
@@ -45,6 +46,7 @@ ExprAtom: Box<Expr> = {
     Index,
     ExprControl,
     ExprSpread,
+    ExprNatFun,
     Null => Box::new(Expr::Type(Type::Null)),
     ExprBreakReturn,
     paren,
@@ -98,6 +100,10 @@ String: String = {
     TokString => <>.to_owned(),
 };
 
+ExprNatFun: Box<Expr> = {
+    NatFun paren => Box::new(Expr::NatFun(<>)),
+};
+
 ExprFunction: Box<Expr> = {
     Function <Args> <scope> => Box::new(Expr::Type(Type::Function(<>))),
 };
@@ -106,6 +112,9 @@ ExprBreakReturn: Box<Expr> = {
     Break => Box::new(Expr::Type(Type::Break(Box::new(Expr::Type(Type::Null))))),
     Break <Lit> => Box::new(Expr::Type(Type::Break(<>))),
     Break <paren> => Box::new(Expr::Type(Type::Break(<>))),
+    Return => Box::new(Expr::Type(Type::Return(Box::new(Expr::Type(Type::Null))))),
+    Return <Lit> => Box::new(Expr::Type(Type::Return(<>))),
+    Return <paren> => Box::new(Expr::Type(Type::Return(<>))),
 };
 
 ExprControl: Box<Expr> = {
@@ -257,6 +266,16 @@ ProdOp: BinOpCode = {
     Mod         => BinOpCode::Mod,
 };
 
+PowOp: BinOpCode = {
+    Pow         => BinOpCode::Pow,
+};
+
+NatFun: NatFunction = {
+    Floor       => NatFunction::Floor,
+    Ceil        => NatFunction::Ceil,
+    Rand        => NatFunction::Rand,
+};
+
 extern {
     type Location = usize;
     type Error = lexer::LexicalError<'input>;
@@ -270,7 +289,11 @@ extern {
         If          => Token::KeyIf,
         Else        => Token::KeyElse,
         Break       => Token::KeyBreak,
+        Return      => Token::KeyReturn,
         Function    => Token::KeyFunction,
+        Floor       => Token::KeyFloor,
+        Ceil        => Token::KeyCeil,
+        Rand        => Token::KeyRand,
 
         Lparen      =>  Token::OpLparen,
         Rparen      =>  Token::OpRparen,
@@ -288,7 +311,7 @@ extern {
         MultEq      =>  Token::OpMultEq,
         Mod         =>  Token::OpMod,
         ModEq       =>  Token::OpModEq,
-        Power       =>  Token::OpPower,
+        Pow         =>  Token::OpPower,
         Land        =>  Token::OpLand,
         Lor         =>  Token::OpLor,
         Equal       =>  Token::OpEqual,

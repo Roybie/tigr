@@ -15,7 +15,11 @@ pub enum Token <'a> {
     KeyIf,
     KeyElse,
     KeyBreak,
+    KeyReturn,
     KeyFunction,
+    KeyFloor,
+    KeyCeil,
+    KeyRand,
 
     // Brackets
     OpLparen,
@@ -72,7 +76,7 @@ pub enum Token <'a> {
 
 }
 
-pub const KEYWORDS : [(&'static str, Token<'static>); 9] = [
+pub const KEYWORDS : [(&'static str, Token<'static>); 13] = [
     ("null",    Token::Null),
     ("for",     Token::KeyFor),
     ("for[]",   Token::KeyForA),
@@ -81,7 +85,11 @@ pub const KEYWORDS : [(&'static str, Token<'static>); 9] = [
     ("if",      Token::KeyIf),
     ("else",    Token::KeyElse),
     ("break",   Token::KeyBreak),
+    ("return",  Token::KeyReturn),
     ("fn",      Token::KeyFunction),
+    ("floor",   Token::KeyFloor),
+    ("ceil",    Token::KeyCeil),
+    ("rand",    Token::KeyRand),
 ];
 
 pub const OPERATORS : [(&'static str, Token<'static>); 24] = [

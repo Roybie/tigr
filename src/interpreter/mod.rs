@@ -115,6 +115,7 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     Type::Array(new_vec)
                 },
                 Type::Break(b) => Type::Break(Box::new(Expr::Type(eval(*b, env.clone())))),
+                Type::Return(b) => Type::Return(Box::new(Expr::Type(eval(*b, env.clone())))),
                 _ => t,
             }
         },
@@ -135,7 +136,10 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
         },
         Expr::Block(v, e) => {
             for exp in v.iter() {
-                eval(*exp.clone(), env.clone());
+                match eval(*exp.clone(), env.clone()) {
+                    b @ Type::Break(_) | b @ Type::Return(_) => return b,
+                    _ => (),
+                }
             }
             eval(*e, env.clone())
         },
@@ -169,6 +173,10 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                         result = eval(*b, env.clone());
                         break
                     },
+                    r @ Type::Return(_) => {
+                        result = r.clone();
+                        break
+                    },
                     _ => (),
                 }
             }
@@ -186,6 +194,9 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                         temp_result = eval(*b, env.clone());
                         result.push(Box::new(Expr::Type(temp_result)));
                         break
+                    },
+                    r @ Type::Return(_) => {
+                        return r.clone()
                     },
                     _ => (),
                 }
@@ -261,6 +272,10 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     match result {
                         Type::Break(b) => {
                             result = eval(*b, new_env.clone());
+                            break
+                        },
+                        r @ Type::Return(_) => {
+                            result = r.clone();
                             break
                         },
                         _ => (),
@@ -344,6 +359,9 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                             result.push(Box::new(Expr::Type(temp_result)));
                             break
                         },
+                        r @ Type::Return(_) => {
+                            return r.clone()
+                        },
                         _ => (),
                     }
                     result.push(Box::new(Expr::Type(temp_result)));
@@ -376,11 +394,33 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                             }
                         }
                     }
-                    return eval(*s, new_env.clone());
+                    match eval(*s, new_env.clone()) {
+                        Type::Return(r) => return eval(*r, new_env.clone()),
+                        o => return o,
+                    }
                 },
                 e => panic!("Can't call {:?} as a function", e)
             }
         },
+        Expr::NatFun(op, e) => {
+            match op {
+                NatFunction::Floor => {
+                    match eval(*e, env.clone()) {
+                       n @  Type::Number(_) => n,
+                       Type::Float(f) => Type::Number(f.floor() as i64),
+                       other => other,
+                    }
+                },
+                NatFunction::Ceil => {
+                    match eval(*e, env.clone()) {
+                       n @  Type::Number(_) => n,
+                       Type::Float(f) => Type::Number(f.ceil() as i64),
+                       other => other,
+                    }
+                },
+                _ => eval(*e, env.clone()),
+            }
+        }
         _ => Type::Null,
     }
 }
@@ -595,6 +635,15 @@ fn eval_binop(e1: Expr, o: BinOpCode, e2: Expr, env: Rc<RefCell<Env>>) -> Type {
                     }
                 },
                 _ => panic!("Invalid assignment, LHS not a valid assignee"),
+            }
+        },
+        BinOpCode::Pow => {
+            match (eval(e1, env.clone()), eval(e2, env.clone())) {
+                (Type::Number(n1), Type::Number(n2)) => Type::Float((n1 as f64).powf(n2 as f64)),
+                (Type::Number(n), Type::Float(f)) => Type::Float((n as f64).powf(f)),
+                (Type::Float(f), Type::Number(n)) => Type::Float(f.powf(n as f64)),
+                (Type::Float(f1), Type::Float(f2)) => Type::Float(f1.powf(f2)),
+                _ => Type::Null,
             }
         },
         BinOpCode::Mul => {

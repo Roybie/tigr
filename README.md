@@ -72,7 +72,7 @@ my_func = fn(a,b) { a + b }; //function returns the sum of the two arguments
 my_func(1,2) //equals 3
 ```
 
-There is currently no `return` keyword, the function returns the value of the scope that makes up the function body.
+Functions can return early using the `return` keyword, passing an optional value or expression.
 
 There is also currently no tail call optimisation, so recursive functions will VERY quickly overflow the stack.
 
@@ -88,7 +88,7 @@ fn() { 0 }(); //can call it directly on the function definition
 
 if false {
     fn() {
-        false
+        return false //explicit return
     }
 } else {
     fn() {

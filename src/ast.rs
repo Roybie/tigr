@@ -17,6 +17,7 @@ pub enum Expr {
     For(Box<Expr>, Box<Expr>),
     ForA(Box<Expr>, Box<Expr>),
     FuncCall(Box<Expr>, Box<Expr>),
+    NatFun(NatFunction, Box<Expr>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -29,11 +30,13 @@ pub enum Type {
     Function(Box<Expr>, Box<Expr>),
     Array(Vec<Box<Expr>>),
     Break(Box<Expr>),
+    Return(Box<Expr>),
     Null,
 }
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum BinOpCode {
+    Pow,
     Ass,
     Mul,
     Div,
@@ -60,6 +63,13 @@ pub enum UnOpCode {
     Neg,
     Not,
     Len,
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum NatFunction {
+    Floor,
+    Ceil,
+    Rand,
 }
 
 #[allow(unused_must_use)]
@@ -94,6 +104,7 @@ impl Debug for Expr {
             For(ref f, ref e) => write!(fmt, "for {:?} {:?}", f, e),
             ForA(ref f, ref e) => write!(fmt, "for[] {:?} {:?}", f, e),
             FuncCall(ref f, ref a) => write!(fmt, "{:?}{:?}", f, a),
+            NatFun(op, ref e) => write!(fmt, "{:?}{:?}", op, e),
         }
     }
 }
@@ -102,6 +113,7 @@ impl Debug for BinOpCode {
     fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
         use self::BinOpCode::*;
         match *self {
+            Pow => write!(fmt, "^"),
             Ass => write!(fmt, "="),
             Mul => write!(fmt, "*"),
             Div => write!(fmt, "/"),
@@ -136,6 +148,17 @@ impl Debug for UnOpCode {
     }
 }
 
+impl Debug for NatFunction {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
+        use self::NatFunction::*;
+        match *self {
+            Floor => write!(fmt, "floor"),
+            Ceil => write!(fmt, "ceil"),
+            Rand => write!(fmt, "rand"),
+        }
+    }
+}
+
 #[allow(unused_must_use)]
 impl Debug for Type {
     fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
@@ -156,6 +179,7 @@ impl Debug for Type {
                 write!(fmt, "]")
             },
             Break(ref t) => write!(fmt, "break: {:?}", t),
+            Return(ref t) => write!(fmt, "return: {:?}", t),
             Null => write!(fmt, "null"),
         }
     }

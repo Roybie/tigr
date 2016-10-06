@@ -1,0 +1,32 @@
+/*
+ * Project Euler Problem 7
+ *
+ * By listing the first six prime numbers: 2, 3, 5, 7, 11, and 13, we can see that the 6th prime is 13.
+ *
+ * What is the 10 001st prime number?
+ */
+
+isPrime = fn(n) {
+    if n == 2 {
+        true
+    } else if !(n % 2) {
+        false
+    } else {
+        for (i, 2..floor(n^0.5) + 1:1) {
+            if !(n % i) {
+                return false
+            }
+        };
+        true
+    }
+};
+
+n = 1;
+test = 1;
+while (n < 10001) {
+    test += 2;
+    if isPrime(test) {
+        n += 1;
+    };
+    test
+}

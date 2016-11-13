@@ -1,16 +1,23 @@
 use ast::*;
+use lexer::*;
+use parser::*;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::error::Error;
+use std::io::Read;
+use std::fs::File;
+use std::path::Path;
 
-#[derive(Clone, Debug)]
-struct Env{
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Env{
     parent: Option<Rc<RefCell<Env>>>,
     values: HashMap<String, Type>,
 }
 
 impl Env {
-    fn new_root() -> Rc<RefCell<Env>> {
+    pub fn new_root() -> Rc<RefCell<Env>> {
         let env = Env { parent: None, values: HashMap::new() };
         Rc::new(RefCell::new(env))
     }
@@ -83,7 +90,8 @@ impl Eval {
         println!("Env:\n{:?}", self.env.borrow().values);
     }
 
-    pub fn evaluate(&mut self, expr:Expr) -> Type {
+    pub fn evaluate(&mut self, expr:Expr, path: &str) -> Type {
+        self.env.borrow_mut().define("__path".to_owned(), Type::String(path.to_owned()));
         eval(expr, self.env.clone())
     }
 }
@@ -106,6 +114,9 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                 Type::Id(id) => {
                     env.borrow().get(&id)
                 },
+                Type::Function(a,s,_) => {
+                    Type::Function(a,s,env.clone())
+                },
                 Type::Array(arr) => {
                     let mut new_vec = vec!();
                     for e in arr.iter() {
@@ -120,14 +131,27 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
             }
         },
         Expr::Index(a, i) => {
-            let index = match eval(*i, env.clone()) {
-                Type::Number(n) => n,
-                _ => panic!("Index must be integer"),
+            let mut s_index = "".to_owned();
+            let mut n_index = -1;
+            match eval(*i, env.clone()) {
+                Type::Number(n) => {
+                    n_index = n;
+                },
+                Type::String(s) => {
+                    s_index = s;
+                }
+                _ => panic!("Invalid Index"),
             };
             match eval(*a, env.clone()) {
                 Type::Array(arr) => {
-                    match arr.get(index as usize) {
+                    match arr.get(n_index as usize) {
                         Some(v) => eval(*v.clone(), env.clone()),
+                        None => Type::Null,
+                    }
+                },
+                Type::Object(hash) => {
+                    match hash.get(&s_index) {
+                        Some(v) => v.clone(),
                         None => Type::Null,
                     }
                 },
@@ -375,8 +399,8 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
         },
         Expr::FuncCall(func, args) => {
             match eval(*func, env.clone()) {
-                Type::Function (a,s) => {
-                    let new_env = Env::new_child(env.clone());
+                Type::Function (a,s,e) => {
+                    let new_env = Env::new_child(e.clone());
 
                     let mut eval_args: Vec<Type> = vec!();
                     if let Expr::Args(args) = *args.clone() {
@@ -420,6 +444,31 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                 },
                 _ => eval(*e, env.clone()),
             }
+        },
+        Expr::Import(st) => {
+            let mut s = String::new();
+            let path_string = match env.borrow().get(&"__path".to_owned()) {
+                Type::String(s) => s,
+                _ => "".to_owned()
+            };
+            let path = Path::new(&path_string).join(&st);
+            let display = path.display();
+
+            let mut file = match File::open(&path) {
+                Err(why) => panic!("Couldn't open {}: {}", display, why.description()),
+                Ok(file) => file,
+            };
+
+            //TODO error checking here
+            file.read_to_string(&mut s).unwrap();
+
+            let lexer = Lexer::new(&s);
+            let env = Env::new_child(env.clone());
+            env.borrow_mut().define("__path".to_owned(), Type::String(path.parent().unwrap().to_str().unwrap().to_owned()));
+            match parse_Block(lexer){
+                Ok(s) => { eval(*s, env.clone()) },
+                Err(_) => { Type::Null },
+            }
         }
         _ => Type::Null,
     }
@@ -459,22 +508,39 @@ fn eval_binop(e1: Expr, o: BinOpCode, e2: Expr, env: Rc<RefCell<Env>>) -> Type {
                     e2
                 },
                 Expr::Index(a, i) => {
-                    let index = match eval(*i, env.clone()) {
-                        Type::Number(n) => n,
-                        _ => panic!("Index must be integer"),
+                    let mut s_index = "".to_owned();
+                    let mut n_index = -1;
+                    match eval(*i, env.clone()) {
+                        Type::Number(n) => {
+                            n_index = n;
+                        },
+                        Type::String(s) => {
+                            s_index = s;
+                        },
+                        _ => panic!("Invalid index"),
                     };
                     let id = match *a {
                         Expr::Type(Type::Id(ref id)) => id.clone(),
                         _ => "_".to_owned(),
                     };
                     let e2 = eval(e2, env.clone());
-                    match eval(*a, env.clone()) {
+                    match eval(*a.clone(), env.clone()) {
                         Type::Array(mut arr) => {
-                            *arr[index as usize] = Expr::Type(e2.clone());
+                            *arr[n_index as usize] = Expr::Type(e2.clone());
                             if id != "_" {
                                 env.borrow_mut().set(id, Type::Array(arr));
+                            } else {
+                                eval(Expr::BinOp(a, BinOpCode::Ass, Box::new(Expr::Type(Type::Array(arr)))), env.clone());
                             };
                         },
+                        Type::Object(mut hash) => {
+                            hash.insert(s_index, e2.clone());
+                            if id != "_" {
+                                env.borrow_mut().set(id, Type::Object(hash));
+                            } else {
+                                eval(Expr::BinOp(a, BinOpCode::Ass, Box::new(Expr::Type(Type::Object(hash)))), env.clone());
+                            };
+                        }
                         _ => panic!("Cannot index non-array type {:?}", id),
                     };
                     e2
@@ -497,14 +563,18 @@ fn eval_binop(e1: Expr, o: BinOpCode, e2: Expr, env: Rc<RefCell<Env>>) -> Type {
                     };
                     let id = match *a {
                         Expr::Type(Type::Id(ref id)) => id.clone(),
-                        _ => panic!("Invalid assignment"),
+                        _ => "_".to_owned(), //panic!("Invalid assignment"),
                     };
-                    match eval(*a, env.clone()) {
+                    match eval(*a.clone(), env.clone()) {
                         Type::Array(mut arr) => {
                             let current_val = *arr[index as usize].clone();
                             let new_value = eval(Expr::BinOp(Box::new(current_val),BinOpCode::Add, Box::new(e2.clone())), env.clone());
                             *arr[index as usize] = Expr::Type(new_value.clone());
-                            env.borrow_mut().set(id, Type::Array(arr));
+                            if id != "_" {
+                                env.borrow_mut().set(id, Type::Array(arr));
+                            } else {
+                                eval(Expr::BinOp(a, BinOpCode::AddEq, Box::new(Expr::Type(Type::Array(arr)))), env.clone());
+                            };
                             new_value
                         },
                         _ => panic!("Cannot index non-array type {:?}", id),

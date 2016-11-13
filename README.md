@@ -13,6 +13,8 @@ Bool : `true | false`
 
 Arrays : `[1, 'string', true]`
 
+Objects : `object.string_index`
+
 Functions : `fn(argument) { argument * 2 }`
 
 Null : `null`
@@ -44,17 +46,32 @@ Accessing:
 
 `foo[0]`
 
-Array overloads the `+` operator, 
+Array overloads the `+` operator,
 
-Array + Array joins the arrays
-Array + Any Other Type will add the other type to the end of the array.
+Array + Expression will add the other evaluated expression to the end of the array.
 
 `+=` can also be used on array variables
 
 ```
 foo = [1,2,3];
 foo += 4; //equivalent to foo = foo + 4 => foo == [1,2,3,4]
-foo += [5,6]; // results in foo == [1,2,3,4,5,6]
+foo += [5,6]; // results in foo == [1,2,3,4,[5,6]]
+```
+
+##Objects
+Objects are like arrays but with string indices instead of ints.
+
+Declaring:
+
+```
+foo = $;
+```
+
+Then set or access:
+
+```
+foo.some_index = 10;
+foo['some_index'] == 10 //true
 ```
 
 ##Functions
@@ -73,6 +90,8 @@ my_func(1,2) //equals 3
 ```
 
 Functions can return early using the `return` keyword, passing an optional value or expression.
+
+Function run in the environment closure of when they are declared.
 
 There is also currently no tail call optimisation, so recursive functions will VERY quickly overflow the stack.
 

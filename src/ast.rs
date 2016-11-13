@@ -1,4 +1,8 @@
 use std::fmt::{Debug, Formatter, Error};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
+use interpreter::Env;
 
 #[derive(Clone, PartialEq)]
 pub enum Expr {
@@ -12,6 +16,7 @@ pub enum Expr {
     Spread(Box<Expr>),
     Range(Box<Expr>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Import(String),
     While(Box<Expr>, Box<Expr>),
     WhileA(Box<Expr>, Box<Expr>),
     For(Box<Expr>, Box<Expr>),
@@ -27,8 +32,9 @@ pub enum Type {
     Float(f64),
     String(String),
     Bool(bool),
-    Function(Box<Expr>, Box<Expr>),
+    Function(Box<Expr>, Box<Expr>, Rc<RefCell<Env>>),
     Array(Vec<Box<Expr>>),
+    Object(HashMap<String, Type>),
     Break(Box<Expr>),
     Return(Box<Expr>),
     Null,
@@ -99,6 +105,7 @@ impl Debug for Expr {
             Scope(ref e) => write!(fmt, "{{ {:?} }}", e),
             Range(ref from, ref to, ref step) => write!(fmt, "Range({:?} to {:?} by {:?})", from, to, step),
             If(ref check, ref if_branch, ref else_branch) => write!(fmt, "if({:?}) {:?} else {:?}", check, if_branch, else_branch),
+            Import(ref s) => write!(fmt, "import {:?}", s),
             While(ref check, ref branch) => write!(fmt, "while {:?} {:?}", check, branch),
             WhileA(ref check, ref branch) => write!(fmt, "while[] {:?} {:?}", check, branch),
             For(ref f, ref e) => write!(fmt, "for {:?} {:?}", f, e),
@@ -169,7 +176,7 @@ impl Debug for Type {
             Float(f) => write!(fmt, "{}", f),
             String(ref s) => write!(fmt, "'{}'", s),
             Bool(b) => write!(fmt, "{}", b),
-            Function(ref a, ref s) => write!(fmt, "fn{:?} {:?}", a, s),
+            Function(ref a, ref s, _) => write!(fmt, "fn{:?} {:?}", a, s),
             Array(ref a) => {
                 write!(fmt, "Arr[");
                 for (i, e) in a.iter().enumerate() {
@@ -177,6 +184,14 @@ impl Debug for Type {
                     if i < a.len() - 1 { write!(fmt, ", "); }
                 }
                 write!(fmt, "]")
+            },
+            Object(ref h) => {
+                write!(fmt, "${{");
+                for (i, (key, value)) in h.iter().enumerate() {
+                    write!(fmt, "{:?} : {:?}", key, value);
+                    if i < h.len() - 1 { write!(fmt, ", "); }
+                }
+                write!(fmt, "}}")
             },
             Break(ref t) => write!(fmt, "break: {:?}", t),
             Return(ref t) => write!(fmt, "return: {:?}", t),

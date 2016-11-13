@@ -12,6 +12,7 @@ use std::error::Error;
 use std::io::Read;
 use std::fs::File;
 use std::path::Path;
+use std::ffi::OsStr;
 
 use lalrpop_util::ParseError;
 
@@ -20,8 +21,12 @@ fn main() {
     if args.len() < 2 {
         panic!("Please provide tigr source file\n\nUsage: \"vl <sourcefile>\"");
     }
+    run(&args[1]);
+}
+
+fn run(filename: &String) {
     let mut s = String::new();
-    let path = Path::new(&args[1]);
+    let path = Path::new(filename);
     let display = path.display();
 
     let mut file = match File::open(&path) {
@@ -34,22 +39,22 @@ fn main() {
 
     let lexer = lexer::Lexer::new(&s);
     match parser::parse_Block(lexer){
-        Ok(s) => { output_success(s); },
-        Err(e) => { output_error(e, &s); },
+        Ok(s) => { output_success(s, &path.parent().unwrap()); },
+        Err(e) => { output_error(path.file_name().unwrap(), e, &s); },
     };
 }
 
-fn output_success(parsed: Box<ast::Expr>) {
+fn output_success(parsed: Box<ast::Expr>, path: &Path) {
     println!("Parsed:\n{:?}\n", parsed);
 
     let mut e = Eval::new();
-    let evaluated = e.evaluate(*parsed);
+    let evaluated = e.evaluate(*parsed, &path.to_str().unwrap());
 
     println!("Program:\n{:?}\n", evaluated);
     e.print();
 }
 
-fn output_error(error: ParseError<usize, syntax::Token, lexer::LexicalError>, source: &str) {
+fn output_error(display: &OsStr, error: ParseError<usize, syntax::Token, lexer::LexicalError>, source: &str) {
     match error {
         ParseError::User{ error: lexer::LexicalError::InvalidToken(line, token, char_index) } |
         ParseError::UnrecognizedToken{ token: Some((line, token, char_index)), expected:_ } => {
@@ -62,7 +67,7 @@ fn output_error(error: ParseError<usize, syntax::Token, lexer::LexicalError>, so
                 }
                 char_index -= if char_index >= lin.len() + 1 { lin.len() + 1 } else { char_index };
             }
-            println!("Unexpected Character {:?} on line: {}\n", token, line);
+            println!("{:?}: Unexpected Character {:?} on line: {}\n", display, token, line);
             println!("{}", error_line);
             println!("{:indent$}└> Unexpected Character", "", indent=char_index);
         },

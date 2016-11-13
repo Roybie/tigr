@@ -20,6 +20,7 @@ pub enum Token <'a> {
     KeyFloor,
     KeyCeil,
     KeyRand,
+    KeyImport,
 
     // Brackets
     OpLparen,
@@ -66,6 +67,7 @@ pub enum Token <'a> {
     OpDot,
     OpRange,
     OpLength,
+    OpDollar,
 
     //lexing error
     OpUnexpected(char),
@@ -76,7 +78,7 @@ pub enum Token <'a> {
 
 }
 
-pub const KEYWORDS : [(&'static str, Token<'static>); 13] = [
+pub const KEYWORDS : [(&'static str, Token<'static>); 14] = [
     ("null",    Token::Null),
     ("for",     Token::KeyFor),
     ("for[]",   Token::KeyForA),
@@ -90,6 +92,7 @@ pub const KEYWORDS : [(&'static str, Token<'static>); 13] = [
     ("floor",   Token::KeyFloor),
     ("ceil",    Token::KeyCeil),
     ("rand",    Token::KeyRand),
+    ("import",  Token::KeyImport),
 ];
 
 pub const OPERATORS : [(&'static str, Token<'static>); 24] = [
@@ -119,7 +122,7 @@ pub const OPERATORS : [(&'static str, Token<'static>); 24] = [
     ("#",        Token::OpLength),
 ];
 
-pub const TOKENS : [(&'static str,Token<'static>); 11] = [
+pub const TOKENS : [(&'static str,Token<'static>); 12] = [
     ("(",        Token::OpLparen),
     (")",        Token::OpRparen),
     ("{",        Token::OpLbrace),
@@ -131,4 +134,5 @@ pub const TOKENS : [(&'static str,Token<'static>); 11] = [
     (";",        Token::OpSemicolon),
     (".",        Token::OpDot),
     ("..",       Token::OpRange),
+    ("$",        Token::OpDollar),
 ];

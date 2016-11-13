@@ -192,7 +192,7 @@ impl<'a> Lexer<'a> {
         let mut iter = self.source.char_indices().skip(self.i);
         'outer: loop {
             match iter.next() {
-                Some((i,c)) if c.is_alphabetic() => {
+                Some((i,c)) if c.is_alphabetic() || c == '_' => {
                     x += 1;
                     new_right = i + c.len_utf8();
                     'inner: loop {

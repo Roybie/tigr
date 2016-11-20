@@ -136,7 +136,7 @@ eg:
 
 Blocks are expressions too:
 
-`a = (10 * (b = 8))` will set b to 8 and a to 10
+`a = (10 * (b = 8))` will set b to 8 and a to 80
 
 ##Scope
 Scopes are just blocks surrounded in `{}`. They are also expressions.

@@ -13,7 +13,7 @@ Bool : `true | false`
 
 Arrays : `[1, 'string', true]`
 
-Objects : `object.string_index`
+Objects : `${ index: 'value', 'index2': 2 }`
 
 Functions : `fn(argument) { argument * 2 }`
 
@@ -64,7 +64,14 @@ Objects are like arrays but with string indices instead of ints.
 Declaring:
 
 ```
-foo = $;
+foo = ${};
+foo2 = ${
+    bar: 'string'
+};
+foo3 = ${
+    bar: 'string',
+    bar2: 34,
+};
 ```
 
 Then set or access:

@@ -2,7 +2,6 @@ use ast::*;
 use syntax::Token;
 use lexer;
 use interpreter::Env;
-use std::collections::HashMap;
 
 #[LALR]
 #[recursive_ascent] grammar<'input>;
@@ -75,7 +74,7 @@ Lit: Box<Expr> = {
     Bool => Box::new(Expr::Type(Type::Bool(<>))),
     String => Box::new(Expr::Type(Type::String(<>))),
     Array => Box::new(Expr::Type(Type::Array(<>))),
-    Object => Box::new(Expr::Type(Type::Object(<>))),
+    ObjectDef => Box::new(Expr::ObjectDef(<>)),
     ExprFunction,
 };
 
@@ -237,8 +236,15 @@ Separated<E, S>: Vec<Box<Expr>> = {
     },
 };
 
-Object: HashMap<String, Type> = {
-    Dollar => HashMap::new(),
+ObjectDef = {
+    Dollar Lbrace Rbrace => vec!(),
+    Dollar Lbrace <ObjectMember> Rbrace => vec!(<>),
+    Dollar Lbrace <Separated<ObjectMember, Comma>> Rbrace,
+};
+
+ObjectMember: Box<Expr> = {
+    <id:TokId> Colon <e:Expr> => Box::new(Expr::ObjectMember(Box::new(Expr::Type(Type::String(id.to_owned()))), e)),
+    <id:String> Colon <e:Expr> => Box::new(Expr::ObjectMember(Box::new(Expr::Type(Type::String(id.to_owned()))), e)),
 };
 
 UnOp: UnOpCode = {

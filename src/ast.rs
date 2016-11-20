@@ -23,6 +23,8 @@ pub enum Expr {
     ForA(Box<Expr>, Box<Expr>),
     FuncCall(Box<Expr>, Box<Expr>),
     NatFun(NatFunction, Box<Expr>),
+    ObjectDef(Vec<Box<Expr>>),
+    ObjectMember(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -112,6 +114,15 @@ impl Debug for Expr {
             ForA(ref f, ref e) => write!(fmt, "for[] {:?} {:?}", f, e),
             FuncCall(ref f, ref a) => write!(fmt, "{:?}{:?}", f, a),
             NatFun(op, ref e) => write!(fmt, "{:?}{:?}", op, e),
+            ObjectMember(ref id, ref e) => write!(fmt, "{:?}: {:?}", id, e),
+            ObjectDef(ref a) => {
+                write!(fmt, "${{");
+                for (i, e) in a.iter().enumerate() {
+                    write!(fmt, "{:?}", e);
+                    if i < a.len() - 1 { write!(fmt, ", "); }
+                }
+                write!(fmt, "}}")
+            },
         }
     }
 }
@@ -188,7 +199,7 @@ impl Debug for Type {
             Object(ref h) => {
                 write!(fmt, "${{");
                 for (i, (key, value)) in h.iter().enumerate() {
-                    write!(fmt, "{:?} : {:?}", key, value);
+                    write!(fmt, "{:?}: {:?}", key, value);
                     if i < h.len() - 1 { write!(fmt, ", "); }
                 }
                 write!(fmt, "}}")

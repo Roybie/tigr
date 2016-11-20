@@ -469,6 +469,21 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                 Ok(s) => { eval(*s, env.clone()) },
                 Err(_) => { Type::Null },
             }
+        },
+        Expr::ObjectDef(ref a) => {
+            let mut new_obj = HashMap::new();
+            for e in a.iter() {
+                match **e {
+                    Expr::ObjectMember(ref id, ref exp) => {
+                        match (eval(*id.clone(), env.clone()), eval(*exp.clone(), env.clone())) {
+                            (Type::String(s), t) => { new_obj.insert(s.to_owned(), t.clone()); },
+                            _ => (),
+                        }
+                    },
+                    _ => (),
+                }
+            }
+            Type::Object(new_obj)
         }
         _ => Type::Null,
     }

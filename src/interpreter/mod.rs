@@ -224,7 +224,9 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                     },
                     _ => (),
                 }
-                result.push(Box::new(Expr::Type(temp_result)));
+                if temp_result != Type::Null {
+                    result.push(Box::new(Expr::Type(temp_result)));
+                }
             }
             Type::Array(result)
         },
@@ -388,7 +390,10 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
                         },
                         _ => (),
                     }
-                    result.push(Box::new(Expr::Type(temp_result)));
+
+                    if temp_result != Type::Null {
+                        result.push(Box::new(Expr::Type(temp_result)));
+                    }
                     enumeration += 1;
                     range_from += range_step;
                 }

@@ -5,4 +5,36 @@ terms = 20;
 //Variable for holding sequence
 v = [0,1];
 // for [] returns an array of expressions in the loop
-v += for[] (0..terms-#v) { v[1] = v[0] + (v[0] = v[1]) }
+v += for[] (0..terms-#v) { v[1] = v[0] + (v[0] = v[1]) };
+
+
+//Testing Array Loops
+
+//[] loops should only return non-null elements,
+//allowing you to filter arrays
+
+a = [1,2,3,4,5,6,7,8,9,10];
+
+double = fn(i) {
+    i * 2
+};
+
+greaterThanTen = fn(i) {
+    if i > 10 {
+        i
+    }
+};
+
+a = for[] (i,0..#a) {
+    double(a[i])
+};
+
+a = for[] (i,0..#a) {
+    greaterThanTen(a[i])
+};
+
+count = 0;
+b = while[] count < 20 {
+    count += 1;
+    greaterThanTen(count)
+}

@@ -451,12 +451,16 @@ fn eval(expr: Expr, env: Rc<RefCell<Env>>) -> Type {
             }
         },
         Expr::Import(st) => {
+            let mut filename = st.to_owned();
             let mut s = String::new();
             let path_string = match env.borrow().get(&"__path".to_owned()) {
                 Type::String(s) => s,
                 _ => "".to_owned()
             };
-            let path = Path::new(&path_string).join(&st);
+            if !st.ends_with(".tg") {
+                filename = st + ".tg";
+            }
+            let path = Path::new(&path_string).join(&filename);
             let display = path.display();
 
             let mut file = match File::open(&path) {
@@ -808,7 +812,9 @@ fn eval_binop(e1: Expr, o: BinOpCode, e2: Expr, env: Rc<RefCell<Env>>) -> Type {
                 (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 == n2),
                 (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f == n as f64),
                 (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 == f2),
-                _ => Type::Null,
+                (f @ Type::Null, s @ _) | (f @ _, s @ Type::Null) => Type::Bool(f == s),
+                (f @ _, s @ _) => Type::Bool(f == s),
+                //_ => Type::Null,
             }
         },
         BinOpCode::Neq => {
@@ -816,7 +822,9 @@ fn eval_binop(e1: Expr, o: BinOpCode, e2: Expr, env: Rc<RefCell<Env>>) -> Type {
                 (Type::Number(n1), Type::Number(n2)) => Type::Bool(n1 != n2),
                 (Type::Number(n), Type::Float(f)) | (Type::Float(f), Type::Number(n)) => Type::Bool(f != n as f64),
                 (Type::Float(f1), Type::Float(f2)) => Type::Bool(f1 != f2),
-                _ => Type::Null,
+                (f @ Type::Null, s @ _) | (f @ _, s @ Type::Null) => Type::Bool(f != s),
+                (f @ _, s @ _) => Type::Bool(f != s),
+                //_ => Type::Null,
             }
         },
         BinOpCode::Lt => {

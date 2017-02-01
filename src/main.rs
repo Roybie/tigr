@@ -45,13 +45,13 @@ fn run(filename: &String) {
 }
 
 fn output_success(parsed: Box<ast::Expr>, path: &Path) {
-    println!("Parsed:\n{:?}\n", parsed);
+    //println!("Parsed:\n{:?}\n", parsed);
 
     let mut e = Eval::new();
     let evaluated = e.evaluate(*parsed, &path.to_str().unwrap());
 
     println!("Program:\n{:?}\n", evaluated);
-    e.print();
+    //e.print();
 }
 
 fn output_error(display: &OsStr, error: ParseError<usize, syntax::Token, lexer::LexicalError>, source: &str) {

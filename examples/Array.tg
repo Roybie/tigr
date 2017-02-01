@@ -1,0 +1,74 @@
+${
+
+    create : fn(len, func) {
+        for[] (i,0..len) {
+            func(i)
+        }
+    },
+
+    concat : fn(arr1, arr2) {
+        for[] (i,0..(#arr1 + #arr2)) {
+            if i < #arr1 {
+                arr1[i]
+            } else {
+                arr2[i-#arr1]
+            }
+        }
+    },
+
+    index : fn(array, element) {
+        for (i,0..#array) {
+            if array[i] == element {
+                return i
+            }
+        };
+        null
+    },
+
+    reverse : fn(array) {
+        for[] (i,(#array-1)..-1:-1) {
+            array[i]
+        }
+    },
+
+    tail : fn(array, n) {
+        if n > #array {
+            n = #array
+        };
+        for[] (i, #array-n..#array) {
+            array[i]
+        }
+    },
+
+    head : fn(array, n) {
+        if n > #array {
+            n = #array
+        };
+        for[] (i, 0..n) {
+            array[i]
+        }
+    },
+
+    map : fn(array, func) {
+        for[] (i,0..#array) {
+            func(array[i], i, array)
+        }
+    },
+
+    filter : fn(array, func) {
+        for[] (i,0..#array) {
+            if func(array[i], i, array) {
+                array[i]
+            }
+        }
+    },
+
+    reduce : fn(array, func, seed) {
+        if seed == null {
+            seed = 0
+        };
+        for (i,0..#array) {
+            seed = func(seed, array[i], i, array)
+        }
+    },
+}

@@ -1,11 +1,14 @@
 ${
 
+    // Creates and returns an array of length len
+    // Elements set to the result of function func
     create : fn(len, func) {
         for[] (i,0..len) {
             func(i)
         }
     },
 
+    //Returns concat of two arrays together
     concat : fn(arr1, arr2) {
         for[] (i,0..(#arr1 + #arr2)) {
             if i < #arr1 {
@@ -16,6 +19,7 @@ ${
         }
     },
 
+    //Returns first index of element or null if not found
     index : fn(array, element) {
         for (i,0..#array) {
             if array[i] == element {
@@ -25,12 +29,14 @@ ${
         null
     },
 
+    //Returns reversed array
     reverse : fn(array) {
         for[] (i,(#array-1)..-1:-1) {
             array[i]
         }
     },
 
+    //Returns last n elements of array
     tail : fn(array, n) {
         if n > #array {
             n = #array
@@ -40,6 +46,7 @@ ${
         }
     },
 
+    //Returns first n elements of array
     head : fn(array, n) {
         if n > #array {
             n = #array
@@ -49,12 +56,16 @@ ${
         }
     },
 
+    //Returns new array with each element
+    //the result of array's elements passed to func
     map : fn(array, func) {
         for[] (i,0..#array) {
             func(array[i], i, array)
         }
     },
 
+    //Returns new array with only the elements that pass
+    //the check in func
     filter : fn(array, func) {
         for[] (i,0..#array) {
             if func(array[i], i, array) {
@@ -63,6 +74,9 @@ ${
         }
     },
 
+    //Returns new value that is the result of
+    //func called on each element with the result
+    //of the last call passed in
     reduce : fn(array, func, seed) {
         if !seed {
             seed = 0

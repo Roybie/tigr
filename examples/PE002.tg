@@ -15,9 +15,5 @@ ans = 0;
 v = [0,1];
 
 while (v[1] = v[0] + (v[0] = v[1])) < lim {
-    if v[1] % 2 == 0 {
-        ans += v[1]
-    } else {
-        ans
-    }
+    ans += if v[1] % 2 { 0 } else { v[1] }
 }

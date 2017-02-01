@@ -13,6 +13,6 @@ while ans < lim {
     if lim % ans == 0 {
         lim = lim / ans
     };
-    ans += 1
+    ans += 2
 }
 

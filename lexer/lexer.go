@@ -33,6 +33,10 @@ func (l *Lexer) Scan() (string, token.Token, token.Pos) {
         return l.scanNumber()
     }
 
+    if l.char == '"' {
+        return l.scanString()
+    }
+
     var tok token.Token
     char := l.char
     lit, pos := string(l.char), l.file.Pos(l.offset)
@@ -63,7 +67,7 @@ func (l *Lexer) Scan() (string, token.Token, token.Pos) {
             tok = token.COMMA
         //COLON
         case ':':
-            tok = token.COLON
+            tok = l.multiCharOp('=', token.DECLARE, token.COLON)
         //SEMICOLON
         case ';':
             tok = token.SEMICOLON
@@ -93,7 +97,7 @@ func (l *Lexer) Scan() (string, token.Token, token.Pos) {
             tok = l.multiCharOp('=', token.MODASSIGN, token.MOD)
         //POW
         case '^':
-            tok = l.multiCharOp('=', token.POWASSIGN, token.POW)
+            tok = token.BITXOR
         //BITAND
         case '&':
             tok = l.multiCharOp('&', token.AND, token.BITAND)
@@ -123,7 +127,7 @@ func (l *Lexer) Scan() (string, token.Token, token.Pos) {
             }
     }
 
-    return lit, pos, tok
+    return lit, tok, pos
 }
 
 func (l *Lexer) next() {
@@ -143,6 +147,26 @@ func (l *Lexer) peek() rune {
         return rune(l.source[l.roffset])
     }
     return rune(0)
+}
+
+func (l *Lexer) scanString() (string, token.Token, token.Pos) {
+    start := l.offset
+
+    for {
+        if l.peek() == '"' {
+            if l.char != '\\' {
+                break
+            }
+        }
+        l.next()
+    }
+    l.next()
+    offset := l.offset
+    if l.char == rune(0) {
+        offset++
+    }
+
+    return l.source[start:offset], token.STRING, l.file.Pos(start)
 }
 
 func (l *Lexer) scanNumber() (string, token.Token, token.Pos) {
@@ -185,7 +209,7 @@ func (l *Lexer) scanIdentifier() (string, token.Token, token.Pos) {
     return lit, token.Lookup(lit), l.file.Pos(start)
 }
 
-func (l *Lexer) multiCharOp(r rune, a, b, token.Token) token.Token {
+func (l *Lexer) multiCharOp(r rune, a, b token.Token) token.Token {
     if l.char == r {
         l.next()
         return a

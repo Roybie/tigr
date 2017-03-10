@@ -19,6 +19,11 @@ const (
 
     key_start
 
+    NUMTYPE
+    STRTYPE
+    BOOLTYPE
+    ANYTYPE
+
     VAR
     CONST
     FOR
@@ -54,19 +59,23 @@ const (
     MUL
     DIV
     MOD
-    POW
 
+    BITXOR
     BITAND
     BITOR
     NOT
 
+    assign_start
+
     ASSIGN
+    DECLARE
     ADDASSIGN
     SUBASSIGN
     MULASSIGN
     DIVASSIGN
     MODASSIGN
-    POWASSIGN
+
+    assign_end
 
     EQUAL
     NOTEQUAL
@@ -93,7 +102,11 @@ var strings = map[Token]string {
     STRING:     "String",
     BOOL:       "Boolean",
     IDENT:      "Identifier",
-    VAR         "var",
+    NUMTYPE:    "number",
+    BOOLTYPE:   "boolean",
+    STRTYPE:    "string",
+    ANYTYPE:    "any",
+    VAR:        "var",
     CONST:      "const",
     FOR:        "for",
     RANGE:      "range",
@@ -102,46 +115,46 @@ var strings = map[Token]string {
     ELSE:       "else",
     BREAK:      "break",
     CONTINUE:   "continue",
-    RETURN      "return",
-    FUNC        "fn",
-    IMPORT      "import",
-    GO          "go",
-    LPAREN      "(",
-    RPAREN      ")",
-    LBRACE      "{",
-    RBRACE      "}",
-    LBRACK      "[",
-    RBRACK      "]",
-    COMMA       ",",
-    COLON       ":",
-    SEMICOLON   ";",
-    FULLSTOP    ".",
-    ADD         "+",
-    SUB         "-",
-    MUL         "*",
-    DIV         "/",
-    MOD         "%",
-    POW         "^",
-    BITAND      "&",
-    BITOR       "|",
-    NOT         "!",
-    ASSIGN      "=",
-    ADDASSIGN   "+=",
-    SUBASSIGN   "-=",
-    MULASSIGN   "*=",
-    DIVASSIGN   "/=",
-    MODASSIGN   "%=",
-    POWASSIGN   "^=",
-    EQUAL       "==",
-    NOTEQUAL    "!=",
-    GTHAN       ">",
-    LTHAN       "<",
-    GEQUAL      ">=",
-    LEQUAL      "<=",
-    AND         "&&",
-    OR          "||",
-    LENGTH      "#",
-    SPREAD      "..",
+    RETURN:     "return",
+    FUNC:       "fn",
+    IMPORT:     "import",
+    GO:         "go",
+    LPAREN:     "(",
+    RPAREN:     ")",
+    LBRACE:     "{",
+    RBRACE:     "}",
+    LBRACK:     "[",
+    RBRACK:     "]",
+    COMMA:      ",",
+    COLON:      ":",
+    SEMICOLON:  ";",
+    FULLSTOP:   ".",
+    ADD:        "+",
+    SUB:        "-",
+    MUL:        "*",
+    DIV:        "/",
+    MOD:        "%",
+    BITXOR:     "^",
+    BITAND:     "&",
+    BITOR:      "|",
+    NOT:        "!",
+    ASSIGN:     "=",
+    DECLARE:    ":=",
+    ADDASSIGN:  "+=",
+    SUBASSIGN:  "-=",
+    MULASSIGN:  "*=",
+    DIVASSIGN:  "/=",
+    MODASSIGN:  "%=",
+    EQUAL:      "==",
+    NOTEQUAL:   "!=",
+    GTHAN:      ">",
+    LTHAN:      "<",
+    GEQUAL:     ">=",
+    LEQUAL:     "<=",
+    AND:        "&&",
+    OR:         "||",
+    LENGTH:     "#",
+    SPREAD:     "..",
 }
 
 func (t Token) IsLiteral() bool {
@@ -154,6 +167,10 @@ func (t Token) IsOperator() bool {
 
 func (t Token) IsKeyword() bool {
     return t > key_start && t < key_end
+}
+
+func (t Token) IsAssign() bool {
+    return t > assign_start && t < assign_end
 }
 
 func (t Token) String() string {

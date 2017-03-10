@@ -1,0 +1,81 @@
+exprlist := expr (sepOp expr)*
+
+expr := exprAssign
+exprAssign := (exprId | exprInd) assOp exprAssign | exprComp
+
+exprComp := exprBit (compOp exprComp)?
+exprBit := exprEqual (bitOp exprBit)?
+exprEqual := exprSum (equalOp exprEqual)?
+exprSum := exprProd (sumOp exprSum)?
+exprProd := exprUnary (prodOp exprProdr)?
+exprUnary := (unaryOp)? exprAtom
+
+exprAtom := exprType |
+            exprInd |
+            exprFlow |
+            exprControl |
+            exprImport |
+            exprGroup
+
+exprType := exprId |
+            exprNumber |
+            exprBool |
+            exprString |
+            exprArrayDec |
+            exprObjectDec |
+            exprFunctionDec
+
+exprInd := ( exprInd |
+            exprId |
+            exprArrayDec |
+            exprControl |
+            exprGroup ) exprIndexed
+
+exprIndexed := '[' expr ']' | '.' exprId
+
+exprFlow := exprIf | exprFor | exprWhile | exprFunctionCall
+
+exprControl := 'break' expr? | 'return' expr?
+
+exprImport := 'import' exprString
+
+exprGroup := exprScope | exprParen
+
+exprScope := '{' exprList '}'
+exprParen := '(' exprList ')'
+
+exprIf := 'if' exprList exprScope ('else' (exprIf | exprScope))?
+exprFor := 'for' '[]'? exprList exprScope
+exprWhile := 'while' '[]'? exprList exprScope
+exprFunctionCall := ( exprId |
+                    exprInd |
+                    exprGroup |
+                    exprFunctionDec |
+                    exprFlow ) '(' (expr (',' expr)*)* ')'
+
+exprArrayDec := '[' (expr (',' expr)*)* ']'
+exprObjectDec := '${' ((exprId | exprString) ':' expr)* '}'
+exprFunctionDec := 'fn' '(' (exprId exprLitType (',' exprId exprLitType)*)* ')' exprScope
+
+exprLitType := 'any' |
+            'number' |
+            'boolean' |
+            'string' |
+            '[]' exprType |
+            '{}' |
+            'fn' '(' (exprId exprLitType (exprId exprType)*)* ')' exprLitType
+exprId := identifier
+exprNumber := number
+exprBool := bool
+exprString := string
+
+//ops
+sepOp := ';'
+assOp := ':=' | '=' | '+=' | '-=' | '*=' | '/=' | '%='
+compOp := '&&' | '||'
+bitOp := '&' | '|' | '^'
+equalOp := '==' | '!=' | '<' | '>' | '<=' | '>='
+sumOp := '+' | '-'
+prodOp := '*' | '/' | '%'
+unaryOp := '!' | '#' | '-' | '+'
+

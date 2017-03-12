@@ -74,6 +74,8 @@ func (l *Lexer) Scan() (string, token.Token, token.Pos) {
         //FULLSTOP
         case '.':
             tok = l.multiCharOp('.', token.SPREAD, token.FULLSTOP)
+        case '$':
+            tok = token.DOLLAR
         //ADD
         case '+':
             tok = l.multiCharOp('=', token.ADDASSIGN, token.ADD)
@@ -155,6 +157,7 @@ func (l *Lexer) scanString() (string, token.Token, token.Pos) {
     for {
         if l.peek() == '"' {
             if l.char != '\\' {
+                l.next()
                 break
             }
         }
@@ -166,7 +169,7 @@ func (l *Lexer) scanString() (string, token.Token, token.Pos) {
         offset++
     }
 
-    return l.source[start:offset], token.STRING, l.file.Pos(start)
+    return l.source[start + 1:offset - 1], token.STRING, l.file.Pos(start)
 }
 
 func (l *Lexer) scanNumber() (string, token.Token, token.Pos) {
@@ -196,7 +199,7 @@ func (l *Lexer) scanNumber() (string, token.Token, token.Pos) {
 func (l *Lexer) scanIdentifier() (string, token.Token, token.Pos) {
     start := l.offset
 
-    for unicode.IsLetter(l.char) || unicode.IsDigit(l.char) {
+    for unicode.IsLetter(l.char) || unicode.IsDigit(l.char) || l.char == '_' {
         l.next()
     }
 

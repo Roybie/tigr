@@ -1,38 +1,152 @@
 package ast
 
 import (
-    "fmt"
+    "github.com/roybie/tigr/token"
 )
 
-func Print(node Expr) {
+func Print(node Expr) string {
     if node == nil {
-        return
+        return ""
     }
-
     switch n := node.(type) {
     case *BinaryExpr:
-        fmt.Print("( ")
-        Print(n.Lhs)
-        fmt.Print(" ", n.Op, " ")
-        Print(n.Rhs)
-        fmt.Print(" )")
+        return(Print(n.Lhs) + " " + n.Op.String() + " " + Print(n.Rhs))
     case *UnaryExpr:
-        fmt.Print("( ")
-        fmt.Print(n.Op, " ")
-        Print(n.Value)
-        fmt.Print(" )")
+        return(n.Op.String() + Print(n.Value))
     case *Ident:
-        fmt.Print("ID:" + n.Name)
+        return(n.Name)
     case *BasicLit:
-        fmt.Print(n.Lit)
+        str := ""
+        if n.Kind == token.STRING {
+            str += "\""
+        }
+        str += n.Lit
+        if n.Kind == token.STRING {
+            str += "\""
+        }
+        return(str)
     case *ScopeExpr:
-        fmt.Print("{ ")
+        str := "{"
         for i, v := range n.List {
-            Print(v)
+            str += Print(v)
             if i < len(n.List) - 1 {
-                fmt.Print("; ")
+                str += "; "
             }
         }
-        fmt.Print(" }")
+        str += " }"
+        return(str)
+    case *IfExpr:
+        str := "if "
+        for i, v := range n.Cond {
+            str += Print(v)
+            if i < len(n.Cond) - 1 {
+                str += "; "
+            }
+        }
+        str += " "
+        str += Print(n.Then)
+        if _, ok := (n.Else).(*ScopeExpr); ok {
+            str += " else "
+            str += Print(n.Else)
+        }
+        return str
+    case *ForExpr:
+        str := "for "
+        for i, v := range n.Cond {
+            str += Print(v)
+            if i < len(n.Cond) - 1 {
+                str += "; "
+            }
+        }
+        str += " "
+        str += Print(n.Body)
+        return(str)
+    case *ForAExpr:
+        str := "for[] "
+        for i, v := range n.Cond {
+            str += Print(v)
+            if i < len(n.Cond) - 1 {
+                str += "; "
+            }
+        }
+        str += " "
+        str += Print(n.Body)
+        return(str)
+    case *WhileExpr:
+        str := "while "
+        for i, v := range n.Cond {
+            str += Print(v)
+            if i < len(n.Cond) - 1 {
+                str += "; "
+            }
+        }
+        str += " "
+        str += Print(n.Body)
+        return(str)
+    case *WhileAExpr:
+        str := "while[] "
+        for i, v := range n.Cond {
+            str += Print(v)
+            if i < len(n.Cond) - 1 {
+                str += "; "
+            }
+        }
+        str += " "
+        str += Print(n.Body)
+        return(str)
+    case *IndexedExpr:
+        return(Print(n.Item) + "[" + Print(n.Index) + "]")
+    case *CallExpr:
+        str := Print(n.Callee)
+        str += "("
+        for i, v := range n.Args {
+            str += Print(v)
+            if i < len(n.Args) - 1 {
+                str += ", "
+            }
+        }
+        str += ")"
+        return str
+    case *BreakExpr:
+        return("break " + Print(n.Value))
+    case *ReturnExpr:
+        return("return " + Print(n.Value))
+    case *ImportExpr:
+        return("import " + Print(n.Import))
+    case *ArrayExpr:
+        str := "["
+        for i, v := range n.Elements {
+            str += Print(v)
+            if i < len(n.Elements) - 1 {
+                str += ", "
+            }
+        }
+        str += "]"
+        return str
+    case *ObjectExpr:
+        str := "{"
+        for i, v := range n.Elements {
+            str += Print(v)
+            if i < len(n.Elements) - 1 {
+                str += ", "
+            }
+        }
+        str += "}"
+        return str
+    case *ObjectMemberExpr:
+        return(Print(n.Index) + ": " + Print(n.Value))
+    case *FunctionExpr:
+        str := "fn ("
+        for i, v := range n.Args {
+            str += Print(v)
+            if i < len(n.Args) - 1 {
+                str += ", "
+            }
+        }
+        str += ")"
+        str += Print(n.Body)
+        return str
+    default:
+        return ""
     }
 }

@@ -51,38 +51,75 @@ type ScopeExpr struct {
 type IfExpr struct {
     Pos token.Pos
     Cond []Expr
-    Then ScopeExpr
-    Else ScopeExpr
+    Then Expr
+    Else Expr
 }
 
 type ForExpr struct {
     Pos token.Pos
     Cond []Expr
-    Body ScopeExpr
+    Body Expr
 }
 
 type ForAExpr struct {
     Pos token.Pos
     Cond []Expr
-    Body ScopeExpr
+    Body Expr
 }
 
 type WhileExpr struct {
     Pos token.Pos
     Cond []Expr
-    Body ScopeExpr
+    Body Expr
 }
 
 type WhileAExpr struct {
     Pos token.Pos
     Cond []Expr
-    Body ScopeExpr
+    Body Expr
+}
+
+type BreakExpr struct {
+    Pos token.Pos
+    Value Expr
 }
 
 type CallExpr struct {
     Pos token.Pos
     Callee Expr
     Args []Expr
+}
+
+type ReturnExpr struct {
+    Pos token.Pos
+    Value Expr
+}
+
+type ImportExpr struct {
+    Pos token.Pos
+    Import Expr
+}
+
+type ArrayExpr struct {
+    Pos token.Pos
+    Elements []Expr
+}
+
+type ObjectExpr struct {
+    Pos token.Pos
+    Elements []Expr
+}
+
+type ObjectMemberExpr struct {
+    Pos token.Pos
+    Index Expr
+    Value Expr
+}
+
+type FunctionExpr struct {
+    Pos token.Pos
+    Args []Expr
+    Body Expr
 }
 
 type Scope struct {
@@ -106,8 +143,15 @@ func (e *ForExpr) Position() token.Pos { return e.Pos }
 func (e *ForAExpr) Position() token.Pos { return e.Pos }
 func (e *WhileExpr) Position() token.Pos { return e.Pos }
 func (e *WhileAExpr) Position() token.Pos { return e.Pos }
+func (e *BreakExpr) Position() token.Pos { return e.Pos }
 func (e *CallExpr) Position() token.Pos { return e.Pos }
+func (e *ReturnExpr) Position() token.Pos { return e.Pos }
+func (e *ImportExpr) Position() token.Pos { return e.Pos }
+func (e *ArrayExpr) Position() token.Pos { return e.Pos }
 func (e *Object) Position() token.Pos { return e.Pos }
+func (e *ObjectExpr) Position() token.Pos { return e.Pos }
+func (e *ObjectMemberExpr) Position() token.Pos { return e.Pos }
+func (e *FunctionExpr) Position() token.Pos { return e.Pos }
 
 func (e *BinaryExpr) exprNode() {}
 func (e *UnaryExpr) exprNode() {}
@@ -120,7 +164,14 @@ func (e *ForExpr) exprNode() {}
 func (e *ForAExpr) exprNode() {}
 func (e *WhileExpr) exprNode() {}
 func (e *WhileAExpr) exprNode() {}
+func (e *BreakExpr) exprNode() {}
 func (e *CallExpr) exprNode() {}
+func (e *ReturnExpr) exprNode() {}
+func (e *ImportExpr) exprNode() {}
+func (e *ArrayExpr) exprNode() {}
+func (e *ObjectExpr) exprNode() {}
+func (e *ObjectMemberExpr) exprNode() {}
+func (e *FunctionExpr) exprNode() {}
 
 func NewScope(parent *Scope) *Scope {
     return &Scope{Parent: parent, Table: make(map[string]*Object)}

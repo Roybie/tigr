@@ -22,5 +22,5 @@ func (p Position) String() string {
         return fmt.Sprintf("%d:%d", p.Row, p.Col)
     }
 
-    return fmt.Sprintf("%d:%d:%d", p.Filename, p.Row, p.Col)
+    return fmt.Sprintf("%s:%d:%d", p.Filename, p.Row, p.Col)
 }

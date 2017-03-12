@@ -53,6 +53,7 @@ const (
     COLON
     SEMICOLON
     FULLSTOP
+    DOLLAR
 
     ADD
     SUB
@@ -129,6 +130,7 @@ var strings = map[Token]string {
     COLON:      ":",
     SEMICOLON:  ";",
     FULLSTOP:   ".",
+    DOLLAR:     "$",
     ADD:        "+",
     SUB:        "-",
     MUL:        "*",

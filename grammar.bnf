@@ -28,7 +28,7 @@ exprType := exprId |
 exprInd := ( exprInd |
             exprId |
             exprArrayDec |
-            exprControl |
+            exprFlow |
             exprGroup ) exprIndexed
 
 exprIndexed := '[' expr ']' | '.' exprId

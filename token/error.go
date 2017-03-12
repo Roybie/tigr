@@ -13,6 +13,10 @@ func (e Error) Error() string {
     return fmt.Sprint(e.position, " ", e.message)
 }
 
+func (e Error) SamePos(p Position) bool {
+    return e.position.Col == p.Col && e.position.Row == p.Row
+}
+
 type ErrorHandler func(Pos, ...interface{})
 
 type ErrorList []*Error
@@ -22,6 +26,9 @@ func (el ErrorList) Count() int {
 }
 
 func (el *ErrorList) Add(p Position, args ...interface{}) {
+    if el.Count() > 0 && (*el)[el.Count() - 1].SamePos(p) {
+        return
+    }
     *el = append(*el, &Error{position: p, message: fmt.Sprint(args...)})
 }
 

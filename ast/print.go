@@ -26,7 +26,7 @@ func Print(node Expr) string {
         }
         return(str)
     case *ScopeExpr:
-        str := "{"
+        str := "{ "
         for i, v := range n.List {
             str += Print(v)
             if i < len(n.List) - 1 {
@@ -143,9 +143,13 @@ func Print(node Expr) string {
                 str += ", "
             }
         }
-        str += ")"
+        str += ") " + n.Type + " "
         str += Print(n.Body)
         return str
+    case *GoExpr:
+        return("go{" + n.Function + ", " + n.Type + "}")
+    case *ParamExpr:
+        return(Print(n.Name) + " " + n.Type)
     default:
         return ""
     }

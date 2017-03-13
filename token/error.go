@@ -2,15 +2,17 @@ package token
 
 import (
     "fmt"
+    "strings"
 )
 
 type Error struct {
+    file    *File
     position Position
     message string
 }
 
 func (e Error) Error() string {
-    return fmt.Sprint(e.position, " ", e.message)
+    return fmt.Sprint(e.file.GetLine(e.position.Row - 1), "\n", strings.Repeat(" ", e.position.Col-1), "^\n", e.position, " ", e.message, "\n")
 }
 
 func (e Error) SamePos(p Position) bool {
@@ -25,11 +27,11 @@ func (el ErrorList) Count() int {
     return len(el)
 }
 
-func (el *ErrorList) Add(p Position, args ...interface{}) {
+func (el *ErrorList) Add(f *File, p Position, args ...interface{}) {
     if el.Count() > 0 && (*el)[el.Count() - 1].SamePos(p) {
         return
     }
-    *el = append(*el, &Error{position: p, message: fmt.Sprint(args...)})
+    *el = append(*el, &Error{file: f, position: p, message: fmt.Sprint(args...)})
 }
 
 func (el ErrorList) Error() string {

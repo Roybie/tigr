@@ -1,10 +1,13 @@
 package token
 
+import "strings"
+
 type File struct {
     base    int
     name    string
     lines   []int
     size    int
+    src     []string
 }
 
 func (f *File) AddLine(offset int) {
@@ -40,11 +43,16 @@ func (f *File) Size() int {
     return f.size
 }
 
-func NewFile(name string, base, size int) *File {
+func (f *File) GetLine(line int) string {
+    return f.src[line]
+}
+
+func NewFile(name string, base int, src string) *File {
     return &File{
         base:  base,
         name:  name,
         lines: make([]int, 0, 16),
-        size:  size,
+        size:  len(src),
+        src:   strings.Split(src, "\n"),
     }
 }

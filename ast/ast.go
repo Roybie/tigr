@@ -119,7 +119,20 @@ type ObjectMemberExpr struct {
 type FunctionExpr struct {
     Pos token.Pos
     Args []Expr
+    Type string
     Body Expr
+}
+
+type ParamExpr struct {
+    Pos token.Pos
+    Name Expr
+    Type string
+}
+
+type GoExpr struct {
+    Pos token.Pos
+    Function string
+    Type string
 }
 
 type Scope struct {
@@ -152,6 +165,8 @@ func (e *Object) Position() token.Pos { return e.Pos }
 func (e *ObjectExpr) Position() token.Pos { return e.Pos }
 func (e *ObjectMemberExpr) Position() token.Pos { return e.Pos }
 func (e *FunctionExpr) Position() token.Pos { return e.Pos }
+func (e *GoExpr) Position() token.Pos { return e.Pos }
+func (e *ParamExpr) Position() token.Pos { return e.Pos }
 
 func (e *BinaryExpr) exprNode() {}
 func (e *UnaryExpr) exprNode() {}
@@ -172,6 +187,8 @@ func (e *ArrayExpr) exprNode() {}
 func (e *ObjectExpr) exprNode() {}
 func (e *ObjectMemberExpr) exprNode() {}
 func (e *FunctionExpr) exprNode() {}
+func (e *GoExpr) exprNode() {}
+func (e *ParamExpr) exprNode() {}
 
 func NewScope(parent *Scope) *Scope {
     return &Scope{Parent: parent, Table: make(map[string]*Object)}

@@ -1,6 +1,9 @@
 package lexer
 
 import (
+    "fmt"
+    "log"
+    "strings"
     "unicode"
     "github.com/roybie/tigr/token"
 )
@@ -162,6 +165,12 @@ func (l *Lexer) scanString() (string, token.Token, token.Pos) {
             }
         }
         l.next()
+        if l.char == rune(0) {
+            pos := l.file.Position(l.file.Pos(start))
+
+            log.Fatal(fmt.Sprintf("\n\nLexing Error:\n\n%s\n" + strings.Repeat(" ", pos.Col-1) + "^\n%v, Unclosed string\n\n", l.file.GetLine(pos.Row-1), pos))
+            break
+        }
     }
     l.next()
     offset := l.offset

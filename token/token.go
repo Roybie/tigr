@@ -19,10 +19,19 @@ const (
 
     key_start
 
+    type_start
+
     NUMTYPE
+    INTTYPE
+    FLOATTYPE
     STRTYPE
     BOOLTYPE
+    FUNCTYPE
+    ARRAYTYPE
+    OBJECTTYPE
     ANYTYPE
+
+    type_end
 
     VAR
     CONST
@@ -96,7 +105,7 @@ const (
     token_end
 )
 
-var strings = map[Token]string {
+var tok_strings = map[Token]string {
     EOF:        "EOF",
     ILLEGAL:    "Illegal",
     NUMBER:     "Number",
@@ -104,8 +113,13 @@ var strings = map[Token]string {
     BOOL:       "Boolean",
     IDENT:      "Identifier",
     NUMTYPE:    "number",
+    INTTYPE:    "int",
+    FLOATTYPE:  "float",
     BOOLTYPE:   "boolean",
     STRTYPE:    "string",
+    FUNCTYPE:   "function",
+    ARRAYTYPE:  "array",
+    OBJECTTYPE: "object",
     ANYTYPE:    "any",
     VAR:        "var",
     CONST:      "const",
@@ -175,8 +189,12 @@ func (t Token) IsAssign() bool {
     return t > assign_start && t < assign_end
 }
 
+func (t Token) IsType() bool {
+    return t > type_start && t < type_end
+}
+
 func (t Token) String() string {
-    return strings[t]
+    return tok_strings[t]
 }
 
 func (t Token) Valid() bool {
@@ -187,7 +205,7 @@ func Lookup(str string) Token {
     if str == "true" || str == "false" {
         return BOOL
     }
-    for t, s := range strings {
+    for t, s := range tok_strings {
         if s == str {
             return t
         }

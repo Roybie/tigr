@@ -8,7 +8,7 @@ import (
     "github.com/roybie/tigr/token"
 )
 
-func ParseExpression(name, src string) (ast.Expr, error) {
+func ParseExpression(name, src string) (ast.Expr, map[string]bool, error) {
     var p parser
 
     fset := token.NewFileSet()
@@ -18,15 +18,16 @@ func ParseExpression(name, src string) (ast.Expr, error) {
     node := p.ParseFile()
 
     if p.errors.Count() > 0 {
-        return nil, p.errors
+        return nil, nil, p.errors
     }
-    return node, nil
+    return node, p.goimports, nil
 }
 
 type parser struct {
     file *token.File
     errors token.ErrorList
     lexer lexer.Lexer
+    goimports map[string]bool
 
     currentScope *ast.Scope
 
@@ -36,7 +37,11 @@ type parser struct {
 }
 
 func (p *parser) addError(args ...interface{}) {
-    p.errors.Add(p.file.Position(p.pos), args...)
+    p.errors.Add(p.file, p.file.Position(p.pos), args...)
+}
+
+func (p *parser) addGoImport(imp string) {
+    p.goimports[imp] = true
 }
 
 func (p *parser) expect(tokens ...token.Token) token.Pos {
@@ -47,7 +52,11 @@ func (p *parser) expect(tokens ...token.Token) token.Pos {
             toks = append(toks, t.String())
         }
         exp := strings.Join(toks, " or ")
-        p.addError("Expected '" + exp + "' got '" + p.lit + "'")
+        errorString := "Expected '" + exp + "' got '" + p.lit + "'"
+        if exp == "}" {
+            errorString += "\nDid you forget a ';' at the end of the previous expression?"
+        }
+        p.addError(errorString)
     }
     return pos
 }
@@ -69,6 +78,7 @@ func (p *parser) init(file *token.File, fname, src string, s *ast.Scope) {
     p.file = file
     p.lexer.Init(p.file, src)
     p.currentScope = s
+    p.goimports = make(map[string]bool, 0)
     p.next()
 }
 
@@ -263,10 +273,7 @@ func (p *parser) ParseAtomExpr() ast.Expr {
 
     switch tok {
     case token.IDENT:
-        e = &ast.Ident{
-            Pos: p.expect(token.IDENT),
-            Name: lit,
-        }
+        e = p.ParseIdent()
     case token.NUMBER:
         e = &ast.BasicLit{
             Pos: p.expect(token.NUMBER),
@@ -309,6 +316,8 @@ func (p *parser) ParseAtomExpr() ast.Expr {
         e = p.ParseObjectDec()
     case token.FUNC:
         e = p.ParseFunctionDec()
+    case token.GO:
+        e = p.ParseGoExpr()
     default:
         p.addError("Unexpected " + tok.String() + ": " + lit)
     }
@@ -324,6 +333,14 @@ func (p *parser) ParseAtomExpr() ast.Expr {
         e = p.ParseFunctionCall(e)
     }
     return e
+}
+
+func (p *parser) ParseIdent() ast.Expr {
+    lit := p.lit
+    return &ast.Ident{
+        Pos: p.expect(token.IDENT),
+        Name: lit,
+    }
 }
 
 func (p *parser) ParseExprList() []ast.Expr {
@@ -585,8 +602,8 @@ func (p *parser) ParseFunctionDec() ast.Expr {
     p.expect(token.LPAREN)
 
     if !p.accept(token.RPAREN) {
-        el = append(el, p.ParseExpr())
-        id, idok := el[len(el) - 1].(*ast.Ident)
+        el = append(el, p.ParseParamExpr())
+        id, idok := el[len(el) - 1].(*ast.ParamExpr).Name.(*ast.Ident)
         if !idok {
             p.addError("Invalid Argument " + p.tok.String() + ": '" + p.lit + "'")
         } else {
@@ -604,8 +621,8 @@ func (p *parser) ParseFunctionDec() ast.Expr {
             if p.tok != token.IDENT {
                 p.addError("Invalid Argument " + p.tok.String() + ": '" + p.lit + "'")
             }
-            el = append(el, p.ParseExpr())
-            id, idok := el[len(el) - 1].(*ast.Ident)
+            el = append(el, p.ParseParamExpr())
+            id, idok := el[len(el) - 1].(*ast.ParamExpr).Name.(*ast.Ident)
             if !idok {
                 p.addError("Invalid Argument " + p.tok.String() + ": '" + p.lit + "'")
             } else {
@@ -621,11 +638,73 @@ func (p *parser) ParseFunctionDec() ast.Expr {
         }
         p.expect(token.RPAREN)
     }
+
+    typ := p.ParseTypeExpr()
     body := p.ParseScope()
 
     return &ast.FunctionExpr{
         Pos: pos,
         Args: el,
+        Type: typ,
         Body: body,
     }
+}
+
+func (p *parser) ParseParamExpr() ast.Expr {
+    pos := p.pos
+    name := p.ParseIdent()
+    typ := p.ParseTypeExpr()
+
+    return &ast.ParamExpr{
+        Pos: pos,
+        Name: name,
+        Type: typ,
+    }
+}
+
+func (p *parser) ParseGoExpr() ast.Expr {
+    pos := p.expect(token.GO)
+    p.expect(token.LBRACE)
+    i := p.ParseExpr()
+    p.expect(token.COMMA)
+    f := p.ParseExpr()
+    p.expect(token.COMMA)
+    t := p.ParseExpr()
+    p.expect(token.RBRACE)
+
+    imp, iOk := i.(*ast.BasicLit)
+    fun, fOk := f.(*ast.BasicLit)
+    typ, tOk := t.(*ast.BasicLit)
+
+    if iOk && fOk && tOk && imp.Kind == token.STRING && fun.Kind == token.STRING && typ.Kind == token.STRING {
+        //ok!
+        if len(imp.Lit) > 0 {
+            p.addGoImport(imp.Lit)
+        }
+    } else {
+        p.addError("Go function and import must be string")
+    }
+    return &ast.GoExpr{
+        Pos: pos,
+        Function: fun.Lit,
+        Type: typ.Lit,
+    }
+}
+
+func (p *parser) ParseTypeExpr() string {
+    lit, tok := p.lit, p.tok
+    if !p.tok.IsType() {
+        p.addError("Invalid type " + lit)
+    }
+
+    p.next()
+    if tok == token.ARRAYTYPE {
+        t := p.ParseTypeExpr()
+        return "[]" + t
+    }
+    if tok == token.FUNCTYPE {
+        return "func"
+    }
+
+    return lit
 }

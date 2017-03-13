@@ -10,7 +10,7 @@ func NewFileSet() *FileSet {
 }
 
 func (fs *FileSet) Add(name, src string) *File {
-    f := NewFile(name, fs.base, len(src))
+    f := NewFile(name, fs.base, src)
     fs.files = append(fs.files, f)
     fs.base += len(src)
     return f

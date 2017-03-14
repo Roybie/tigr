@@ -302,8 +302,6 @@ func (p *parser) ParseAtomExpr() ast.Expr {
         e = p.ParseIf()
     case token.FOR:
         e = p.ParseFor()
-    case token.WHILE:
-        e = p.ParseWhile()
     case token.BREAK:
         e = p.ParseBreakExpr()
     case token.RETURN:
@@ -414,37 +412,6 @@ func (p *parser) ParseFor() ast.Expr {
         }
     } else {
         return &ast.ForExpr{
-            Pos: pos,
-            Cond: cond,
-            Body: body,
-        }
-    }
-}
-
-func (p *parser) ParseWhile() ast.Expr {
-    p.openScope()
-    defer p.closeScope()
-    pos := p.expect(token.WHILE)
-
-    arr := false
-
-    if p.accept(token.LBRACK) {
-        //for[]
-        p.expect(token.RBRACK)
-        arr = true
-    }
-
-    cond := p.ParseExprList()
-    body := p.ParseScope()
-
-    if arr {
-        return &ast.WhileAExpr{
-            Pos: pos,
-            Cond: cond,
-            Body: body,
-        }
-    } else {
-        return &ast.WhileExpr{
             Pos: pos,
             Cond: cond,
             Body: body,
@@ -597,6 +564,21 @@ func (p *parser) ParseFunctionDec() ast.Expr {
     defer p.closeScope()
     pos := p.expect(token.FUNC)
 
+    el := p.ParseFuncParamList()
+
+    typ := p.ParseTypeExpr()
+    body := p.ParseScope()
+
+    return &ast.FunctionExpr{
+        Pos: pos,
+        Args: el,
+        Type: typ,
+        Body: body,
+    }
+}
+
+func (p *parser) ParseFuncParamList() []ast.Expr {
+
     el := make([]ast.Expr, 0)
 
     p.expect(token.LPAREN)
@@ -608,7 +590,7 @@ func (p *parser) ParseFunctionDec() ast.Expr {
             p.addError("Invalid Argument " + p.tok.String() + ": '" + p.lit + "'")
         } else {
             prev := p.currentScope.Insert(&ast.Object{
-                Pos: pos,
+                Pos: p.pos,
                 Name: id.Name,
             })
 
@@ -627,7 +609,7 @@ func (p *parser) ParseFunctionDec() ast.Expr {
                 p.addError("Invalid Argument " + p.tok.String() + ": '" + p.lit + "'")
             } else {
                 prev := p.currentScope.Insert(&ast.Object{
-                    Pos: pos,
+                    Pos: p.pos,
                     Name: id.Name,
                 })
 
@@ -639,15 +621,7 @@ func (p *parser) ParseFunctionDec() ast.Expr {
         p.expect(token.RPAREN)
     }
 
-    typ := p.ParseTypeExpr()
-    body := p.ParseScope()
-
-    return &ast.FunctionExpr{
-        Pos: pos,
-        Args: el,
-        Type: typ,
-        Body: body,
-    }
+    return el
 }
 
 func (p *parser) ParseParamExpr() ast.Expr {
@@ -702,9 +676,30 @@ func (p *parser) ParseTypeExpr() string {
         t := p.ParseTypeExpr()
         return "[]" + t
     }
+    if tok == token.OBJECTTYPE {
+        return "map[string]interface{}"
+    }
     if tok == token.FUNCTYPE {
-        return "func"
+        pl := p.ParseTypeList()
+        t := p.ParseTypeExpr()
+        return "func(" + strings.Join(pl, ", ") + ") " + t + " "
     }
 
     return lit
+}
+
+func (p *parser) ParseTypeList() []string {
+    p.expect(token.LPAREN)
+
+    pl := make([]string, 0)
+
+    if !p.accept(token.LPAREN) {
+        pl = append(pl, p.ParseTypeExpr())
+
+        for p.accept(token.COMMA) {
+            pl = append(pl, p.ParseTypeExpr())
+        }
+        p.expect(token.RPAREN)
+    }
+    return pl
 }

@@ -33,7 +33,7 @@ exprInd := ( exprInd |
 
 exprIndexed := '[' expr ']' | '.' exprId
 
-exprFlow := exprIf | exprFor | exprWhile | exprFunctionCall
+exprFlow := exprIf | exprFor | exprFunctionCall
 
 exprControl := 'break' expr? | 'return' expr?
 
@@ -46,7 +46,6 @@ exprParen := '(' exprList ')'
 
 exprIf := 'if' exprList exprScope ('else' (exprIf | exprScope))?
 exprFor := 'for' '[]'? exprList exprScope
-exprWhile := 'while' '[]'? exprList exprScope
 exprFunctionCall := ( exprId |
                     exprInd |
                     exprGroup |

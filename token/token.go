@@ -37,7 +37,6 @@ const (
     CONST
     FOR
     RANGE
-    WHILE
     IF
     ELSE
     BREAK
@@ -117,7 +116,7 @@ var tok_strings = map[Token]string {
     FLOATTYPE:  "float",
     BOOLTYPE:   "boolean",
     STRTYPE:    "string",
-    FUNCTYPE:   "function",
+    FUNCTYPE:   "func",
     ARRAYTYPE:  "array",
     OBJECTTYPE: "object",
     ANYTYPE:    "any",
@@ -125,7 +124,6 @@ var tok_strings = map[Token]string {
     CONST:      "const",
     FOR:        "for",
     RANGE:      "range",
-    WHILE:      "while",
     IF:         "if",
     ELSE:       "else",
     BREAK:      "break",

@@ -1,79 +1,57 @@
-extern crate lalrpop_util;
+//! Tigr CLI.
+//!
+//! Usage: `tigr <file.tg>`
+//!
+//! The `--legacy` flag is reserved for re-enabling the v0.1 tree-walking
+//! interpreter once `src/v01/` is wired back into the build.
 
-pub mod ast;
-pub mod interpreter;
-pub mod parser;
-mod syntax;
-mod lexer;
-
-use interpreter::Eval;
-use std::env;
-use std::error::Error;
-use std::io::Read;
-use std::fs::File;
 use std::path::Path;
-use std::ffi::OsStr;
+use std::process::ExitCode;
 
-use lalrpop_util::ParseError;
-
-fn main() {
-    let args : Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        panic!("Please provide tigr source file\n\nUsage: \"vl <sourcefile>\"");
-    }
-    run(&args[1]);
-}
-
-fn run(filename: &String) {
-    let mut s = String::new();
-    let path = Path::new(filename);
-    let display = path.display();
-
-    let mut file = match File::open(&path) {
-        Err(why) => panic!("Couldn't open {}: {}", display, why.description()),
-        Ok(file) => file,
-    };
-
-    //TODO error checking here
-    file.read_to_string(&mut s).unwrap();
-
-    let lexer = lexer::Lexer::new(&s);
-    match parser::parse_Block(lexer){
-        Ok(s) => { output_success(s, &path.parent().unwrap()); },
-        Err(e) => { output_error(path.file_name().unwrap(), e, &s); },
-    };
-}
-
-fn output_success(parsed: Box<ast::Expr>, path: &Path) {
-    //println!("Parsed:\n{:?}\n", parsed);
-
-    let mut e = Eval::new();
-    let evaluated = e.evaluate(*parsed, &path.to_str().unwrap());
-
-    println!("Program:\n{:?}\n", evaluated);
-    //e.print();
-}
-
-fn output_error(display: &OsStr, error: ParseError<usize, syntax::Token, lexer::LexicalError>, source: &str) {
-    match error {
-        ParseError::User{ error: lexer::LexicalError::InvalidToken(line, token, char_index) } |
-        ParseError::UnrecognizedToken{ token: Some((line, token, char_index)), expected:_ } => {
-            let mut char_index = char_index;
-            let mut error_line = "";
-            for (i, lin) in source.lines().enumerate() {
-                if i == line - 1 {
-                    error_line = lin;
-                    break;
-                }
-                char_index -= if char_index >= lin.len() + 1 { lin.len() + 1 } else { char_index };
-            }
-            println!("{:?}: Unexpected Character {:?} on line: {}\n", display, token, line);
-            println!("{}", error_line);
-            println!("{:indent$}└> Unexpected Character", "", indent=char_index);
-        },
-        e => println!("{:?}", e),
-    }
-}
+mod v01;
+mod vm;
 
 #[cfg(test)]
 mod tests;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    let mut filename: Option<&str> = None;
+    let mut legacy = false;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--legacy" => legacy = true,
+            "-h" | "--help" => {
+                print_usage();
+                return ExitCode::SUCCESS;
+            }
+            other => filename = Some(other),
+        }
+    }
+    let Some(filename) = filename else {
+        print_usage();
+        return ExitCode::FAILURE;
+    };
+    if legacy {
+        eprintln!(
+            "tigr: --legacy mode is not currently wired in. \
+             See src/v01/mod.rs for restoration instructions."
+        );
+        return ExitCode::FAILURE;
+    }
+    match vm::run_file(Path::new(filename)) {
+        Ok(value) => {
+            println!("{value:?}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_usage() {
+    eprintln!("usage: tigr <file.tg>");
+    eprintln!("       tigr --legacy <file.tg>   (v0.1 interpreter; not currently wired)");
+}

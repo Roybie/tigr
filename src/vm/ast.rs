@@ -185,6 +185,60 @@ pub enum ObjectMember {
     Spread(SpannedExpr),
 }
 
+// ---------------- match patterns (v0.5) ----------------
+
+/// A literal value usable in a `match` pattern. Kept separate from the
+/// full `Expr` so pattern-land never drags in arbitrary expressions.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiteralPat {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+}
+
+/// A refutable pattern in a `match` arm (v0.5, spec §match). Distinct
+/// from `Pattern` (which is irrefutable: it always binds, with missing
+/// values → `null`). A `MatchPattern` can *fail* to match, in which
+/// case the next arm is tried.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchPattern {
+    /// Matches if the subject `==` this literal.
+    Literal(LiteralPat),
+    /// Bare name — matches anything, binds the subject to `name`.
+    Binding(String),
+    /// `_` — matches anything, binds nothing.
+    Wildcard,
+    /// `[p1, p2, ...rest?]` — subject must be an Array of the right
+    /// length (exact, or `>= items.len()` when `rest` is present).
+    Array { items: Vec<MatchPattern>, rest: Option<String> },
+    /// `${k: subpat, shorthand, ...rest?}` — subject must be an Object.
+    Object { fields: Vec<MatchField>, rest: Option<String> },
+    /// `from..to` / `from..=to` — subject must be a number in range.
+    Range { from: LiteralPat, to: LiteralPat, inclusive: bool },
+    /// `p1 | p2 | ...` — matches if any alternative matches. By v0.5
+    /// rule, alternatives may not bind variables.
+    Or(Vec<MatchPattern>),
+}
+
+/// One field of a `match` object pattern.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchField {
+    pub key: String,
+    /// `None` for shorthand `${name}` (binds the value to `name`);
+    /// `Some(p)` for `${key: p}`.
+    pub pattern: Option<MatchPattern>,
+}
+
+/// One arm of a `match` expression.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub guard: Option<SpannedExpr>,
+    pub body: SpannedExpr,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     // Literals
@@ -325,6 +379,14 @@ pub enum Expr {
     // `str`). Like `break`/`return`, the runtime never reaches consumers
     // of this expression.
     Raise(Box<SpannedExpr>),
+
+    // `match subject { pat => body, pat if guard => body, ... }`
+    // (v0.5). Arms are tried top-to-bottom; the value is the body of
+    // the first matching arm, or `null` if no arm matches.
+    Match {
+        subject: Box<SpannedExpr>,
+        arms: Vec<MatchArm>,
+    },
 }
 
 #[allow(dead_code)] // Eq..Or land in Phase 2
@@ -347,6 +409,12 @@ pub enum BinOp {
     // Logical (Phase 2+)
     And,
     Or,
+    // Bitwise (v0.5) — Int-only
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[allow(dead_code)] // Len lands in Phase 3
@@ -355,4 +423,5 @@ pub enum UnOp {
     Neg,
     Not,
     Len,
+    BitNot,
 }

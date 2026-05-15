@@ -1,0 +1,20 @@
+// v0.5 — the `type()` builtin
+
+print(type(42));            // int
+print(type(3.14));          // float
+print(type('hi'));          // string
+print(type(true));          // bool
+print(type(null));          // null
+print(type([1, 2, 3]));     // array
+print(type(${a: 1}));       // object
+print(type(0..10));         // range
+print(type(fn(x) { x }));   // function
+print(type(print));         // function  (builtins report "function" too)
+
+// A small dispatch helper built on type().
+describe := fn(v) {
+    'a {type(v)} with value {v}'
+};
+print(describe(7));
+print(describe([1, 2]));
+'done'

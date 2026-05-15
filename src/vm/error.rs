@@ -110,6 +110,7 @@ pub enum CompileErrorKind {
     JumpTooFar,
     BreakOutsideLoop,
     SpreadInInvalidPosition,
+    InvalidMatchPattern(String),
 }
 
 impl fmt::Display for CompileError {
@@ -135,6 +136,9 @@ impl fmt::Display for CompileError {
             CompileErrorKind::SpreadInInvalidPosition => f.write_str(
                 "spread `...` is only allowed in array literals, call args, or object literals"
             ),
+            CompileErrorKind::InvalidMatchPattern(msg) => {
+                write!(f, "invalid match pattern: {}", msg)
+            }
         }
     }
 }

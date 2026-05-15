@@ -48,10 +48,12 @@ const BUILTINS: &[Spec] = &[
     Spec { name: "floor", arity: Arity::Exact(1), func: native_floor },
     Spec { name: "ceil",  arity: Arity::Exact(1), func: native_ceil },
     Spec { name: "rand",  arity: Arity::Exact(0), func: native_rand },
+    Spec { name: "type",  arity: Arity::Exact(1), func: native_type },
 ];
 
-const BUILTIN_NAMES: [&str; 9] = [
+const BUILTIN_NAMES: [&str; 10] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
+    "type",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -69,6 +71,17 @@ fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn native_str(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Str(format!("{}", args[0]).into()))
+}
+
+/// Name the runtime type of a value. `Function` and `NativeFn` both
+/// report `"function"` — the user-facing question is "is it callable",
+/// not how the callable is implemented.
+fn native_type(args: &[Value]) -> Result<Value, RuntimeError> {
+    let name = match &args[0] {
+        Value::NativeFn(_) => "function",
+        other => other.type_name(),
+    };
+    Ok(Value::Str(name.into()))
 }
 
 /// Parse a number from a string; pass through if already a number.

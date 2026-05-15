@@ -34,13 +34,13 @@ fn render_err(src: &str) -> String {
 
 #[test]
 fn phase1_arith() {
-    let src = "x := 2 + 3 * 4; y := x ^ 2 / 7; y";
+    let src = "x := 2 + 3 * 4; y := x ^^ 2 / 7; y";
     assert_eq!(run(src), Value::Int(28));
 }
 
 #[test]
 fn phase1_precedence() {
-    assert_eq!(run("1 + 2 * 3 ^ 2"), Value::Int(19));
+    assert_eq!(run("1 + 2 * 3 ^^ 2"), Value::Int(19));
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn phase1_block_trailing_semi_is_null() {
 
 #[test]
 fn phase1_floats() {
-    let v = run("pi := 3.14; r := 5; pi * r ^ 2");
+    let v = run("pi := 3.14; r := 5; pi * r ^^ 2");
     match v {
         Value::Float(x) => assert!((x - 78.5).abs() < 1e-9, "got {x}"),
         _ => panic!("expected float, got {v:?}"),
@@ -82,7 +82,7 @@ fn phase1_int_div_returns_float_when_uneven() {
 
 #[test]
 fn phase1_pow_always_float() {
-    match run("2 ^ 3") {
+    match run("2 ^^ 3") {
         Value::Float(x) => assert!((x - 8.0).abs() < 1e-9, "got {x}"),
         v => panic!("expected float, got {v:?}"),
     }
@@ -2699,4 +2699,267 @@ fn v04_render_repl_uses_repl_filename() {
     let out = err.render(&repl.sources());
     assert!(out.contains("<repl:"), "expected <repl:N> filename — got:\n{out}");
     assert!(out.contains("error[runtime]: division by zero"), "got:\n{out}");
+}
+
+// ---- v0.5: type() builtin ----
+
+#[test]
+fn v05_type_of_scalars() {
+    assert_eq!(run("type(1)"), Value::Str("int".into()));
+    assert_eq!(run("type(1.0)"), Value::Str("float".into()));
+    assert_eq!(run("type('x')"), Value::Str("string".into()));
+    assert_eq!(run("type(true)"), Value::Str("bool".into()));
+    assert_eq!(run("type(null)"), Value::Str("null".into()));
+}
+
+#[test]
+fn v05_type_of_collections() {
+    assert_eq!(run("type([1, 2])"), Value::Str("array".into()));
+    assert_eq!(run("type(${a: 1})"), Value::Str("object".into()));
+    assert_eq!(run("type(0..3)"), Value::Str("range".into()));
+}
+
+#[test]
+fn v05_type_of_callables_is_function() {
+    // Both user closures and native builtins report "function".
+    assert_eq!(run("type(fn(x) { x })"), Value::Str("function".into()));
+    assert_eq!(run("type(print)"), Value::Str("function".into()));
+}
+
+#[test]
+fn v05_type_arity_errors() {
+    assert!(run_err("type()").contains("arity") || !run_err("type()").is_empty());
+    assert!(!run_err("type(1, 2)").is_empty());
+}
+
+// ---- v0.5: bitwise operators ----
+
+#[test]
+fn v05_bitwise_basic() {
+    assert_eq!(run("6 & 3"), Value::Int(2));
+    assert_eq!(run("6 | 3"), Value::Int(7));
+    assert_eq!(run("5 ^ 3"), Value::Int(6));
+    assert_eq!(run("~0"), Value::Int(-1));
+    assert_eq!(run("~5"), Value::Int(-6));
+}
+
+#[test]
+fn v05_bitwise_shifts() {
+    assert_eq!(run("1 << 4"), Value::Int(16));
+    assert_eq!(run("256 >> 2"), Value::Int(64));
+    // `>>` is arithmetic — sign-preserving.
+    assert_eq!(run("-8 >> 1"), Value::Int(-4));
+}
+
+#[test]
+fn v05_pow_moved_to_double_caret() {
+    match run("2 ^^ 10") {
+        Value::Float(x) => assert!((x - 1024.0).abs() < 1e-9, "got {x}"),
+        v => panic!("expected float, got {v:?}"),
+    }
+}
+
+#[test]
+fn v05_bitwise_precedence() {
+    // `|` < `^` < `&`, all below comparison: `1 == 1 & 1` is `1 == (1 & 1)`.
+    assert_eq!(run("1 == 1 & 1"), Value::Bool(true));
+    // shift below additive: `1 + 1 << 2` == `(1 + 1) << 2` == 8.
+    assert_eq!(run("1 + 1 << 2"), Value::Int(8));
+    // shift above multiplicative: `2 << 1 * 2` is `2 << (1 * 2)` == 8.
+    assert_eq!(run("2 << 1 * 2"), Value::Int(8));
+    // `&` binds tighter than `|`: `1 | 2 & 0` == `1 | (2 & 0)` == 1.
+    assert_eq!(run("1 | 2 & 0"), Value::Int(1));
+}
+
+#[test]
+fn v05_bitwise_type_errors() {
+    assert!(!run_err("1.5 & 2").is_empty());
+    assert!(!run_err("'x' | 1").is_empty());
+    assert!(!run_err("~true").is_empty());
+}
+
+#[test]
+fn v05_shift_out_of_range_raises() {
+    // Must raise, not panic.
+    assert!(!run_err("1 << 64").is_empty());
+    assert!(!run_err("1 << -1").is_empty());
+    assert!(!run_err("1 >> 99").is_empty());
+}
+
+#[test]
+fn v05_bare_amp_and_pipe_lex() {
+    // Bare `&` / `|` were lex errors before v0.5; now they tokenize.
+    assert_eq!(run("12 & 10 | 1"), Value::Int(9));
+}
+
+// ---- v0.5: match expression ----
+
+#[test]
+fn v05_match_literal() {
+    assert_eq!(
+        run("match 1 { 0 => 'a', 1 => 'b', _ => 'c' }"),
+        Value::Str("b".into()),
+    );
+}
+
+#[test]
+fn v05_match_non_exhaustive_is_null() {
+    assert_eq!(run("match 9 { 1 => 'a', 2 => 'b' }"), Value::Null);
+}
+
+#[test]
+fn v05_match_wildcard_and_binding() {
+    assert_eq!(run("match 99 { _ => 'any' }"), Value::Str("any".into()));
+    assert_eq!(run("match 7 { x => x * 2 }"), Value::Int(14));
+}
+
+#[test]
+fn v05_match_negative_literal() {
+    assert_eq!(
+        run("match -1 { -1 => 'negone', _ => 'other' }"),
+        Value::Str("negone".into()),
+    );
+}
+
+#[test]
+fn v05_match_range() {
+    let g = "fn(s) { match s { 90..=100 => 'A', 80..=89 => 'B', _ => 'F' } }";
+    assert_eq!(run(&format!("({g})(95)")), Value::Str("A".into()));
+    assert_eq!(run(&format!("({g})(85)")), Value::Str("B".into()));
+    assert_eq!(run(&format!("({g})(50)")), Value::Str("F".into()));
+}
+
+#[test]
+fn v05_match_range_exclusive() {
+    assert_eq!(run("match 10 { 0..10 => 'in', _ => 'out' }"), Value::Str("out".into()));
+    assert_eq!(run("match 9 { 0..10 => 'in', _ => 'out' }"), Value::Str("in".into()));
+}
+
+#[test]
+fn v05_match_range_non_number_falls_through() {
+    // A string subject must not raise against a range pattern.
+    assert_eq!(
+        run("match 'x' { 0..10 => 'n', _ => 'other' }"),
+        Value::Str("other".into()),
+    );
+}
+
+#[test]
+fn v05_match_array_exact_and_mismatch() {
+    assert_eq!(run("match [1, 2] { [a, b] => a + b, _ => -1 }"), Value::Int(3));
+    assert_eq!(
+        run("match [1, 2, 3] { [a, b] => 'two', _ => 'other' }"),
+        Value::Str("other".into()),
+    );
+}
+
+#[test]
+fn v05_match_array_rest() {
+    assert_eq!(run("match [1, 2, 3, 4] { [h, ...t] => h + #t }"), Value::Int(4));
+}
+
+#[test]
+fn v05_match_array_on_non_array_falls_through() {
+    assert_eq!(
+        run("match 5 { [a, b] => 'arr', _ => 'scalar' }"),
+        Value::Str("scalar".into()),
+    );
+}
+
+#[test]
+fn v05_match_object() {
+    let src = "area := fn(s) {
+        match s {
+            ${kind: 'rect', w, h} => w * h,
+            ${kind: 'square', side} => side * side,
+            _ => 0
+        }
+    };
+    area(${kind: 'rect', w: 3, h: 4})";
+    assert_eq!(run(src), Value::Int(12));
+}
+
+#[test]
+fn v05_match_object_missing_literal_field_fails() {
+    assert_eq!(
+        run("match ${w: 1} { ${kind: 'rect'} => 'rect', _ => 'no' }"),
+        Value::Str("no".into()),
+    );
+}
+
+#[test]
+fn v05_match_object_on_non_object_falls_through() {
+    assert_eq!(
+        run("match 5 { ${a} => 'obj', _ => 'no' }"),
+        Value::Str("no".into()),
+    );
+}
+
+#[test]
+fn v05_match_nested_pattern() {
+    assert_eq!(
+        run("match ${pt: [3, 4]} { ${pt: [x, y]} => x * x + y * y, _ => -1 }"),
+        Value::Int(25),
+    );
+}
+
+#[test]
+fn v05_match_guard() {
+    let f = "fn(n) { match n { x if x < 0 => 'neg', _ => 'ok' } }";
+    assert_eq!(run(&format!("({f})(-5)")), Value::Str("neg".into()));
+    // Guard fails → fall through to the next arm.
+    assert_eq!(run(&format!("({f})(5)")), Value::Str("ok".into()));
+}
+
+#[test]
+fn v05_match_or_pattern() {
+    assert_eq!(run("match 2 { 1 | 2 | 3 => 'low', _ => 'high' }"), Value::Str("low".into()));
+    assert_eq!(run("match 9 { 1 | 2 | 3 => 'low', _ => 'high' }"), Value::Str("high".into()));
+}
+
+#[test]
+fn v05_match_or_pattern_binding_is_compile_error() {
+    // A binding alternative inside an or-pattern is rejected.
+    assert!(!run_err("match 1 { a | 2 => 0, _ => 0 }").is_empty());
+}
+
+#[test]
+fn v05_match_subject_evaluated_once() {
+    let src = "count := 0;
+               inc := fn() { count = count + 1; count };
+               match inc() { _ => null };
+               count";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v05_match_body_is_scope() {
+    assert_eq!(run("match 5 { n => { d := n * 2; d + 1 } }"), Value::Int(11));
+}
+
+#[test]
+fn v05_match_is_a_value() {
+    assert_eq!(run("x := match 1 { 1 => 10, _ => 0 }; x + 5"), Value::Int(15));
+}
+
+#[test]
+fn v05_match_trailing_comma_optional() {
+    assert_eq!(run("match 1 { 1 => 'a', _ => 'b', }"), Value::Str("a".into()));
+    assert_eq!(run("match 1 { 1 => 'a', _ => 'b' }"), Value::Str("a".into()));
+}
+
+#[test]
+fn v05_match_arm_binding_captured_by_closure() {
+    // A closure created in an arm body captures the pattern binding;
+    // the per-arm Unwind must close that upvalue, not discard it.
+    let src = "f := match [10] { [x] => fn() { x + 1 }, _ => fn() { 0 } };
+               f()";
+    assert_eq!(run(src), Value::Int(11));
+}
+
+#[test]
+fn v05_match_in_loop_with_break() {
+    // `match` nested in a loop; an arm can drive `break`.
+    let src = "for (i, 0..10) { match i { 3 => break (i * 100), _ => i } }";
+    assert_eq!(run(src), Value::Int(300));
 }

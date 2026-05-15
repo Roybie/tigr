@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.4**: the v0.3 release plus rendered errors with source snippets, extended number literals, fuller destructuring, and a `JSON` module. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.5**: the v0.4 release plus a `type()` built-in, bitwise operators, and a `match` expression. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -23,7 +23,7 @@ cargo build --release
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/) and v0.4 demos in [`examples/v04/`](examples/v04/).
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), and v0.5 demos in [`examples/v05/`](examples/v05/).
 
 ---
 
@@ -157,13 +157,26 @@ Strings are immutable.
 
 ## Arithmetic and comparison
 
-`+ - * / % ^` (`^` is power, always returns `Float`).
+`+ - * / % ^^` (`^^` is power, always returns `Float`).
 
 Integer division stays `Int` when it divides evenly, otherwise becomes `Float`: `6 / 2 == 3` but `7 / 2 == 3.5`.
 
 Mixed `Int`/`Float` arithmetic returns `Float`. `%` follows the sign of the dividend.
 
 Comparison: `== != < > <= >=`. Equality across types is always false except `Int`/`Float` compare numerically. Arrays and objects compare structurally (element-/key-wise).
+
+## Bitwise operators
+
+`& | ^ ~ << >>` operate on `Int` only — any other operand raises. `^` is bitwise XOR (exponentiation is the separate `^^`). `>>` is an arithmetic, sign-preserving shift; a shift amount outside `0..64` raises.
+
+```
+0b1100 & 0b1010      // 8
+0b1100 | 0b1010      // 14
+0b1100 ^ 0b1010      // 6      bitwise XOR
+~0                   // -1
+1 << 8               // 256
+-16 >> 2             // -4     arithmetic shift
+```
 
 ---
 
@@ -353,6 +366,54 @@ Built-in runtime errors (division by zero, type mismatch, out-of-bounds, missing
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 
+### `match`
+
+`match` evaluates a subject once and tries each comma-separated arm top-to-bottom, yielding the body of the first arm whose pattern (and optional `if` guard) matches. With no matching arm it evaluates to `null` — non-exhaustive, like an `if` with no `else`. It's an expression.
+
+```
+grade := match score {
+    90..=100 => 'A',
+    80..=89  => 'B',
+    70..=79  => 'C',
+    _        => 'F',
+};
+```
+
+Match patterns are *refutable* — they can fail and fall through (unlike the destructuring patterns of the previous section). The pattern kinds:
+
+- **Literal** — `0`, `'hi'`, `true`, `null`, `-1` — matches if the subject `==` it.
+- **Binding** — a bare name; matches anything and binds it for the arm.
+- **Wildcard** — `_`; matches anything, binds nothing.
+- **Range** — `0..10` / `0..=9`; matches a number in range (a non-number just fails).
+- **Array** — `[a, b]` (exact length) or `[head, ...rest]` (length ≥ 1).
+- **Object** — `${kind: 'circle', r}`; sub-pattern fields must match, shorthand fields bind (missing key → `null`).
+- **Or-pattern** — `1 | 2 | 3`; matches any alternative. Alternatives may not bind variables.
+
+```
+area := fn(shape) {
+    match shape {
+        ${kind: 'circle', r}  => 3.14159 * r ^^ 2,
+        ${kind: 'rect', w, h} => w * h,
+        _                     => raise 'unknown shape',
+    }
+};
+
+sum := fn(xs) {
+    match xs {
+        []            => 0,
+        [head, ...tl] => head + sum(tl),
+    }
+};
+
+classify := match n {
+    x if x < 0 => 'negative',
+    0          => 'zero',
+    _          => 'positive',
+};
+```
+
+Each arm body runs in its own scope; pattern bindings and a guard see those names.
+
 ---
 
 ## Functions
@@ -509,6 +570,7 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | `floor` | `floor(x) -> Int`          | Round down                                 |
 | `ceil`  | `ceil(x) -> Int`           | Round up                                   |
 | `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`                        |
+| `type`  | `type(x) -> String`        | Name of the value's type (`'int'`, `'array'`, `'function'`, ...) |
 
 `str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
 
@@ -709,27 +771,31 @@ Low to high, with associativity:
 | 2     | `\|\|`                                          | left  |
 | 3     | `&&`                                            | left  |
 | 4     | `==` `!=` `<` `>` `<=` `>=`                     | left  |
-| 5     | `\|>`                                           | left  |
-| 6     | `..` `..=` (with optional `:step`)              | n/a   |
-| 7     | `+` `-`                                         | left  |
-| 8     | `*` `/` `%`                                     | left  |
-| 9     | `^`                                             | right |
-| 10    | unary `-` `!` `#`                               | n/a   |
-| 11    | call `f(...)`, index `a[i]`, member `a.b`       | left  |
+| 5     | `\|` (bitwise OR)                               | left  |
+| 6     | `^` (bitwise XOR)                               | left  |
+| 7     | `&` (bitwise AND)                               | left  |
+| 8     | `\|>`                                           | left  |
+| 9     | `..` `..=` (with optional `:step`)              | n/a   |
+| 10    | `<<` `>>`                                       | left  |
+| 11    | `+` `-`                                         | left  |
+| 12    | `*` `/` `%`                                     | left  |
+| 13    | `^^` (exponentiation)                           | right |
+| 14    | unary `-` `!` `#` `~`                           | n/a   |
+| 15    | call `f(...)`, index `a[i]`, member `a.b`       | left  |
 
 ---
 
 ## Status
 
-**v0.4 is feature-complete.** 265 tests pass. On top of v0.3, v0.4 adds:
+**v0.5 is feature-complete.** 299 tests pass. On top of v0.4, v0.5 adds:
 
-1. **Rendered errors** — filename, source line, and caret/underline for lex/parse/compile errors (or just the source line for runtime errors). Imports register each source so errors inside an imported file render against THAT file. Same machinery powers REPL error display.
-2. **Number-literal extensions** — `0xFF`, `0b1010`, `0o755`, `1_000_000`, `1e6`, `2.5e-3`, `.5`. Underscores allowed only between digits; trailing `5.` continues to lex as `Int(5) Dot` so `5.method` works.
-3. **Patterns on `=`** and **mid-expression decls** — `[a, b] = [3, 4]` reassigns existing bindings; `arr := ([a, b] := [3, 4])` introduces `a`/`b` in the enclosing scope and evaluates to the rhs.
-4. **`JSON` native module** — `parse` and `stringify` (compact or indented). Numbers always parse as `Float`.
+1. **`type()` built-in** — names a value's runtime type. User closures and native built-ins both report `'function'`.
+2. **Bitwise operators** — `& | ^ ~ << >>`, `Int`-only. `^` is bitwise XOR; exponentiation moved to the new `^^` operator (the one breaking change). `>>` is an arithmetic shift; out-of-range shift amounts raise.
+3. **`match` expression** — refutable pattern matching: literal/binding/wildcard/range/array/object/or-patterns, optional `if` guards, comma-separated arms. Non-exhaustive (no match → `null`); or-pattern alternatives may not bind.
 
 Earlier releases:
 
+- **v0.4**: rendered errors with source snippets, extended number literals (`0xFF`/`1e6`/`.5`/`_`), patterns on `=` + mid-expression decls, `JSON` module.
 - **v0.3**: `try`/`catch`/`raise`, module caching + bare-name dispatch, native modules (`IO`/`Os`/`Time`), source-stdlib (`Array`/`String`/`Math`), interactive REPL.
 - **v0.2**: bytecode VM, closures with Lox-style upvalues, first-class ranges, destructuring patterns, pipe `|>`, spread `...`, string interpolation.
 

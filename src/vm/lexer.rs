@@ -156,7 +156,11 @@ impl<'src> Lexer<'src> {
             }
             '^' => {
                 self.advance();
-                Ok(Token::Caret)
+                Ok(if self.matches('^') { Token::CaretCaret } else { Token::Caret })
+            }
+            '~' => {
+                self.advance();
+                Ok(Token::Tilde)
             }
             '#' => {
                 self.advance();
@@ -226,7 +230,13 @@ impl<'src> Lexer<'src> {
             }
             '=' => {
                 self.advance();
-                Ok(if self.matches('=') { Token::EqEq } else { Token::Eq })
+                Ok(if self.matches('=') {
+                    Token::EqEq
+                } else if self.matches('>') {
+                    Token::FatArrow
+                } else {
+                    Token::Eq
+                })
             }
             '!' => {
                 self.advance();
@@ -234,22 +244,27 @@ impl<'src> Lexer<'src> {
             }
             '<' => {
                 self.advance();
-                Ok(if self.matches('=') { Token::LtEq } else { Token::Lt })
+                Ok(if self.matches('=') {
+                    Token::LtEq
+                } else if self.matches('<') {
+                    Token::Shl
+                } else {
+                    Token::Lt
+                })
             }
             '>' => {
                 self.advance();
-                Ok(if self.matches('=') { Token::GtEq } else { Token::Gt })
+                Ok(if self.matches('=') {
+                    Token::GtEq
+                } else if self.matches('>') {
+                    Token::Shr
+                } else {
+                    Token::Gt
+                })
             }
             '&' => {
                 self.advance();
-                if self.matches('&') {
-                    Ok(Token::AmpAmp)
-                } else {
-                    Err(LexError::new(
-                        LexErrorKind::InvalidChar('&'),
-                        Span::new(start, self.pos, line),
-                    ))
-                }
+                Ok(if self.matches('&') { Token::AmpAmp } else { Token::Amp })
             }
             '|' => {
                 self.advance();
@@ -258,10 +273,7 @@ impl<'src> Lexer<'src> {
                 } else if self.matches('>') {
                     Ok(Token::PipeGt)
                 } else {
-                    Err(LexError::new(
-                        LexErrorKind::InvalidChar('|'),
-                        Span::new(start, self.pos, line),
-                    ))
+                    Ok(Token::Pipe)
                 }
             }
             other => {
@@ -462,6 +474,7 @@ impl<'src> Lexer<'src> {
             "try" => Token::Try,
             "catch" => Token::Catch,
             "raise" => Token::Raise,
+            "match" => Token::Match,
             _ => Token::Ident(lexeme.to_string()),
         }
     }

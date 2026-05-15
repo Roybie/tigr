@@ -1,6 +1,6 @@
 //! Hand-written precedence-climbing parser for Tigr.
 //!
-//! Phase 3 grammar:
+//! Grammar (v0.5):
 //!
 //! ```text
 //! Program     ::= Block
@@ -10,11 +10,17 @@
 //!               | LogicOr
 //! LogicOr     ::= LogicAnd ('||' LogicAnd)*
 //! LogicAnd    ::= Equality ('&&' Equality)*
-//! Equality    ::= Additive (('==' | '!=' | '<' | '>' | '<=' | '>=') Additive)*
+//! Equality    ::= BitOr (('==' | '!=' | '<' | '>' | '<=' | '>=') BitOr)*
+//! BitOr       ::= BitXor ('|' BitXor)*
+//! BitXor      ::= BitAnd ('^' BitAnd)*
+//! BitAnd      ::= Pipe ('&' Pipe)*
+//! Pipe        ::= Range ('|>' Range)*
+//! Range       ::= Shift (('..' | '..=') Shift (':' Shift)?)?
+//! Shift       ::= Additive (('<<' | '>>') Additive)*
 //! Additive    ::= Multiplicative (('+' | '-') Multiplicative)*
 //! Multiplicative ::= Power (('*' | '/' | '%') Power)*
-//! Power       ::= Unary ('^' Power)?              -- right-assoc
-//! Unary       ::= ('-' | '!' | '#') Unary | Postfix
+//! Power       ::= Unary ('^^' Power)?             -- right-assoc
+//! Unary       ::= ('-' | '!' | '#' | '~') Unary | Postfix
 //! Postfix     ::= Primary ( '[' Expr ']' | '.' IDENT | '(' Args? ')' )*
 //! Primary     ::= INT | FLOAT | STR | 'true' | 'false' | 'null' | IDENT
 //!               | '(' Block ')'
@@ -23,13 +29,15 @@
 //!               | '$' '{' (ObjPair (',' ObjPair)* ','?)? '}'  -- object literal
 //!               | 'if' Expr Scope ('else' (Scope | If))?
 //!               | 'while' Expr Scope
+//!               | 'match' Expr '{' (MatchArm (',' MatchArm)* ','?)? '}'
+//! MatchArm    ::= MatchPattern ('if' Expr)? '=>' Expr
 //! ObjPair     ::= (IDENT | STR) ':' Expr
 //! Args        ::= Expr (',' Expr)*
 //! ```
 
 use crate::vm::ast::{
-    expr_to_pattern, BinOp, Block, Expr, ObjectMember, Pattern,
-    SpannedExpr, TemplatePart, UnOp,
+    expr_to_pattern, BinOp, Block, Expr, LiteralPat, MatchArm, MatchField,
+    MatchPattern, ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
 };
 use crate::vm::error::{ParseError, ParseErrorKind};
 use crate::vm::lexer::Lexer;
@@ -236,7 +244,7 @@ impl Parser {
     }
 
     fn parse_equality(&mut self) -> Result<SpannedExpr, ParseError> {
-        let mut left = self.parse_pipe()?;
+        let mut left = self.parse_bit_or()?;
         loop {
             let op = match self.peek() {
                 Token::EqEq => BinOp::Eq,
@@ -248,10 +256,56 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_pipe()?;
+            let right = self.parse_bit_or()?;
             let span = left.span.join(right.span);
             left = SpannedExpr::new(
                 Expr::BinOp(op, Box::new(left), Box::new(right)),
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    /// Bitwise `|`. Below comparison, above `^` — Rust-style precedence
+    /// (`a & b == c` parses as `(a & b) == c`). Int-only at runtime.
+    fn parse_bit_or(&mut self) -> Result<SpannedExpr, ParseError> {
+        let mut left = self.parse_bit_xor()?;
+        while matches!(self.peek(), Token::Pipe) {
+            self.advance();
+            let right = self.parse_bit_xor()?;
+            let span = left.span.join(right.span);
+            left = SpannedExpr::new(
+                Expr::BinOp(BinOp::BitOr, Box::new(left), Box::new(right)),
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    /// Bitwise XOR `^`. (Exponentiation moved to `^^`.)
+    fn parse_bit_xor(&mut self) -> Result<SpannedExpr, ParseError> {
+        let mut left = self.parse_bit_and()?;
+        while matches!(self.peek(), Token::Caret) {
+            self.advance();
+            let right = self.parse_bit_and()?;
+            let span = left.span.join(right.span);
+            left = SpannedExpr::new(
+                Expr::BinOp(BinOp::BitXor, Box::new(left), Box::new(right)),
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    /// Bitwise `&`.
+    fn parse_bit_and(&mut self) -> Result<SpannedExpr, ParseError> {
+        let mut left = self.parse_pipe()?;
+        while matches!(self.peek(), Token::Amp) {
+            self.advance();
+            let right = self.parse_pipe()?;
+            let span = left.span.join(right.span);
+            left = SpannedExpr::new(
+                Expr::BinOp(BinOp::BitAnd, Box::new(left), Box::new(right)),
                 span,
             );
         }
@@ -284,17 +338,17 @@ impl Parser {
     /// Range parses as `Additive ('..' | '..=') Additive (':' Additive)?`.
     /// Non-associative; chaining `a..b..c` is a parse error.
     fn parse_range(&mut self) -> Result<SpannedExpr, ParseError> {
-        let left = self.parse_additive()?;
+        let left = self.parse_shift()?;
         let inclusive = match self.peek() {
             Token::DotDot => false,
             Token::DotDotEq => true,
             _ => return Ok(left),
         };
         self.advance();
-        let to = self.parse_additive()?;
+        let to = self.parse_shift()?;
         let step = if matches!(self.peek(), Token::Colon) {
             self.advance();
-            Some(Box::new(self.parse_additive()?))
+            Some(Box::new(self.parse_shift()?))
         } else {
             None
         };
@@ -309,6 +363,24 @@ impl Parser {
             },
             span,
         ))
+    }
+
+    /// Bit shifts `<<` `>>`. Looser than `+ -`, tighter than `&` —
+    /// Rust-style (`a + b << c` parses as `(a + b) << c`). Int-only.
+    /// `>>` is an arithmetic (sign-preserving) shift.
+    fn parse_shift(&mut self) -> Result<SpannedExpr, ParseError> {
+        let mut left = self.parse_additive()?;
+        while matches!(self.peek(), Token::Shl | Token::Shr) {
+            let op = if matches!(self.peek(), Token::Shl) { BinOp::Shl } else { BinOp::Shr };
+            self.advance();
+            let right = self.parse_additive()?;
+            let span = left.span.join(right.span);
+            left = SpannedExpr::new(
+                Expr::BinOp(op, Box::new(left), Box::new(right)),
+                span,
+            );
+        }
+        Ok(left)
     }
 
     fn parse_additive(&mut self) -> Result<SpannedExpr, ParseError> {
@@ -348,7 +420,7 @@ impl Parser {
 
     fn parse_power(&mut self) -> Result<SpannedExpr, ParseError> {
         let left = self.parse_unary()?;
-        if matches!(self.peek(), Token::Caret) {
+        if matches!(self.peek(), Token::CaretCaret) {
             self.advance();
             // right-assoc: recurse into parse_power, not parse_unary
             let right = self.parse_power()?;
@@ -367,6 +439,7 @@ impl Parser {
             Token::Minus => Some(UnOp::Neg),
             Token::Bang => Some(UnOp::Not),
             Token::Hash => Some(UnOp::Len),
+            Token::Tilde => Some(UnOp::BitNot),
             _ => None,
         };
         if let Some(op) = op {
@@ -496,6 +569,7 @@ impl Parser {
             Token::Import => self.parse_import(),
             Token::Try => self.parse_try(),
             Token::Raise => self.parse_raise(),
+            Token::Match => self.parse_match(),
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
     }
@@ -536,6 +610,179 @@ impl Parser {
         let value = self.parse_expr()?;
         let span = raise_span.join(value.span);
         Ok(SpannedExpr::new(Expr::Raise(Box::new(value)), span))
+    }
+
+    /// `match subject { pat => body, pat if guard => body, ... }`
+    /// (v0.5). Comma-separated arms, optional trailing comma. The
+    /// subject is a full expression; it stops before the `{` exactly
+    /// as an `if` condition does.
+    fn parse_match(&mut self) -> Result<SpannedExpr, ParseError> {
+        let match_span = self.expect(&Token::Match)?;
+        let subject = self.parse_expr()?;
+        self.expect(&Token::LBrace)?;
+        let mut arms: Vec<MatchArm> = Vec::new();
+        while !self.check(&Token::RBrace) {
+            let pattern = self.parse_match_pattern()?;
+            let guard = if self.matches(&Token::If) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect(&Token::FatArrow)?;
+            let body = self.parse_expr()?;
+            arms.push(MatchArm { pattern, guard, body });
+            if !self.matches(&Token::Comma) {
+                break;
+            }
+        }
+        let rbrace = self.expect(&Token::RBrace)?;
+        let span = match_span.join(rbrace);
+        Ok(SpannedExpr::new(
+            Expr::Match { subject: Box::new(subject), arms },
+            span,
+        ))
+    }
+
+    /// A `match` pattern, possibly an or-pattern `p1 | p2 | ...`. The
+    /// `|` here is unambiguously an or-separator — pattern grammar
+    /// never descends into expression-level bitwise-or.
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, ParseError> {
+        let first = self.parse_match_pattern_primary()?;
+        if !matches!(self.peek(), Token::Pipe) {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.matches(&Token::Pipe) {
+            alts.push(self.parse_match_pattern_primary()?);
+        }
+        Ok(MatchPattern::Or(alts))
+    }
+
+    fn parse_match_pattern_primary(&mut self) -> Result<MatchPattern, ParseError> {
+        match self.peek().clone() {
+            Token::Int(_) | Token::Float(_) | Token::Minus => {
+                let from = self.parse_numeric_literal_pat()?;
+                let inclusive = match self.peek() {
+                    Token::DotDot => false,
+                    Token::DotDotEq => true,
+                    _ => return Ok(MatchPattern::Literal(from)),
+                };
+                self.advance();
+                let to = self.parse_numeric_literal_pat()?;
+                Ok(MatchPattern::Range { from, to, inclusive })
+            }
+            Token::Str(s) => {
+                self.advance();
+                Ok(MatchPattern::Literal(LiteralPat::Str(s)))
+            }
+            Token::True => {
+                self.advance();
+                Ok(MatchPattern::Literal(LiteralPat::Bool(true)))
+            }
+            Token::False => {
+                self.advance();
+                Ok(MatchPattern::Literal(LiteralPat::Bool(false)))
+            }
+            Token::Null => {
+                self.advance();
+                Ok(MatchPattern::Literal(LiteralPat::Null))
+            }
+            Token::Ident(name) => {
+                self.advance();
+                if name == "_" {
+                    Ok(MatchPattern::Wildcard)
+                } else {
+                    Ok(MatchPattern::Binding(name))
+                }
+            }
+            Token::LBrack => self.parse_match_array_pattern(),
+            Token::Dollar => self.parse_match_object_pattern(),
+            other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
+        }
+    }
+
+    /// A numeric literal (with optional leading `-`) used in a literal
+    /// or range pattern.
+    fn parse_numeric_literal_pat(&mut self) -> Result<LiteralPat, ParseError> {
+        let neg = self.matches(&Token::Minus);
+        let span = self.peek_span();
+        match self.peek().clone() {
+            Token::Int(n) => {
+                self.advance();
+                Ok(LiteralPat::Int(if neg { -n } else { n }))
+            }
+            Token::Float(x) => {
+                self.advance();
+                Ok(LiteralPat::Float(if neg { -x } else { x }))
+            }
+            other => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken(other),
+                span,
+            )),
+        }
+    }
+
+    fn parse_match_array_pattern(&mut self) -> Result<MatchPattern, ParseError> {
+        self.expect(&Token::LBrack)?;
+        let mut items: Vec<MatchPattern> = Vec::new();
+        let mut rest: Option<String> = None;
+        while !self.check(&Token::RBrack) {
+            if matches!(self.peek(), Token::Ellipsis) {
+                let ellipsis_span = self.peek_span();
+                self.advance();
+                rest = Some(self.parse_ident_token()?);
+                if !self.check(&Token::RBrack) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidPattern(
+                            "`...rest` must be the last array element".into(),
+                        ),
+                        ellipsis_span,
+                    ));
+                }
+                break;
+            }
+            items.push(self.parse_match_pattern()?);
+            if !self.matches(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RBrack)?;
+        Ok(MatchPattern::Array { items, rest })
+    }
+
+    fn parse_match_object_pattern(&mut self) -> Result<MatchPattern, ParseError> {
+        self.expect(&Token::Dollar)?;
+        self.expect(&Token::LBrace)?;
+        let mut fields: Vec<MatchField> = Vec::new();
+        let mut rest: Option<String> = None;
+        while !self.check(&Token::RBrace) {
+            if matches!(self.peek(), Token::Ellipsis) {
+                let ellipsis_span = self.peek_span();
+                self.advance();
+                rest = Some(self.parse_ident_token()?);
+                if !self.check(&Token::RBrace) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidPattern(
+                            "`...rest` must be the last object field".into(),
+                        ),
+                        ellipsis_span,
+                    ));
+                }
+                break;
+            }
+            let key = self.parse_ident_token()?;
+            let pattern = if self.matches(&Token::Colon) {
+                Some(self.parse_match_pattern()?)
+            } else {
+                None
+            };
+            fields.push(MatchField { key, pattern });
+            if !self.matches(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(MatchPattern::Object { fields, rest })
     }
 
     fn parse_fn(&mut self) -> Result<SpannedExpr, ParseError> {

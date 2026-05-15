@@ -192,6 +192,30 @@ pub enum OpCode {
     /// REPL emits this at the end of each compiled line so the
     /// session state (locals at slots 1..M) survives between lines.
     Halt,
+
+    // -- v0.5 — bitwise (Int-only) --
+    /// Pop two, push `a & b`. Both must be Int.
+    BitAnd,
+    /// Pop two, push `a | b`. Both must be Int.
+    BitOr,
+    /// Pop two, push `a ^ b`. Both must be Int.
+    BitXor,
+    /// Pop one, push `!x` (bitwise complement). Must be Int.
+    BitNot,
+    /// Pop two, push `a << b`. Both Int; raises if `b` is out of
+    /// `0..64`.
+    Shl,
+    /// Pop two, push `a >> b` — arithmetic (sign-preserving) shift.
+    /// Both Int; raises if `b` is out of `0..64`.
+    Shr,
+
+    // -- v0.5 — match --
+    /// Peek the top of stack; push `Bool(true)` if its runtime type
+    /// matches the operand tag, else `Bool(false)`. Does NOT pop the
+    /// subject. Operand: u8 tag —
+    /// 0=Int 1=Float 2=Bool 3=Str 4=Array 5=Object 6=Range 7=Null
+    /// 8=Number(Int|Float) 9=callable(Function|NativeFn).
+    TypeTest,
 }
 
 impl OpCode {
@@ -253,6 +277,13 @@ impl OpCode {
             52 => PopTry,
             53 => Raise,
             54 => Halt,
+            55 => BitAnd,
+            56 => BitOr,
+            57 => BitXor,
+            58 => BitNot,
+            59 => Shl,
+            60 => Shr,
+            61 => TypeTest,
             _ => return None,
         })
     }
@@ -265,7 +296,7 @@ impl OpCode {
             LoadConst | LoadLocal | StoreLocal | CloseScope
             | MakeArray | MakeObject | Call
             | GetUpvalue | SetUpvalue | LoadGlobal
-            | MakeRange | IterAppend | Unwind | ConcatN => 1,
+            | MakeRange | IterAppend | Unwind | ConcatN | TypeTest => 1,
             // Closure has variable-length operands (1 byte fn_idx
             // followed by 2 bytes per captured upvalue) — the
             // disassembler handles it specially, so we report only the

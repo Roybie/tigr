@@ -12,7 +12,7 @@ isPrime := fn(n) {
     } else if !(n % 2) {
         false
     } else {
-        for (i, 2..floor(n^0.5) + 1:1) {
+        for (i, 2..floor(n^^0.5) + 1:1) {
             if !(n % i) {
                 return false
             }

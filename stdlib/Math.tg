@@ -18,7 +18,7 @@ ${
     sin:   _n.sin,
     cos:   _n.cos,
     tan:   _n.tan,
-    pow:   _n.pow,     // pow(x, y) — Float result; `^` works for both
+    pow:   _n.pow,     // pow(x, y) — Float result; `^^` works for both
 
     abs: fn(x) { if x < 0 { -x } else { x } },
 

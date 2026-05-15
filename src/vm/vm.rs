@@ -316,6 +316,35 @@ impl Vm {
                     self.stack.push(arith_neg(v, line)?);
                 }
 
+                OpCode::BitAnd => self.binop_arith(line, bit_and)?,
+                OpCode::BitOr => self.binop_arith(line, bit_or)?,
+                OpCode::BitXor => self.binop_arith(line, bit_xor)?,
+                OpCode::Shl => self.binop_arith(line, shl)?,
+                OpCode::Shr => self.binop_arith(line, shr)?,
+                OpCode::BitNot => {
+                    let v = self.stack.pop().ok_or_else(|| underflow(line))?;
+                    self.stack.push(bit_not(v, line)?);
+                }
+                OpCode::TypeTest => {
+                    let tag = chunk.code[ip];
+                    ip += 1;
+                    let v = self.stack.last().ok_or_else(|| underflow(line))?;
+                    let matched = match (tag, v) {
+                        (0, Value::Int(_)) => true,
+                        (1, Value::Float(_)) => true,
+                        (2, Value::Bool(_)) => true,
+                        (3, Value::Str(_)) => true,
+                        (4, Value::Array(_)) => true,
+                        (5, Value::Object(_)) => true,
+                        (6, Value::Range(_)) => true,
+                        (7, Value::Null) => true,
+                        (8, Value::Int(_) | Value::Float(_)) => true,
+                        (9, Value::Function(_) | Value::NativeFn(_)) => true,
+                        _ => false,
+                    };
+                    self.stack.push(Value::Bool(matched));
+                }
+
                 OpCode::Return => {
                     let result = self.stack.pop().ok_or_else(|| underflow(line))?;
                     let frame = self.frames.pop().unwrap();
@@ -1239,7 +1268,7 @@ fn arith_pow(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => (x as f64, y),
         (Float(x), Int(y)) => (x, y as f64),
         (Float(x), Float(y)) => (x, y),
-        (a, b) => return Err(type_err("^", &a, &b, line)),
+        (a, b) => return Err(type_err("^^", &a, &b, line)),
     };
     Ok(Float(x.powf(y)))
 }
@@ -1251,6 +1280,73 @@ fn arith_neg(a: Value, line: u32) -> Result<Value, RuntimeError> {
         Float(x) => Ok(Float(-x)),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!("cannot negate {}", other.type_name())),
+            line,
+        )),
+    }
+}
+
+// -- bitwise helpers (v0.5, spec §6.x) — Int-only --
+
+fn bit_and(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x & y)),
+        (a, b) => Err(type_err("&", &a, &b, line)),
+    }
+}
+
+fn bit_or(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x | y)),
+        (a, b) => Err(type_err("|", &a, &b, line)),
+    }
+}
+
+fn bit_xor(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x ^ y)),
+        (a, b) => Err(type_err("^", &a, &b, line)),
+    }
+}
+
+/// A shift amount must be a non-negative Int below 64; anything else
+/// raises rather than panicking (Rust's `<<`/`>>` panic in debug and
+/// are UB-shaped past the bit width).
+fn shift_amount(y: i64, op: &str, line: u32) -> Result<u32, RuntimeError> {
+    if (0..64).contains(&y) {
+        Ok(y as u32)
+    } else {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(format!(
+                "`{op}` shift amount {y} is out of range (0..64)"
+            )),
+            line,
+        ))
+    }
+}
+
+fn shl(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x << shift_amount(y, "<<", line)?)),
+        (a, b) => Err(type_err("<<", &a, &b, line)),
+    }
+}
+
+fn shr(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    match (a, b) {
+        // `>>` on a signed i64 is an arithmetic (sign-preserving) shift.
+        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x >> shift_amount(y, ">>", line)?)),
+        (a, b) => Err(type_err(">>", &a, &b, line)),
+    }
+}
+
+fn bit_not(a: Value, line: u32) -> Result<Value, RuntimeError> {
+    match a {
+        Value::Int(x) => Ok(Value::Int(!x)),
+        other => Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(format!(
+                "operator `~` does not apply to {}",
+                other.type_name()
+            )),
             line,
         )),
     }

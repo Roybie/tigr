@@ -37,7 +37,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::vm::ast::{
-    BinOp, Block, Expr, ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
+    BinOp, Block, Expr, LiteralPat, MatchArm, MatchPattern,
+    ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
 };
 use std::path::PathBuf;
 use crate::vm::chunk::Chunk;
@@ -503,7 +504,7 @@ impl Compiler {
             // +1: push something
             OpCode::LoadConst | OpCode::LoadLocal | OpCode::LoadGlobal
             | OpCode::GetUpvalue | OpCode::PushNull | OpCode::Dup
-            | OpCode::Closure => 1,
+            | OpCode::Closure | OpCode::TypeTest => 1,
             // +2
             OpCode::Dup2 => 2,
             // -1: pop one without pushing
@@ -512,7 +513,7 @@ impl Compiler {
             OpCode::StoreLocal | OpCode::SetUpvalue
             | OpCode::JumpIfFalse | OpCode::JumpIfTrue
             | OpCode::Jump | OpCode::Loop
-            | OpCode::Negate | OpCode::Not | OpCode::Len
+            | OpCode::Negate | OpCode::Not | OpCode::Len | OpCode::BitNot
             | OpCode::Import | OpCode::MakeIter
             | OpCode::PushTry | OpCode::PopTry => 0,
             // Raise pops its message. The runtime never reaches code
@@ -529,6 +530,8 @@ impl Compiler {
             OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
             | OpCode::Mod | OpCode::Pow | OpCode::Eq | OpCode::Neq
             | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
+            | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
+            | OpCode::Shl | OpCode::Shr
             | OpCode::IndexGet | OpCode::ArrayPush | OpCode::ArrayExtend
             | OpCode::ObjectMerge | OpCode::SliceFrom | OpCode::ObjRest
             | OpCode::IterAppend | OpCode::CallSpread => -1,
@@ -619,7 +622,8 @@ impl Compiler {
 
             // Stop boundaries — handle their own hoisting.
             Expr::Scope(_) | Expr::Fn { .. }
-            | Expr::While { .. } | Expr::For { .. } => {}
+            | Expr::While { .. } | Expr::For { .. }
+            | Expr::Match { .. } => {}
 
             Expr::BinOp(_, l, r) => {
                 self.visit_for_hoist(l, out);
@@ -781,6 +785,7 @@ impl Compiler {
                     UnOp::Neg => OpCode::Negate,
                     UnOp::Not => OpCode::Not,
                     UnOp::Len => OpCode::Len,
+                    UnOp::BitNot => OpCode::BitNot,
                 };
                 self.emit_op(opcode, line);
             }
@@ -822,6 +827,10 @@ impl Compiler {
 
             Expr::Raise(value) => {
                 self.compile_raise(value, line)?;
+            }
+
+            Expr::Match { subject, arms } => {
+                self.compile_match(subject, arms, e.span)?;
             }
 
             Expr::Decl(pat, init) => {
@@ -1251,6 +1260,280 @@ impl Compiler {
         self.compile_expr(else_branch)?;
         self.patch_jump(to_end)?;
         Ok(())
+    }
+
+    /// `match` expression (v0.5). Lowering — the subject lives in an
+    /// anonymous slot `S`, the running result in `$match_result` (`R`,
+    /// default `null`). Each arm runs its own scope; a refutable test
+    /// `JumpIfFalse`s to the arm's fail label on mismatch, where
+    /// `Unwind base_height` clears any partial pattern slots before the
+    /// next arm. A matched arm stores its body value into `R` and
+    /// jumps to the end. If no arm matches, `R` is still `null`.
+    fn compile_match(
+        &mut self,
+        subject: &SpannedExpr,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let line = span.line;
+        self.begin_scope();
+
+        // Subject: hoist any mid-expression `:=` it contains, then
+        // compile it into the anonymous subject slot S.
+        let mut subj_hoist = Vec::new();
+        self.visit_for_hoist(subject, &mut subj_hoist);
+        self.emit_hoist_prologue(subj_hoist, span)?;
+        self.compile_expr(subject)?;
+        self.declare_local("", span)?;
+        let subject_slot = self.current().locals.last().unwrap().slot;
+
+        // Result slot R — the value of a match with no matching arm.
+        self.emit_op(OpCode::PushNull, line);
+        self.declare_local("$match_result", span)?;
+        let result_slot = self.current().locals.last().unwrap().slot;
+
+        let base_height = self.current().stack_height;
+        let mut end_jumps: Vec<usize> = Vec::new();
+
+        for arm in arms {
+            self.begin_scope();
+            let arm_depth = self.current().scope_depth;
+
+            // Hoist mid-expression `:=` decls in the guard and body.
+            let mut arm_hoist = Vec::new();
+            if let Some(g) = &arm.guard {
+                self.visit_for_hoist(g, &mut arm_hoist);
+            }
+            self.visit_for_hoist(&arm.body, &mut arm_hoist);
+            self.emit_hoist_prologue(arm_hoist, span)?;
+
+            // Refutable test — failures jump to this arm's fail label.
+            let mut fail_jumps: Vec<usize> = Vec::new();
+            self.compile_match_test(&arm.pattern, subject_slot, &mut fail_jumps, span)?;
+
+            // Optional guard.
+            if let Some(g) = &arm.guard {
+                self.compile_expr(g)?;
+                fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+                self.emit_op(OpCode::Pop, line);
+            }
+
+            // Body → result slot.
+            self.compile_expr(&arm.body)?;
+            self.emit_op(OpCode::StoreLocal, line);
+            self.emit_byte(result_slot, line);
+            self.emit_op(OpCode::Pop, line);
+
+            // Success teardown: drop the arm's runtime locals.
+            self.emit_op(OpCode::Unwind, line);
+            self.emit_byte(base_height as u8, line);
+            self.set_stack_height(base_height);
+            end_jumps.push(self.emit_jump(OpCode::Jump, line));
+
+            // Compiler-side teardown of the arm scope. Done once — the
+            // fail path below is bytecode only (CloseScope would keep a
+            // top value, which we don't have here, so unwind manually —
+            // same shape as `compile_for`'s per-iteration teardown).
+            while let Some(l) = self.current().locals.last() {
+                if l.depth < arm_depth { break; }
+                self.current_mut().locals.pop();
+            }
+            self.current_mut().scope_depth -= 1;
+            self.current_mut().hoisted_scopes.pop();
+
+            // Fail label: `Unwind` truncates the runtime stack (clearing
+            // partial pattern slots and the peeked test bool) so the
+            // next arm starts clean.
+            for j in fail_jumps {
+                self.patch_jump(j)?;
+            }
+            self.emit_op(OpCode::Unwind, line);
+            self.emit_byte(base_height as u8, line);
+            self.set_stack_height(base_height);
+        }
+
+        // match_end: every successful arm lands here.
+        for j in end_jumps {
+            self.patch_jump(j)?;
+        }
+        self.emit_op(OpCode::LoadLocal, line);
+        self.emit_byte(result_slot, line);
+        self.end_scope(line)?;
+        Ok(())
+    }
+
+    /// Emit the refutable test for one match pattern. The value under
+    /// test lives at `src_slot`. Each sub-check appends a `JumpIfFalse`
+    /// patch site to `fail_jumps`; on the fall-through (match) path the
+    /// stack is left as it started plus one local per bound name.
+    fn compile_match_test(
+        &mut self,
+        pat: &MatchPattern,
+        src_slot: u8,
+        fail_jumps: &mut Vec<usize>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let line = span.line;
+        match pat {
+            MatchPattern::Wildcard => {}
+            MatchPattern::Binding(name) => {
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(src_slot, line);
+                self.declare_local(name, span)?;
+            }
+            MatchPattern::Literal(lit) => {
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(src_slot, line);
+                self.emit_constant(literal_pat_value(lit), line, span)?;
+                self.emit_op(OpCode::Eq, line);
+                fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+                self.emit_op(OpCode::Pop, line);
+            }
+            MatchPattern::Range { from, to, inclusive } => {
+                // Subject must be a number (tag 8 = Int|Float).
+                self.emit_type_test(src_slot, 8, fail_jumps, line);
+                // from <= subject
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(src_slot, line);
+                self.emit_constant(literal_pat_value(from), line, span)?;
+                self.emit_op(OpCode::Ge, line);
+                fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+                self.emit_op(OpCode::Pop, line);
+                // subject < to  (or <= to when inclusive)
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(src_slot, line);
+                self.emit_constant(literal_pat_value(to), line, span)?;
+                self.emit_op(if *inclusive { OpCode::Le } else { OpCode::Lt }, line);
+                fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+                self.emit_op(OpCode::Pop, line);
+            }
+            MatchPattern::Array { items, rest } => {
+                self.emit_type_test(src_slot, 4, fail_jumps, line); // 4 = Array
+                // Length: exact when no rest, `>=` when there is one.
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(src_slot, line);
+                self.emit_op(OpCode::Len, line);
+                self.emit_constant(Value::Int(items.len() as i64), line, span)?;
+                self.emit_op(
+                    if rest.is_some() { OpCode::Ge } else { OpCode::Eq },
+                    line,
+                );
+                fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+                self.emit_op(OpCode::Pop, line);
+                for (i, item) in items.iter().enumerate() {
+                    if matches!(item, MatchPattern::Wildcard) {
+                        continue;
+                    }
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(Value::Int(i as i64), line, span)?;
+                    self.emit_op(OpCode::IndexGet, line);
+                    self.declare_local("", span)?;
+                    let elem_slot = self.current().locals.last().unwrap().slot;
+                    self.compile_match_test(item, elem_slot, fail_jumps, span)?;
+                }
+                if let Some(rest_name) = rest {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(Value::Int(items.len() as i64), line, span)?;
+                    self.emit_op(OpCode::SliceFrom, line);
+                    self.declare_local(rest_name, span)?;
+                }
+            }
+            MatchPattern::Object { fields, rest } => {
+                self.emit_type_test(src_slot, 5, fail_jumps, line); // 5 = Object
+                for f in fields {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(Value::Str(f.key.as_str().into()), line, span)?;
+                    self.emit_op(OpCode::IndexGet, line);
+                    match &f.pattern {
+                        // Shorthand `${name}` — bind the value. A
+                        // missing key reads `null` (does not fail).
+                        None => self.declare_local(&f.key, span)?,
+                        Some(sub) => {
+                            self.declare_local("", span)?;
+                            let fslot = self.current().locals.last().unwrap().slot;
+                            self.compile_match_test(sub, fslot, fail_jumps, span)?;
+                        }
+                    }
+                }
+                if let Some(rest_name) = rest {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    for f in fields {
+                        self.emit_constant(
+                            Value::Str(f.key.as_str().into()),
+                            line,
+                            span,
+                        )?;
+                    }
+                    self.emit_op(OpCode::MakeArray, line);
+                    self.emit_byte(fields.len() as u8, line);
+                    self.adjust_stack(-(fields.len() as i32) + 1);
+                    self.emit_op(OpCode::ObjRest, line);
+                    self.declare_local(rest_name, span)?;
+                }
+            }
+            MatchPattern::Or(alts) => {
+                // v0.5: or-pattern alternatives must be non-binding and
+                // stack-neutral (literal / range / `_`). This sidesteps
+                // slot reconciliation across the converging branches.
+                for alt in alts {
+                    if !matches!(
+                        alt,
+                        MatchPattern::Literal(_)
+                            | MatchPattern::Range { .. }
+                            | MatchPattern::Wildcard
+                    ) {
+                        return Err(CompileError::new(
+                            CompileErrorKind::InvalidMatchPattern(
+                                "or-pattern alternatives must be literals, ranges, \
+                                 or `_` — no bindings or structural patterns"
+                                    .into(),
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                let last = alts.len() - 1;
+                let mut matched_jumps: Vec<usize> = Vec::new();
+                for (i, alt) in alts.iter().enumerate() {
+                    if i < last {
+                        let mut local_fail: Vec<usize> = Vec::new();
+                        self.compile_match_test(alt, src_slot, &mut local_fail, span)?;
+                        matched_jumps.push(self.emit_jump(OpCode::Jump, line));
+                        for j in local_fail {
+                            self.patch_jump(j)?;
+                        }
+                    } else {
+                        self.compile_match_test(alt, src_slot, fail_jumps, span)?;
+                    }
+                }
+                for j in matched_jumps {
+                    self.patch_jump(j)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit a non-raising runtime type check on the value at `src_slot`.
+    /// Pushes nothing net; on a type mismatch jumps via `fail_jumps`.
+    fn emit_type_test(
+        &mut self,
+        src_slot: u8,
+        tag: u8,
+        fail_jumps: &mut Vec<usize>,
+        line: u32,
+    ) {
+        self.emit_op(OpCode::LoadLocal, line);
+        self.emit_byte(src_slot, line);
+        self.emit_op(OpCode::TypeTest, line);
+        self.emit_byte(tag, line);
+        fail_jumps.push(self.emit_jump(OpCode::JumpIfFalse, line));
+        self.emit_op(OpCode::Pop, line); // the test bool
+        self.emit_op(OpCode::Pop, line); // the loaded src copy
     }
 
     /// Lowering:
@@ -2016,6 +2299,17 @@ impl Compiler {
     }
 }
 
+/// The runtime `Value` a match literal pattern compares against.
+fn literal_pat_value(lit: &LiteralPat) -> Value {
+    match lit {
+        LiteralPat::Int(n) => Value::Int(*n),
+        LiteralPat::Float(x) => Value::Float(*x),
+        LiteralPat::Str(s) => Value::Str(s.as_str().into()),
+        LiteralPat::Bool(b) => Value::Bool(*b),
+        LiteralPat::Null => Value::Null,
+    }
+}
+
 fn binop_to_opcode(op: BinOp) -> OpCode {
     match op {
         BinOp::Add => OpCode::Add,
@@ -2030,6 +2324,11 @@ fn binop_to_opcode(op: BinOp) -> OpCode {
         BinOp::Le => OpCode::Le,
         BinOp::Gt => OpCode::Gt,
         BinOp::Ge => OpCode::Ge,
+        BinOp::BitAnd => OpCode::BitAnd,
+        BinOp::BitOr => OpCode::BitOr,
+        BinOp::BitXor => OpCode::BitXor,
+        BinOp::Shl => OpCode::Shl,
+        BinOp::Shr => OpCode::Shr,
         BinOp::And | BinOp::Or => unreachable!("handled by short-circuit lowering"),
     }
 }

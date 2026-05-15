@@ -57,6 +57,7 @@ pub enum Token {
     Try,
     Catch,
     Raise,
+    Match,
 
     // Arithmetic
     Plus,
@@ -65,6 +66,7 @@ pub enum Token {
     Slash,
     Percent,
     Caret,
+    CaretCaret,
 
     // Comparison
     EqEq,
@@ -79,8 +81,16 @@ pub enum Token {
     PipePipe,
     Bang,
 
+    // Bitwise
+    Amp,
+    Pipe,
+    Tilde,
+    Shl,
+    Shr,
+
     // Assignment
     Eq,
+    FatArrow,
     ColonEq,
     PlusEq,
     MinusEq,
@@ -139,12 +149,14 @@ impl fmt::Display for Token {
             Try => f.write_str("try"),
             Catch => f.write_str("catch"),
             Raise => f.write_str("raise"),
+            Match => f.write_str("match"),
             Plus => f.write_str("+"),
             Minus => f.write_str("-"),
             Star => f.write_str("*"),
             Slash => f.write_str("/"),
             Percent => f.write_str("%"),
             Caret => f.write_str("^"),
+            CaretCaret => f.write_str("^^"),
             EqEq => f.write_str("=="),
             BangEq => f.write_str("!="),
             Lt => f.write_str("<"),
@@ -154,7 +166,13 @@ impl fmt::Display for Token {
             AmpAmp => f.write_str("&&"),
             PipePipe => f.write_str("||"),
             Bang => f.write_str("!"),
+            Amp => f.write_str("&"),
+            Pipe => f.write_str("|"),
+            Tilde => f.write_str("~"),
+            Shl => f.write_str("<<"),
+            Shr => f.write_str(">>"),
             Eq => f.write_str("="),
+            FatArrow => f.write_str("=>"),
             ColonEq => f.write_str(":="),
             PlusEq => f.write_str("+="),
             MinusEq => f.write_str("-="),

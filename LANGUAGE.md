@@ -41,7 +41,7 @@ sensitive. Keywords are reserved and cannot be used as identifiers.
 
 ```
 fn  if  else  for  while  break  return  import  try  catch  raise
-null  true  false
+match  null  true  false
 ```
 
 Note: `floor`, `ceil`, `rand`, `for[]`, `while[]` are no longer keywords — see
@@ -49,7 +49,8 @@ Note: `floor`, `ceil`, `rand`, `for[]`, `while[]` are no longer keywords — see
 
 ### 2.4 Operators and punctuation
 
-Arithmetic: `+ - * / % ^`
+Arithmetic: `+ - * / % ^^`   (`^^` is exponentiation)
+Bitwise:    `& | ^ ~ << >>`  (`^` is XOR; all are Int-only)
 Comparison: `== != < > <= >=`
 Logical:    `&& || !`
 Assignment: `= := += -= *= /= %=`
@@ -58,7 +59,11 @@ Range:      `.. ..=`
 Spread:     `...`
 Length:     `#`
 Member:     `.`
+Match arm:  `=>`
 Other:      `( ) { } [ ] , ; : $`
+
+(Change from v0.4: `^` was exponentiation; it is now bitwise XOR, and
+exponentiation moved to `^^`.)
 
 ### 2.5 Number literals
 
@@ -229,21 +234,44 @@ of their operands, like Lua/JavaScript.)
 | 2     | `\|\|`                                      | left  |
 | 3     | `&&`                                        | left  |
 | 4     | `==` `!=` `<` `>` `<=` `>=`                 | left  |
-| 5     | `\|>`                                       | left  |
-| 6     | `..` `..=`  (with optional `:step`)         | n/a   |
-| 7     | `+` `-`                                     | left  |
-| 8     | `*` `/` `%`                                 | left  |
-| 9     | `^`                                         | right |
-| 10    | unary `-` `!` `#`                           | n/a   |
-| 11    | call `f(...)`, index `a[i]`, member `a.b`   | left  |
+| 5     | `\|`  (bitwise OR)                          | left  |
+| 6     | `^`   (bitwise XOR)                         | left  |
+| 7     | `&`   (bitwise AND)                         | left  |
+| 8     | `\|>`                                       | left  |
+| 9     | `..` `..=`  (with optional `:step`)         | n/a   |
+| 10    | `<<` `>>`                                   | left  |
+| 11    | `+` `-`                                     | left  |
+| 12    | `*` `/` `%`                                 | left  |
+| 13    | `^^`  (exponentiation)                      | right |
+| 14    | unary `-` `!` `#` `~`                       | n/a   |
+| 15    | call `f(...)`, index `a[i]`, member `a.b`   | left  |
 
 ### 6.2 Numeric arithmetic
 
 - `Int op Int` → `Int`, except division: `n / m` is `Int` if it divides
   evenly, else `Float`.
 - Any `Float` operand → `Float` result.
-- `^` (power) always produces `Float`.
+- `^^` (power) always produces `Float`.
 - `%` follows the sign of the dividend.
+
+### 6.2a Bitwise operators (v0.5)
+
+`& | ^ << >>` (binary) and `~` (unary) operate only on `Int` — any
+other operand type raises a catchable runtime error. `^` is bitwise
+XOR; exponentiation is the separate `^^` operator. `>>` is an
+arithmetic (sign-preserving) shift. A shift amount outside `0..64`
+raises rather than wrapping. Precedence follows the table in §6.1
+(Rust-style: `<< >>` looser than `+ -`, and `& ^ |` looser than the
+comparison operators).
+
+```
+0b1100 & 0b1010    // 8
+0b1100 | 0b1010    // 14
+0b1100 ^ 0b1010    // 6
+~0                 // -1
+1 << 8             // 256
+-16 >> 2           // -4
+```
 
 ### 6.3 Equality
 
@@ -525,6 +553,70 @@ same rules as `str()`. The error value handlers see is always a string.
 Unmatched `raise` exits the program with the message at the line of the
 `raise` (same shape as today's runtime panics).
 
+### 9.7 match (v0.5)
+
+```
+match subject {
+    pattern => expr,
+    pattern if guard => expr,
+    _ => expr,
+}
+```
+
+`match` evaluates `subject` once, then tries each arm top-to-bottom.
+The value of the `match` is the body of the first arm whose pattern
+matches (and whose guard, if present, is truthy). If no arm matches,
+`match` evaluates to `null` — it is **non-exhaustive**, like an `if`
+with no `else`. `match` is an expression. Arms are comma-separated; a
+trailing comma is allowed. Each arm body runs in its own scope.
+
+**Patterns** in a `match` arm are *refutable* — unlike the irrefutable
+destructuring patterns of §11, they can fail and fall through:
+
+- **Literal** — `0`, `'hi'`, `true`, `null`, `-1`. Matches if the
+  subject `==` the literal.
+- **Binding** — a bare name. Matches anything; binds the subject to
+  that name for the arm body and guard.
+- **Wildcard** — `_`. Matches anything, binds nothing.
+- **Range** — `0..10` / `0..=9`. Matches if the subject is a number
+  within the range. A non-number subject simply fails (does not
+  raise).
+- **Array** — `[p, q]` matches an array of exactly that length;
+  `[head, ...rest]` matches length `>= 1`, `rest` collecting the
+  remainder. A non-array subject fails without raising.
+- **Object** — `${kind: 'circle', r}` matches an object; fields with a
+  sub-pattern (`kind: 'circle'`) must match, shorthand fields (`r`)
+  bind the value (a missing key binds `null`). `${a, ...rest}` collects
+  unconsumed keys.
+- **Or-pattern** — `p1 | p2 | p3`. Matches if any alternative matches.
+  In v0.5 the alternatives must be literals, ranges, or `_` (no
+  bindings, no structural patterns).
+
+Patterns nest. A guard `pattern if cond` is an extra boolean test
+evaluated after the pattern binds; a false guard falls through to the
+next arm.
+
+```
+grade := match score {
+    90..=100 => 'A',
+    80..=89  => 'B',
+    _        => 'F',
+};
+
+area := match shape {
+    ${kind: 'rect', w, h}      => w * h,
+    ${kind: 'square', side: s} => s * s,
+    _                          => raise 'unknown shape',
+};
+
+sum := fn(xs) {
+    match xs {
+        []            => 0,
+        [head, ...tl] => head + sum(tl),
+    }
+};
+```
+
 ---
 
 ## 10. Functions
@@ -689,6 +781,11 @@ my_print := print;
 | `floor`   | `floor(x) -> Int`        | Round down                             |
 | `ceil`    | `ceil(x) -> Int`         | Round up                               |
 | `rand`    | `rand() -> Float`        | Uniform in [0, 1)                      |
+| `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
+
+`type(x)` returns one of `'int'`, `'float'`, `'string'`, `'bool'`,
+`'null'`, `'array'`, `'object'`, `'range'`, `'function'`. Both user
+closures and native built-ins report `'function'`.
 
 ### 13.2 Native modules (v0.3)
 
@@ -819,13 +916,17 @@ AssignOp    ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
 
 LogicOr     ::= LogicAnd ('||' LogicAnd)*
 LogicAnd    ::= Equality ('&&' Equality)*
-Equality    ::= Pipe (EqOp Pipe)*
+Equality    ::= BitOr (EqOp BitOr)*
+BitOr       ::= BitXor ('|' BitXor)*
+BitXor      ::= BitAnd ('^' BitAnd)*
+BitAnd      ::= Pipe ('&' Pipe)*
 Pipe        ::= RangeExpr ('|>' RangeExpr)*
-RangeExpr   ::= Additive (('..' | '..=') Additive (':' Additive)?)?
+RangeExpr   ::= Shift (('..' | '..=') Shift (':' Shift)?)?
+Shift       ::= Additive (('<<' | '>>') Additive)*
 Additive    ::= Multiplicative (('+' | '-') Multiplicative)*
 Multiplicative ::= Power (('*' | '/' | '%') Power)*
-Power       ::= Unary ('^' Power)?
-Unary       ::= ('-' | '!' | '#') Unary | Postfix
+Power       ::= Unary ('^^' Power)?
+Unary       ::= ('-' | '!' | '#' | '~') Unary | Postfix
 Postfix     ::= Primary (Call | Index | Member)*
 Call        ::= '(' (Arg (',' Arg)*)? ')'
 Arg         ::= '...' Expr | Expr
@@ -841,10 +942,21 @@ Primary     ::= Literal
               | 'break' BreakValue?
               | 'return' ReturnValue?
               | 'import' String
-              | Try | Raise
+              | Try | Raise | Match
 
 Try         ::= 'try' LogicAnd ('catch' '(' Identifier ')' Scope)?
 Raise       ::= 'raise' Expr
+
+Match       ::= 'match' Expr '{' (MatchArm (',' MatchArm)* ','?)? '}'
+MatchArm    ::= MatchPat ('if' Expr)? '=>' Expr
+MatchPat    ::= MatchAlt ('|' MatchAlt)*
+MatchAlt    ::= LiteralPat | RangePat | Identifier | '_'
+              | MatchArrayPat | MatchObjectPat
+LiteralPat  ::= '-'? (Integer | Float) | String | 'true' | 'false' | 'null'
+RangePat    ::= ('-'? NumLit) ('..' | '..=') ('-'? NumLit)
+MatchArrayPat  ::= '[' (MatchPat (',' MatchPat)* )? ('...' Identifier)? ']'
+MatchObjectPat ::= '$' '{' (MatchField (',' MatchField)*)? ('...' Identifier)? '}'
+MatchField  ::= Identifier (':' MatchPat)?
 
 Literal     ::= Integer | Float | String | 'true' | 'false' | 'null'
 ArrayLit    ::= '[' (Element (',' Element)* ','?)? ']'
@@ -1059,3 +1171,24 @@ Additions (non-breaking):
     the enclosing scope and evaluates to the source rhs.
 20. **`JSON` native module** (§13.4) — `parse` and `stringify` with
     an optional `indent` argument. Numbers always parse as `Float`.
+
+## Appendix D — Changes in v0.5
+
+User-visible breaking change:
+
+21. **`^` is now bitwise XOR; exponentiation moved to `^^`.** Any
+    existing `a ^ b` power expression must be rewritten `a ^^ b`.
+
+Additions (non-breaking):
+
+22. **`type(x)` built-in** (§13.1) — returns the value's type as a
+    string. User closures and native built-ins both report
+    `'function'`.
+23. **Bitwise operators** (§6.2a) — `& | ^ ~ << >>`, all `Int`-only.
+    `>>` is an arithmetic shift; a shift amount outside `0..64`
+    raises. Precedence is Rust-style (see §6.1).
+24. **`match` expression** (§9.7) — refutable pattern matching with
+    literal, binding, wildcard, range, array, object, and or-patterns,
+    optional `if` guards, comma-separated arms. Non-exhaustive: a
+    `match` with no matching arm evaluates to `null`. Or-pattern
+    alternatives may not bind variables.

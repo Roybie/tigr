@@ -2732,6 +2732,53 @@ fn v05_type_arity_errors() {
     assert!(!run_err("type(1, 2)").is_empty());
 }
 
+// ---- v0.5: str() radix formatting ----
+
+#[test]
+fn v05_str_one_arg_unchanged() {
+    assert_eq!(run("str(255)"), Value::Str("255".into()));
+    assert_eq!(run("str([1, 2])"), Value::Str("[1, 2]".into()));
+}
+
+#[test]
+fn v05_str_radix_no_prefix() {
+    assert_eq!(run("str(255, 16)"), Value::Str("ff".into()));
+    assert_eq!(run("str(10, 2)"), Value::Str("1010".into()));
+    assert_eq!(run("str(493, 8)"), Value::Str("755".into()));
+    assert_eq!(run("str(255, 10)"), Value::Str("255".into()));
+    assert_eq!(run("str(35, 36)"), Value::Str("z".into()));
+    assert_eq!(run("str(0, 16)"), Value::Str("0".into()));
+}
+
+#[test]
+fn v05_str_radix_with_prefix() {
+    assert_eq!(run("str(255, 16, true)"), Value::Str("0xff".into()));
+    assert_eq!(run("str(10, 2, true)"), Value::Str("0b1010".into()));
+    assert_eq!(run("str(493, 8, true)"), Value::Str("0o755".into()));
+    // prefix false is the same as omitting it
+    assert_eq!(run("str(493, 8, false)"), Value::Str("755".into()));
+}
+
+#[test]
+fn v05_str_radix_negative() {
+    // Sign precedes both the prefix and the digits.
+    assert_eq!(run("str(-10, 16)"), Value::Str("-a".into()));
+    assert_eq!(run("str(-10, 16, true)"), Value::Str("-0xa".into()));
+}
+
+#[test]
+fn v05_str_radix_errors() {
+    // Radix out of 2..=36.
+    assert!(!run_err("str(5, 1)").is_empty());
+    assert!(!run_err("str(5, 37)").is_empty());
+    // Non-Int value with a radix.
+    assert!(!run_err("str(1.5, 16)").is_empty());
+    // Prefix flag must be a Bool.
+    assert!(!run_err("str(10, 16, 1)").is_empty());
+    // No literal prefix exists for radix 10.
+    assert!(!run_err("str(10, 10, true)").is_empty());
+}
+
 // ---- v0.5: bitwise operators ----
 
 #[test]

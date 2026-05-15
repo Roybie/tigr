@@ -773,7 +773,7 @@ my_print := print;
 | Name      | Signature                | Behavior                               |
 |-----------|--------------------------|----------------------------------------|
 | `print`   | `print(...args)`         | Write each arg (via `str`) + newline   |
-| `str`     | `str(x) -> String`       | Canonical string form of any value     |
+| `str`     | `str(x [, radix [, prefix]])` | String form; radix form for Ints  |
 | `num`     | `num(x) -> Number\|null` | Parse string or pass through number    |
 | `int`     | `int(x) -> Int`          | Truncate toward zero                   |
 | `float`   | `float(x) -> Float`      | Coerce Int → Float; parse strings      |
@@ -786,6 +786,21 @@ my_print := print;
 `type(x)` returns one of `'int'`, `'float'`, `'string'`, `'bool'`,
 `'null'`, `'array'`, `'object'`, `'range'`, `'function'`. Both user
 closures and native built-ins report `'function'`.
+
+`str` takes an optional **radix** and **prefix** (v0.5). `str(x)` is
+the canonical form. `str(n, radix)` renders an `Int` `n` in `radix`
+(an `Int` in `2..=36`, lowercase digits); a non-`Int` value or an
+out-of-range radix raises. `str(n, radix, prefix)` with `prefix` a
+`Bool` prepends the literal marker — `0b` / `0o` / `0x` for radix
+2 / 8 / 16 (any other radix with `prefix == true` raises). A negative
+number's `-` precedes the prefix.
+
+```
+str(255, 16)         // 'ff'
+str(255, 16, true)   // '0xff'
+str(10, 2, true)     // '0b1010'
+str(-10, 16, true)   // '-0xa'
+```
 
 ### 13.2 Native modules (v0.3)
 
@@ -1183,7 +1198,8 @@ Additions (non-breaking):
 
 22. **`type(x)` built-in** (§13.1) — returns the value's type as a
     string. User closures and native built-ins both report
-    `'function'`.
+    `'function'`. `str` also gains optional `radix` / `prefix`
+    arguments for rendering an `Int` in base 2..=36.
 23. **Bitwise operators** (§6.2a) — `& | ^ ~ << >>`, all `Int`-only.
     `>>` is an arithmetic shift; a shift amount outside `0..64`
     raises. Precedence is Rust-style (see §6.1).

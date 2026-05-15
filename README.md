@@ -562,7 +562,7 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | Name    | Signature                  | Behavior                                   |
 |---------|----------------------------|--------------------------------------------|
 | `print` | `print(...args)`           | Write each arg via `str`, space-separated, plus newline. Returns last arg. |
-| `str`   | `str(x) -> String`         | Canonical string form of any value         |
+| `str`   | `str(x [, radix [, prefix]])` | Canonical string form; radix form renders an Int in base 2..=36 |
 | `num`   | `num(x) -> Number\|null`   | Parse string or pass through a number      |
 | `int`   | `int(x) -> Int`            | Truncate toward zero                       |
 | `float` | `float(x) -> Float`        | Coerce/parse to Float                      |
@@ -573,6 +573,17 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | `type`  | `type(x) -> String`        | Name of the value's type (`'int'`, `'array'`, `'function'`, ...) |
 
 `str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
+
+`str` also takes an optional **radix** and **prefix** for rendering an `Int` in another base:
+
+```
+str(255, 16)         // 'ff'
+str(255, 16, true)   // '0xff'   — prefix: 0b / 0o / 0x for radix 2 / 8 / 16
+str(10, 2, true)     // '0b1010'
+str(-10, 16, true)   // '-0xa'
+```
+
+The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-of-range radix, or `prefix == true` for a radix without a literal marker all raise.
 
 ---
 
@@ -787,9 +798,9 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.5 is feature-complete.** 299 tests pass. On top of v0.4, v0.5 adds:
+**v0.5 is feature-complete.** 304 tests pass. On top of v0.4, v0.5 adds:
 
-1. **`type()` built-in** — names a value's runtime type. User closures and native built-ins both report `'function'`.
+1. **`type()` built-in** — names a value's runtime type. User closures and native built-ins both report `'function'`. `str()` also gains optional `radix` / `prefix` arguments for rendering an `Int` in base 2..=36.
 2. **Bitwise operators** — `& | ^ ~ << >>`, `Int`-only. `^` is bitwise XOR; exponentiation moved to the new `^^` operator (the one breaking change). `>>` is an arithmetic shift; out-of-range shift amounts raise.
 3. **`match` expression** — refutable pattern matching: literal/binding/wildcard/range/array/object/or-patterns, optional `if` guards, comma-separated arms. Non-exhaustive (no match → `null`); or-pattern alternatives may not bind.
 

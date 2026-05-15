@@ -7,12 +7,20 @@
 //! the session continues with state intact (the REPL frame is a
 //! `try_catch` wall).
 //!
+//! Input is read via `rustyline` so arrow keys, history, Ctrl+A/E
+//! cursor moves, etc. all just work. Each accepted line is appended
+//! to history (single-line entries — multi-line submissions show as
+//! a stack of related lines on ↑, which works fine for short blocks).
+//!
 //! Multi-line input: if the lexer trips on an unterminated string OR
 //! the parser hits EOF mid-expression, we prompt for more lines and
 //! re-try the whole accumulated buffer.
 
-use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::rc::Rc;
+
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 use crate::vm::compiler::Compiler;
 use crate::vm::error::{Error, LexErrorKind, ParseErrorKind};
@@ -65,61 +73,88 @@ impl Repl {
         }
     }
 
-    /// Top-level loop. Reads from stdin, prints values to stdout,
-    /// errors to stderr. Returns on `:quit`/`:q` or EOF.
-    pub fn run(&mut self) -> io::Result<()> {
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut input = stdin.lock();
-        let mut output = stdout.lock();
+    /// Top-level loop. Reads via rustyline (arrow keys, history,
+    /// line editing), prints values to stdout, errors to stderr.
+    /// Returns on `:quit`/`:q`, Ctrl+D, or a rustyline failure.
+    pub fn run(&mut self) -> Result<(), ReadlineError> {
+        let mut rl = DefaultEditor::new()?;
+        let history_path = history_file();
+        if let Some(p) = &history_path {
+            // Missing history file is fine on first run; ignore.
+            let _ = rl.load_history(p);
+        }
 
         let mut buf = String::new();
         loop {
-            // Prompt.
             let prompt = if buf.is_empty() { "tigr> " } else { "..> " };
-            write!(output, "{prompt}")?;
-            output.flush()?;
+            match rl.readline(prompt) {
+                Ok(line) => {
+                    // Commands only count outside multi-line mode.
+                    if buf.is_empty() {
+                        let trimmed = line.trim();
+                        if trimmed == ":quit" || trimmed == ":q" {
+                            break;
+                        }
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                    }
 
-            // Read one line. EOF → exit.
-            let mut line = String::new();
-            let n = input.read_line(&mut line)?;
-            if n == 0 {
-                writeln!(output)?;
-                return Ok(());
-            }
+                    // Each accepted line goes into history individually
+                    // so ↑ walks line-by-line (Python-style).
+                    let _ = rl.add_history_entry(line.as_str());
 
-            // Handle REPL commands ONLY when not mid-multiline.
-            if buf.is_empty() {
-                let trimmed = line.trim();
-                if trimmed == ":quit" || trimmed == ":q" {
-                    return Ok(());
-                }
-                if trimmed.is_empty() {
-                    continue;
-                }
-            }
+                    buf.push_str(&line);
+                    // rustyline strips the trailing newline; put one
+                    // back so the lexer's line counter is accurate
+                    // across multi-line input.
+                    buf.push('\n');
 
-            buf.push_str(&line);
-
-            // Try to evaluate. If the input looks incomplete, prompt
-            // for more; otherwise either print the value or the error
-            // and reset the buffer.
-            match self.eval(&buf) {
-                Ok(v) => {
-                    writeln!(output, "{v}")?;
-                    buf.clear();
+                    match self.eval(&buf) {
+                        Ok(v) => {
+                            println!("{v}");
+                            buf.clear();
+                        }
+                        Err(e) if is_incomplete(&e) => {
+                            // Stay in multi-line mode; loop reads more.
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            buf.clear();
+                        }
+                    }
                 }
-                Err(e) if is_incomplete(&e) => {
-                    // Stay in multi-line mode; loop reads more.
+                // Ctrl+C: abandon any partial input, reprompt fresh.
+                Err(ReadlineError::Interrupted) => {
+                    if !buf.is_empty() {
+                        buf.clear();
+                        continue;
+                    }
+                    break;
                 }
-                Err(e) => {
-                    let mut err = io::stderr();
-                    writeln!(err, "{e}")?;
-                    buf.clear();
-                }
+                // Ctrl+D on an empty line: exit. On a non-empty buf,
+                // also exit (we can't sensibly resume).
+                Err(ReadlineError::Eof) => break,
+                Err(e) => return Err(e),
             }
         }
+
+        if let Some(p) = &history_path {
+            let _ = rl.save_history(p);
+        }
+        Ok(())
     }
+}
+
+/// Path to the persistent history file (`~/.tigr_history` on Unix-like
+/// platforms; `%USERPROFILE%\.tigr_history` on Windows). `None` if no
+/// home directory can be resolved — history just won't persist.
+fn history_file() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))?;
+    let mut p = PathBuf::from(home);
+    p.push(".tigr_history");
+    Some(p)
 }
 
 /// True iff the error suggests the user just needs to type more.

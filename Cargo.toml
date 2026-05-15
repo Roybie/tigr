@@ -7,3 +7,4 @@ exclude = ["examples/*"]
 
 [dependencies]
 indexmap = "2"
+rustyline = "14"

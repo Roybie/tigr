@@ -566,7 +566,9 @@ tigr> c()
 tigr> :q
 ```
 
-Bindings persist across lines. Closures share upvalue cells, so mutating an outer name is visible through closures defined either earlier or later. An uncaught raise prints the error but the session continues with state intact. Multi-line input is supported when the parser sees `{`/`(`/`[`/`'` left open. `:quit` / `:q` exits.
+Bindings persist across lines. Closures share upvalue cells, so mutating an outer name is visible through closures defined either earlier or later. An uncaught raise prints the error but the session continues with state intact. Multi-line input is supported when the parser sees `{`/`(`/`[`/`'` left open. `:quit` / `:q` (or Ctrl+D) exits; Ctrl+C abandons the current line.
+
+The REPL uses [`rustyline`](https://github.com/kkawakam/rustyline) for input, so `←`/`→` move the cursor, `↑`/`↓` walk history (one entry per accepted line), and the usual Emacs-style edit keys (Ctrl+A, Ctrl+E, Ctrl+W, ...) work. History is persisted to `~/.tigr_history` across sessions.
 
 ---
 

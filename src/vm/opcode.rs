@@ -166,6 +166,32 @@ pub enum OpCode {
     /// Spec §12: each `import` re-evaluates (no caching). The path
     /// is resolved at compile time relative to the importing file.
     Import,
+
+    // -- v0.3 — try/catch/raise --
+    /// Push a try-frame onto the current call frame. Records the
+    /// current stack length and the catch PC (= ip + operand). When a
+    /// raise / runtime error fires, the VM walks the try-frame stack,
+    /// truncates the value stack to the recorded length, pushes the
+    /// error value, and jumps to the catch PC. Operand: u16 BE forward
+    /// distance (same encoding as `Jump`).
+    PushTry,
+    /// Pop the top try-frame from the current call frame. Emitted at
+    /// the success-path end of a `try` expression so that the catch
+    /// path is no longer live.
+    PopTry,
+    /// Pop the top value as an error message (coerced to string),
+    /// then unwind: close upvalues, pop call frames as needed, and
+    /// transfer control to the nearest active try-frame's catch PC.
+    /// If no try-frame is active in any frame, the program exits with
+    /// a runtime error.
+    Raise,
+
+    // -- v0.3 Phase 5 — REPL --
+    /// Pop the top value and exit `exec` with `Ok(value)` WITHOUT
+    /// popping the current call frame or closing its upvalues. The
+    /// REPL emits this at the end of each compiled line so the
+    /// session state (locals at slots 1..M) survives between lines.
+    Halt,
 }
 
 impl OpCode {
@@ -223,6 +249,10 @@ impl OpCode {
             48 => SliceFrom,
             49 => ObjRest,
             50 => Import,
+            51 => PushTry,
+            52 => PopTry,
+            53 => Raise,
+            54 => Halt,
             _ => return None,
         })
     }
@@ -242,7 +272,7 @@ impl OpCode {
             // fn_idx here. This method is informational only.
             Closure => 1,
             Jump | Loop | JumpIfFalse | JumpIfTrue
-            | IterNext | IterNext2 => 2,
+            | IterNext | IterNext2 | PushTry => 2,
             _ => 0,
         }
     }

@@ -317,6 +317,9 @@ impl<'src> Lexer<'src> {
             "break" => Token::Break,
             "return" => Token::Return,
             "import" => Token::Import,
+            "try" => Token::Try,
+            "catch" => Token::Catch,
+            "raise" => Token::Raise,
             _ => Token::Ident(lexeme.to_string()),
         }
     }

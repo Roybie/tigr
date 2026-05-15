@@ -282,6 +282,21 @@ pub enum Expr {
     // top-level expressions other than the immediate decl initialiser,
     // though we don't strictly enforce that.
     Import(String),
+
+    // `try expr` (catch = None) or `try expr catch (param) { handler }`
+    // (catch = Some). The try expression evaluates to `body`'s value on
+    // success or — on a raised/runtime error caught here — the
+    // handler's value (or `null` if catch is omitted). The handler is
+    // always a `Scope` per grammar.
+    Try {
+        body: Box<SpannedExpr>,
+        catch: Option<(String, Box<SpannedExpr>)>,
+    },
+
+    // `raise expr` — raises a string error (the value is coerced via
+    // `str`). Like `break`/`return`, the runtime never reaches consumers
+    // of this expression.
+    Raise(Box<SpannedExpr>),
 }
 
 #[allow(dead_code)] // Eq..Or land in Phase 2

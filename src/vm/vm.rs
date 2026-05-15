@@ -15,6 +15,8 @@
 //!   the others (counter pattern).
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -29,6 +31,36 @@ struct CallFrame {
     ip: usize,
     /// Index in `vm.stack` corresponding to slot 0 of this frame.
     base_slot: usize,
+    /// Active `try` frames for this call frame (innermost last).
+    /// Empty for almost all frames; cheap to keep around.
+    try_frames: Vec<TryFrame>,
+    /// What kind of frame this is. `Function` for ordinary calls (and
+    /// for the top-level program). `Import(path)` when the frame is
+    /// evaluating an imported module; on `Return` the resulting value
+    /// is cached against `path`. Distinguishing import frames keeps
+    /// the cache-write logic localized to `Return` / `try_catch`.
+    kind: FrameKind,
+}
+
+enum FrameKind {
+    Function,
+    Import(PathBuf),
+    /// REPL session frame. Persistent — never popped, never closed —
+    /// so locals declared by prior lines survive between Halts. The
+    /// `try_catch` walker treats this frame as a wall so an uncaught
+    /// raise from a single line doesn't tear down the whole session.
+    Repl,
+}
+
+/// Snapshot of state captured at `PushTry`. On a Raise (or runtime
+/// error) the VM walks call frames from innermost outward; the first
+/// non-empty `try_frames` stack indicates where to land.
+struct TryFrame {
+    /// Absolute byte offset in the owning frame's chunk to jump to.
+    catch_pc: usize,
+    /// Absolute index into `vm.stack`: truncate to this length before
+    /// pushing the error value. Snapshotted at `PushTry`.
+    stack_len: usize,
 }
 
 pub struct Vm {
@@ -36,6 +68,13 @@ pub struct Vm {
     stack: Vec<Value>,
     globals: Vec<Value>,
     open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    /// Per-Vm cache of `import 'path'` results, keyed by absolute path.
+    /// Spec §12 was no-caching in v0.2; v0.3 adds caching so a module
+    /// imported twice within the same run evaluates only once.
+    module_cache: HashMap<PathBuf, Value>,
+    /// Paths currently being evaluated. A second import of any of
+    /// these is a circular-import error (catchable via `try`).
+    in_flight: HashSet<PathBuf>,
 }
 
 impl Vm {
@@ -45,6 +84,8 @@ impl Vm {
             stack: Vec::with_capacity(256),
             globals: stdlib::builtins(),
             open_upvalues: Vec::new(),
+            module_cache: HashMap::new(),
+            in_flight: HashSet::new(),
         }
     }
 
@@ -64,8 +105,130 @@ impl Vm {
             closure: main_closure,
             ip: 0,
             base_slot: 0,
+            try_frames: Vec::new(),
+            kind: FrameKind::Function,
         });
-        self.exec()
+        // Surface the result of `exec`, with a loop wrapper so a
+        // caught raise can re-enter exec at the new ip.
+        loop {
+            match self.exec() {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    if !self.try_catch(&err) {
+                        return Err(err);
+                    }
+                    // Caught — frame state is now pointing at catch_pc
+                    // with the error value on the stack. Loop back into
+                    // exec to continue from there.
+                }
+            }
+        }
+    }
+
+    /// Walk frames from innermost outward looking for an active
+    /// try-frame. If found: pop intermediate frames, close their
+    /// upvalues, truncate stack to the recorded length, push the
+    /// error message as a String, set the surviving frame's ip to the
+    /// catch PC, and return `true`. If no try-frame anywhere, leave
+    /// state untouched and return `false`.
+    fn try_catch(&mut self, err: &RuntimeError) -> bool {
+        while let Some(frame) = self.frames.last_mut() {
+            if let Some(tf) = frame.try_frames.pop() {
+                let catch_pc = tf.catch_pc;
+                let stack_len = tf.stack_len;
+                self.close_upvalues(stack_len);
+                self.stack.truncate(stack_len);
+                // The handler sees the error message as a String.
+                let msg = match &err.kind {
+                    RuntimeErrorKind::Raised(s) => s.clone(),
+                    // RuntimeError's Display covers every variant —
+                    // reuse it so a caught TypeMismatch shows up as
+                    // `"type mismatch: ..."` etc.
+                    _ => format!("{}", err),
+                };
+                self.stack.push(Value::Str(msg.into()));
+                self.frames.last_mut().unwrap().ip = catch_pc;
+                return true;
+            }
+            // REPL frame is a wall — never popped on uncaught raise.
+            // `run_repl_line` truncates the stack to the pre-line
+            // snapshot and surfaces the error to the driver.
+            if matches!(frame.kind, FrameKind::Repl) {
+                return false;
+            }
+            // No try-frame in this frame — pop it and close upvalues
+            // at its base before continuing the search outward.
+            let popped = self.frames.pop().unwrap();
+            self.close_upvalues(popped.base_slot);
+            self.stack.truncate(popped.base_slot);
+            // If we just abandoned an in-flight import, drop the
+            // in-flight marker so subsequent imports of that path can
+            // try again (otherwise the cycle-detection set would leak).
+            if let FrameKind::Import(path) = popped.kind {
+                self.in_flight.remove(&path);
+            }
+        }
+        false
+    }
+
+    /// Set up a long-lived REPL frame with a dummy closure. Call once
+    /// per session before any [`run_repl_line`].
+    pub fn start_repl(&mut self) {
+        self.stack.clear();
+        self.frames.clear();
+        self.open_upvalues.clear();
+        let dummy = Rc::new(Closure {
+            function: Rc::new(crate::vm::value::Function {
+                arity: 0,
+                has_rest: false,
+                chunk: crate::vm::chunk::Chunk::new(),
+                upvalues: Vec::new(),
+                name: Some("<repl>".to_string()),
+            }),
+            upvalues: Vec::new(),
+        });
+        // Slot 0 of the REPL frame holds the *currently active*
+        // line's closure. `run_repl_line` replaces this each line.
+        self.stack.push(Value::Function(dummy.clone()));
+        self.frames.push(CallFrame {
+            closure: dummy,
+            ip: 0,
+            base_slot: 0,
+            try_frames: Vec::new(),
+            kind: FrameKind::Repl,
+        });
+    }
+
+    /// Run one REPL line. The closure's chunk must end in `Halt`.
+    /// `snapshot_len` is the stack length the REPL expects after a
+    /// successful run (closure slot + existing user locals). On an
+    /// uncaught raise the stack is truncated back to this snapshot.
+    pub fn run_repl_line(
+        &mut self,
+        closure: Rc<Closure>,
+        snapshot_len: usize,
+    ) -> Result<Value, RuntimeError> {
+        debug_assert!(matches!(self.frames[0].kind, FrameKind::Repl));
+        // Install the new line's closure at slot 0 and reset ip.
+        self.stack[0] = Value::Function(closure.clone());
+        self.frames[0].closure = closure;
+        self.frames[0].ip = 0;
+        self.frames[0].try_frames.clear();
+        loop {
+            match self.exec() {
+                Ok(v) => return Ok(v), // Halt exit
+                Err(err) => {
+                    if !self.try_catch(&err) {
+                        // Wall hit — restore stack to pre-line state.
+                        self.close_upvalues(snapshot_len);
+                        self.stack.truncate(snapshot_len);
+                        self.frames[0].try_frames.clear();
+                        self.frames[0].ip = 0;
+                        return Err(err);
+                    }
+                }
+            }
+        }
     }
 
     fn exec(&mut self) -> Result<Value, RuntimeError> {
@@ -133,6 +296,14 @@ impl Vm {
                     let frame = self.frames.pop().unwrap();
                     self.close_upvalues(frame.base_slot);
                     self.stack.truncate(frame.base_slot);
+                    // If this frame was evaluating an import, record
+                    // the result in the cache (spec §12 — v0.3 adds
+                    // caching) and clear the in-flight marker so a
+                    // sibling import of the same path is allowed.
+                    if let FrameKind::Import(path) = frame.kind {
+                        self.module_cache.insert(path.clone(), result.clone());
+                        self.in_flight.remove(&path);
+                    }
                     if self.frames.is_empty() {
                         return Ok(result);
                     }
@@ -292,6 +463,8 @@ impl Vm {
                                 closure: c,
                                 ip: 0,
                                 base_slot: args_start - 1,
+                                try_frames: Vec::new(),
+                                kind: FrameKind::Function,
                             });
                             continue;
                         }
@@ -308,7 +481,15 @@ impl Vm {
                                     line,
                                 ));
                             }
-                            let result = (nf.func)(&args)?;
+                            let result = (nf.func)(&args).map_err(|mut e| {
+                                // Backfill the call-site line so an
+                                // uncaught error from a builtin reports
+                                // where it was *called*, not the
+                                // useless line 0 the builtin defaulted
+                                // to.
+                                if e.line == 0 { e.line = line; }
+                                e
+                            })?;
                             self.stack.push(result);
                             continue;
                         }
@@ -577,6 +758,8 @@ impl Vm {
                                 closure: c,
                                 ip: 0,
                                 base_slot: args_start - 1,
+                                try_frames: Vec::new(),
+                                kind: FrameKind::Function,
                             });
                             continue;
                         }
@@ -594,7 +777,10 @@ impl Vm {
                                     line,
                                 ));
                             }
-                            let result = (nf.func)(&call_args)?;
+                            let result = (nf.func)(&call_args).map_err(|mut e| {
+                                if e.line == 0 { e.line = line; }
+                                e
+                            })?;
                             self.stack.push(result);
                             continue;
                         }
@@ -685,7 +871,7 @@ impl Vm {
                 }
                 OpCode::Import => {
                     let path_val = self.pop(line)?;
-                    let path = match path_val {
+                    let path_str = match path_val {
                         Value::Str(s) => s,
                         other => return Err(RuntimeError::new(
                             RuntimeErrorKind::TypeMismatch(format!(
@@ -695,14 +881,166 @@ impl Vm {
                             line,
                         )),
                     };
-                    let value = crate::vm::run_file(std::path::Path::new(&*path))
-                        .map_err(|e| RuntimeError::new(
+
+                    // Bare names (no path separators or extension)
+                    // resolve in three steps:
+                    //   1. Cache hit under `<bare:Name>` key.
+                    //   2. Source stdlib (Array / Math / String).
+                    //      Compile the embedded `.tg` and push it as
+                    //      an Import frame — its Return caches.
+                    //   3. Native modules (IO / Os / Time / _Native*).
+                    //      Cache the resulting Object directly.
+                    let is_bare = !path_str.contains('/')
+                        && !path_str.contains('\\')
+                        && !path_str.contains('.');
+                    if is_bare {
+                        let key = PathBuf::from(format!("<bare:{}>", path_str));
+                        if let Some(cached) = self.module_cache.get(&key) {
+                            self.stack.push(cached.clone());
+                            self.frames.last_mut().unwrap().ip = ip;
+                            continue;
+                        }
+                        if let Some(source) = crate::vm::source_stdlib::source(&path_str) {
+                            let main = match crate::vm::compile_source(source, None) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::ImportFailed(
+                                            path_str.to_string(),
+                                            format!("{e}"),
+                                        ),
+                                        line,
+                                    ));
+                                }
+                            };
+                            self.in_flight.insert(key.clone());
+                            let mc = Rc::new(Closure {
+                                function: Rc::new(main),
+                                upvalues: Vec::new(),
+                            });
+                            self.frames.last_mut().unwrap().ip = ip;
+                            let base = self.stack.len();
+                            self.stack.push(Value::Function(mc.clone()));
+                            self.frames.push(CallFrame {
+                                closure: mc,
+                                ip: 0,
+                                base_slot: base,
+                                try_frames: Vec::new(),
+                                kind: FrameKind::Import(key),
+                            });
+                            continue;
+                        }
+                        if let Some(module) = crate::vm::native_modules::resolve(&path_str) {
+                            self.module_cache.insert(key, module.clone());
+                            self.stack.push(module);
+                            self.frames.last_mut().unwrap().ip = ip;
+                            continue;
+                        }
+                        return Err(RuntimeError::new(
                             RuntimeErrorKind::ImportFailed(
-                                path.to_string(), format!("{e}"),
+                                path_str.to_string(),
+                                "no module of that name".into(),
                             ),
                             line,
-                        ))?;
-                    self.stack.push(value);
+                        ));
+                    }
+
+                    // File path: cache → in-flight check → compile and
+                    // push as a new frame on this same Vm. The frame
+                    // is tagged `Import(path)` so the Return opcode
+                    // can write the cache entry.
+                    let path = PathBuf::from(&*path_str);
+                    if let Some(cached) = self.module_cache.get(&path) {
+                        self.stack.push(cached.clone());
+                        self.frames.last_mut().unwrap().ip = ip;
+                        continue;
+                    }
+                    if self.in_flight.contains(&path) {
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::ImportFailed(
+                                path_str.to_string(),
+                                "circular import".into(),
+                            ),
+                            line,
+                        ));
+                    }
+                    let main = match crate::vm::compile_file(&path) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::ImportFailed(
+                                    path_str.to_string(),
+                                    format!("{e}"),
+                                ),
+                                line,
+                            ));
+                        }
+                    };
+                    self.in_flight.insert(path.clone());
+                    let main_closure = Rc::new(Closure {
+                        function: Rc::new(main),
+                        upvalues: Vec::new(),
+                    });
+                    // Commit ip for the importing frame BEFORE pushing
+                    // the import frame so resume after Return lands at
+                    // the instruction following Import.
+                    self.frames.last_mut().unwrap().ip = ip;
+                    let base = self.stack.len();
+                    self.stack.push(Value::Function(main_closure.clone()));
+                    self.frames.push(CallFrame {
+                        closure: main_closure,
+                        ip: 0,
+                        base_slot: base,
+                        try_frames: Vec::new(),
+                        kind: FrameKind::Import(path),
+                    });
+                    continue;
+                }
+
+                // -- v0.3 try/catch/raise --
+                OpCode::PushTry => {
+                    let dist = chunk.read_u16(ip);
+                    ip += 2;
+                    let catch_pc = ip + dist as usize;
+                    let stack_len = self.stack.len();
+                    self.frames.last_mut().unwrap().try_frames.push(TryFrame {
+                        catch_pc,
+                        stack_len,
+                    });
+                }
+                OpCode::PopTry => {
+                    self.frames
+                        .last_mut()
+                        .unwrap()
+                        .try_frames
+                        .pop()
+                        .expect("PopTry with no active try-frame");
+                }
+                OpCode::Raise => {
+                    let msg_val = self.pop(line)?;
+                    let msg = match msg_val {
+                        Value::Str(s) => s.to_string(),
+                        // Non-string raises stringify via Display (the
+                        // same path `str()` uses). Lets users raise
+                        // structured values without forcing them to
+                        // pre-format.
+                        other => format!("{}", other),
+                    };
+                    // Commit ip onto the frame so try_catch can rely on
+                    // it (though try_catch overwrites with catch_pc).
+                    self.frames.last_mut().unwrap().ip = ip;
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::Raised(msg),
+                        line,
+                    ));
+                }
+                OpCode::Halt => {
+                    // REPL line end: surface the value but keep the
+                    // frame so the next line resumes with locals
+                    // intact. `run_repl_line` resets ip before reuse.
+                    let value = self.stack.pop().ok_or_else(|| underflow(line))?;
+                    self.frames.last_mut().unwrap().ip = ip;
+                    return Ok(value);
                 }
             }
 

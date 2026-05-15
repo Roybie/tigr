@@ -1,0 +1,13 @@
+// bench — time a recursive fib using Time.now_ms.
+
+Time := import 'Time';
+
+fib := fn(n) {
+    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+};
+
+t := Time.now_ms();
+result := fib(25);
+dt := Time.now_ms() - t;
+
+'fib(25) = {result} in {dt}ms'

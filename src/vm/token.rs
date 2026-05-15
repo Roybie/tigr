@@ -54,6 +54,9 @@ pub enum Token {
     Break,
     Return,
     Import,
+    Try,
+    Catch,
+    Raise,
 
     // Arithmetic
     Plus,
@@ -133,6 +136,9 @@ impl fmt::Display for Token {
             Break => f.write_str("break"),
             Return => f.write_str("return"),
             Import => f.write_str("import"),
+            Try => f.write_str("try"),
+            Catch => f.write_str("catch"),
+            Raise => f.write_str("raise"),
             Plus => f.write_str("+"),
             Minus => f.write_str("-"),
             Star => f.write_str("*"),

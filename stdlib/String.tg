@@ -1,0 +1,45 @@
+// Tigr stdlib — `import 'String'`.
+//
+// Most entries are thin re-exports of `_NativeString` (Rust). The
+// pure-tigr ones (`join`, `pad_start`, `pad_end`) sit alongside.
+
+_n := import '_NativeString';
+
+${
+    split:       _n.split,
+    replace:     _n.replace,
+    contains:    _n.contains,
+    index_of:    _n.index_of,
+    lower:       _n.lower,
+    upper:       _n.upper,
+    starts_with: _n.starts_with,
+    ends_with:   _n.ends_with,
+    trim:        _n.trim,
+    trim_start:  _n.trim_start,
+    trim_end:    _n.trim_end,
+    repeat:      _n.repeat,
+    chars:       _n.chars,
+
+    // Join with a separator, stringifying via `str`.
+    join: fn(parts, sep) {
+        if #parts == 0 { return '' };
+        r := str(parts[0]);
+        for (i, x, parts) {
+            if i > 0 { r = r + sep + str(x) }
+        };
+        r
+    },
+
+    // Pad on the left with `ch` until `len` chars wide. `ch` is a
+    // single-character string; longer values still work but make
+    // length math weird.
+    pad_start: fn(s, len, ch) {
+        while #s < len { s = ch + s };
+        s
+    },
+
+    pad_end: fn(s, len, ch) {
+        while #s < len { s = s + ch };
+        s
+    },
+}

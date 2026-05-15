@@ -1,6 +1,7 @@
 //! Tigr CLI.
 //!
-//! Usage: `tigr <file.tg>`
+//! Usage: `tigr [<file.tg> [args...]]`. With no file argument we
+//! launch the interactive REPL (v0.3 Phase 5).
 //!
 //! The `--legacy` flag is reserved for re-enabling the v0.1 tree-walking
 //! interpreter once `src/v01/` is wired back into the build.
@@ -8,6 +9,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+mod repl;
 mod v01;
 mod vm;
 
@@ -18,7 +20,12 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let mut filename: Option<&str> = None;
     let mut legacy = false;
+    // First non-flag arg is the script. Anything after that is
+    // program-level args (visible from tigr via `Os.args`).
     for arg in args.iter().skip(1) {
+        if filename.is_some() {
+            break;
+        }
         match arg.as_str() {
             "--legacy" => legacy = true,
             "-h" | "--help" => {
@@ -27,6 +34,17 @@ fn main() -> ExitCode {
             }
             other => filename = Some(other),
         }
+    }
+    if filename.is_none() && !legacy {
+        // No script and not legacy mode → enter the REPL.
+        let mut repl = repl::Repl::new();
+        return match repl.run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tigr: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     let Some(filename) = filename else {
         print_usage();
@@ -52,6 +70,7 @@ fn main() -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("usage: tigr <file.tg>");
-    eprintln!("       tigr --legacy <file.tg>   (v0.1 interpreter; not currently wired)");
+    eprintln!("usage: tigr [<file.tg> [args...]]");
+    eprintln!("       tigr                       (interactive REPL)");
+    eprintln!("       tigr --legacy <file.tg>    (v0.1 interpreter; not currently wired)");
 }

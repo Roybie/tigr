@@ -40,7 +40,8 @@ sensitive. Keywords are reserved and cannot be used as identifiers.
 ### 2.3 Keywords
 
 ```
-fn  if  else  for  while  break  return  import  null  true  false
+fn  if  else  for  while  break  return  import  try  catch  raise
+null  true  false
 ```
 
 Note: `floor`, `ceil`, `rand`, `for[]`, `while[]` are no longer keywords — see
@@ -473,6 +474,39 @@ return (expr)
 Like `break`, `return value` is itself an expression (yielding a return
 value), so it can be passed to outer `break`/`return` if needed.
 
+### 9.6 try / catch / raise (v0.3)
+
+Errors are values. `raise expr` aborts the current evaluation with the
+given message (coerced to string). `try expr` evaluates `expr`,
+producing its value on success or — on a raised or built-in runtime
+error — `null`. `try expr catch (e) { handler }` instead evaluates the
+handler with the error message bound to `e`. Both `try` and `raise` are
+expressions.
+
+```
+content := try IO.read_file('config.tg') catch (e) {
+    print('warning:', e);
+    ''
+};
+
+count := try num(input) || 0;             // null on parse failure → 0
+
+raise 'database connection lost'           // never returns
+```
+
+The body of `try` parses at `&&` precedence, so `try f(x) || default`
+binds as `(try f(x)) || default`. Wrap in parens to include `||` inside
+the try body. Built-in runtime errors (type mismatch, division by zero,
+out-of-bounds index, missing import, etc.) are catchable and arrive as
+the same string `RuntimeError::Display` produces — e.g.
+`"type mismatch: ..."` or `"division by zero"`.
+
+`raise` does not require a string; non-string values stringify via the
+same rules as `str()`. The error value handlers see is always a string.
+
+Unmatched `raise` exits the program with the message at the line of the
+`raise` (same shape as today's runtime panics).
+
 ---
 
 ## 10. Functions
@@ -575,9 +609,15 @@ Array := import 'Array';
 util  := import './lib/util';
 ```
 
-`import` evaluates the named file in a fresh root environment and returns
-its final expression's value. Paths are resolved relative to the importing
-file. The `.tg` extension is added if absent.
+`import` evaluates the named module and returns its final expression's
+value. There are two flavors:
+
+- **Bare names** (no `/`, `\`, or `.` in the string) — resolved against
+  the native-module registry built into the interpreter (e.g. `IO`,
+  `Os`, `Time` in v0.3 Phase 3+). An unknown bare name raises a
+  catchable error.
+- **Path-shaped strings** — resolved against the importing file's
+  directory (per spec §12). `.tg` is appended automatically if absent.
 
 A module typically returns an object:
 
@@ -590,8 +630,16 @@ ${
 }
 ```
 
-There is no caching in 0.2 — each `import` re-evaluates the file. (Caching
-is a reasonable v0.3 addition.)
+### 12.1 Caching (v0.3)
+
+Each path is evaluated **at most once per `Vm` run**. The result is
+cached and returned for subsequent imports of the same path. Bare-name
+modules are similarly cached. As a corollary, two imports of the same
+file yield the same underlying Object reference — mutating one is
+visible through the other.
+
+A circular import (`a.tg` imports `b.tg` which imports `a.tg`) raises
+a catchable `"circular import"` error rather than diverging.
 
 ---
 
@@ -618,6 +666,70 @@ my_print := print;
 | `floor`   | `floor(x) -> Int`        | Round down                             |
 | `ceil`    | `ceil(x) -> Int`         | Round up                               |
 | `rand`    | `rand() -> Float`        | Uniform in [0, 1)                      |
+
+### 13.2 Native modules (v0.3)
+
+Imported via `import 'Name'` (no path separators). Each native module
+returns an object whose entries are ordinary tigr values; users can
+destructure or pass them like any other binding.
+
+#### `IO`
+
+| Entry         | Signature                          | Behavior                                          |
+|---------------|------------------------------------|---------------------------------------------------|
+| `read_file`   | `read_file(path) -> String`        | Read entire file as UTF-8; raises on error        |
+| `write_file`  | `write_file(path, str) -> null`    | Overwrite file; raises on error                   |
+| `append_file` | `append_file(path, str) -> null`   | Append; creates if missing; raises on error       |
+| `exists`      | `exists(path) -> Bool`             | True if the path exists; never raises             |
+| `read_line`   | `read_line() -> String\|null`      | One line from stdin (without trailing `\n`); null on EOF |
+| `eprint`      | `eprint(...args) -> last_arg`      | Like `print` but to stderr                        |
+
+#### `Os`
+
+| Entry   | Signature                  | Behavior                                              |
+|---------|----------------------------|-------------------------------------------------------|
+| `args`  | `Array<String>` (value)    | `[interpreter, script, user_arg1, user_arg2, ...]`    |
+| `env`   | `env(name) -> String\|null`| Read environment variable; null if unset              |
+| `cwd`   | `cwd() -> String`          | Current working directory                             |
+| `exit`  | `exit(code) -> never`      | Exit the process; bypasses `try` (real process exit)  |
+
+#### `Time`
+
+| Entry      | Signature                | Behavior                                |
+|------------|--------------------------|-----------------------------------------|
+| `now_ms`   | `now_ms() -> Int`        | Milliseconds since UNIX epoch           |
+| `now_ns`   | `now_ns() -> Int`        | Nanoseconds since UNIX epoch            |
+| `sleep_ms` | `sleep_ms(n) -> null`    | Block the thread for `n` ms             |
+
+### 13.3 Source-stdlib modules (v0.3)
+
+These ship as tigr `.tg` files embedded in the interpreter. `import`
+returns an Object of functions; signatures are the same as any
+user-defined module.
+
+#### `Array`
+
+`create`, `concat`, `map`, `filter`, `reduce`, `flatten`, `reverse`,
+`index`, `find`, `find_index`, `any`, `all`, `head`, `tail`, `take`,
+`drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`, `join`,
+`sort`, `sort_by`. Callbacks receive `(elem, index, whole_array)`;
+unused trailing args are dropped per spec §10.3.
+
+#### `String`
+
+`split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
+`starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`,
+`repeat`, `chars`, `pad_start`, `pad_end`.
+
+#### `Math`
+
+Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`,
+`sin`, `cos`, `tan`, `pow`, `abs`, `sign`, `min`, `max`, `clamp`.
+
+The trig/log/exp functions are backed by the native `_NativeMath`
+module (also importable directly). Source `Math.tg` re-exports them
+alongside pure-tigr helpers — this gives users a single point to
+shadow / extend without touching the interpreter.
 
 `str` rules:
 
@@ -669,6 +781,10 @@ Primary     ::= Literal
               | 'break' BreakValue?
               | 'return' ReturnValue?
               | 'import' String
+              | Try | Raise
+
+Try         ::= 'try' LogicAnd ('catch' '(' Identifier ')' Scope)?
+Raise       ::= 'raise' Expr
 
 Literal     ::= Integer | Float | String | 'true' | 'false' | 'null'
 ArrayLit    ::= '[' (Element (',' Element)* ','?)? ']'
@@ -838,3 +954,27 @@ Additions (non-breaking):
 9. Pipe `|>`, spread `...`, `..=` inclusive ranges, destructuring patterns.
 10. `print`, `str`, `num`, `int`, `float`, `bool` built-ins.
 11. Strings support `+`, `#`, indexing.
+
+## Appendix B — Changes in v0.3
+
+12. `try` / `catch` / `raise` expressions for recoverable errors
+    (§9.6). Built-in runtime errors are now catchable; previously they
+    aborted the program unconditionally.
+13. Module caching (§12.1). Each path now evaluates once per `Vm` run.
+    Bare-name imports (e.g. `import 'IO'`) route to a built-in native
+    module registry; unknown names raise.
+14. Native modules `IO`, `Os`, `Time` (§13.2) — file/stdio,
+    process/environment, and clock access. Errors from fallible IO
+    are `Raised(String)` and catchable via `try`.
+15. Source-stdlib modules `Array`, `String`, `Math` (§13.3) — shipped
+    as embedded `.tg` source. Math/String wrap underlying native
+    modules (`_NativeMath`, `_NativeString`) for primitives that
+    need Rust.
+16. **Interactive REPL.** Running `tigr` with no script argument
+    starts a session where each line is evaluated against a
+    persistent set of bindings. Closures over REPL locals share
+    upvalue cells across lines, so mutating an outer name is
+    visible through closures defined earlier or later. An uncaught
+    raise prints the error and the session continues. Multi-line
+    input is supported when the parser indicates incompleteness.
+    `:quit` / `:q` exits.

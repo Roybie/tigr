@@ -1,0 +1,41 @@
+// try / catch / raise — recoverable errors (spec §9.6, v0.3).
+//
+// Everything is still an expression. `try` evaluates to either the
+// protected body's value or the catch handler's value (or null if
+// no catch is given). `raise` aborts the current evaluation with a
+// string error.
+
+// 1. Catching a built-in error: `int()` raises on unparseable strings.
+//    The catch handler binds the error message as a string.
+parsed := try int('not a number') catch (e) {
+    'unparseable: ' + e
+};
+
+// 2. No-catch try: value on success, null on error. Pairs with `||`.
+fallback := try int('also bad') || 0;
+
+// 3. User-raised errors: `raise` produces a value-bearing exit.
+//    Catch can re-raise to bubble outward.
+divide := fn(a, b) {
+    if b == 0 { raise 'division by zero' };
+    a / b
+};
+
+safe := try divide(10, 0) catch (e) { 'caught: ' + e };
+
+// 4. Chained: catch can itself contain a try.
+chained := try {
+    try divide(10, 0) catch (e) {
+        raise ('rethrown: ' + e)
+    }
+} catch (outer) {
+    outer
+};
+
+// 5. try inside a loop body works alongside `break` — catching here
+//    converts a per-iteration failure into a continue-with-null.
+sum := for[] (n, [1, 2, 0, 4, 5]) {
+    try (10 / n) catch (_) { null }
+};
+
+[parsed, fallback, safe, chained, sum]

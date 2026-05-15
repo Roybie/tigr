@@ -8,8 +8,10 @@ pub mod chunk;
 pub mod compiler;
 pub mod error;
 pub mod lexer;
+pub mod native_modules;
 pub mod opcode;
 pub mod parser;
+pub mod source_stdlib;
 pub mod stdlib;
 pub mod token;
 pub mod value;
@@ -59,4 +61,37 @@ fn run_source_with_dir(
     let mut vm = Vm::new();
     let value = vm.run(main)?;
     Ok(value)
+}
+
+/// Read and compile a file without running it. Used by the Import
+/// opcode to push the imported module's `<main>` as a fresh call
+/// frame on the SAME Vm (sharing the cache, see [`vm::Vm`]).
+///
+/// All error paths fold into `Error` — the caller is expected to
+/// re-wrap as `RuntimeError::ImportFailed` so the import can be
+/// caught with `try`.
+pub fn compile_file(path: &Path) -> Result<self::value::Function, Error> {
+    let source = std::fs::read_to_string(path).map_err(|e| {
+        Error::Runtime(RuntimeError::new(
+            RuntimeErrorKind::ImportFailed(
+                path.display().to_string(),
+                e.to_string(),
+            ),
+            0,
+        ))
+    })?;
+    let base_dir = path.parent().map(PathBuf::from);
+    compile_source(&source, base_dir)
+}
+
+/// Compile pre-loaded source. Same pipeline as `compile_file` but
+/// without the filesystem step — used for embedded source stdlibs.
+pub fn compile_source(
+    source: &str,
+    base_dir: Option<PathBuf>,
+) -> Result<self::value::Function, Error> {
+    let tokens = Lexer::new(source).tokenize()?;
+    let program = parser::parse(tokens)?;
+    let main = Compiler::compile_with_dir(&program, base_dir)?;
+    Ok(main)
 }

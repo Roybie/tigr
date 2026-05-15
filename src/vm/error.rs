@@ -152,6 +152,12 @@ pub enum RuntimeErrorKind {
     InvalidIndexType(String),
     ImmutableTarget(String),
     ImportFailed(String, String),
+    /// User-raised error (`raise expr`) or a builtin/runtime error that
+    /// has been caught and re-thrown as a string. The contained value
+    /// is what catch handlers will see and what `Display` prints for an
+    /// uncaught raise. Distinguished from other variants so we don't
+    /// add a `runtime error:` prefix when stringifying.
+    Raised(String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -170,6 +176,7 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::ImportFailed(path, msg) => write!(
                 f, "import of {path:?} failed: {msg}"
             ),
+            RuntimeErrorKind::Raised(s) => f.write_str(s),
         }
     }
 }

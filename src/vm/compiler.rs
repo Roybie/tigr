@@ -192,6 +192,80 @@ impl Compiler {
         })
     }
 
+    /// Compile one REPL line.
+    ///
+    /// `existing_locals` is the list of (name, slot) pairs the REPL
+    /// has accumulated from previous lines. They're pre-declared at
+    /// their slots so name resolution emits the right `LoadLocal`. The
+    /// chunk ends in `Halt` (not `Return`) so the REPL frame survives
+    /// for the next line.
+    ///
+    /// Returns the compiled function and the list of NEW top-level
+    /// locals the line declared. The driver appends those to its
+    /// state for use on the next line.
+    pub fn compile_repl(
+        program: &Block,
+        existing_locals: &[(String, u8)],
+    ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
+        let mut c = Compiler {
+            funcs: Vec::new(),
+            globals: stdlib::names().to_vec(),
+            base_dir: None,
+        };
+        c.push_function(0, Some("<repl>".to_string()));
+        // Slot 0 = closure placeholder (the REPL frame holds the
+        // line's closure here).
+        c.current_mut().stack_height = 1;
+        c.declare_local("", Span::new(0, 0, 1))?;
+
+        // Pre-declare the REPL's accumulated locals at their slots.
+        // The runtime stack at slots 1..=M holds the actual values
+        // from prior lines — the compiler just needs name → slot to
+        // resolve identifiers correctly.
+        for (name, slot) in existing_locals {
+            c.current_mut().stack_height = (*slot as u32) + 1;
+            c.declare_local_at(name, *slot, Span::new(0, 0, 1))?;
+        }
+        c.current_mut().stack_height =
+            1 + existing_locals.len() as u32;
+
+        // The number of locals before compiling this line — anything
+        // pushed past this is "new" and will be reported back.
+        let pre_locals = c.current().locals.len();
+
+        // Same hoisting story as the standard entry.
+        let mut hoisted = Vec::new();
+        c.visit_block_for_hoist(program, &mut hoisted);
+        c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
+
+        c.compile_block_value(program)?;
+        let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
+        c.current_chunk_mut().write_op(OpCode::Halt, last_line);
+
+        let fc = c.funcs.pop().expect("repl function compiler popped");
+
+        // Collect the new top-level locals (skip closure placeholder,
+        // existing, anonymous, and `$`-prefixed compiler internals).
+        let new_locals: Vec<(String, u8)> = fc
+            .locals
+            .iter()
+            .skip(pre_locals)
+            .filter(|l| !l.name.is_empty() && !l.name.starts_with('$'))
+            .map(|l| (l.name.clone(), l.slot))
+            .collect();
+
+        Ok((
+            Function {
+                arity: 0,
+                has_rest: false,
+                chunk: fc.chunk,
+                upvalues: fc.upvalues,
+                name: fc.name,
+            },
+            new_locals,
+        ))
+    }
+
     // -- function compiler stack helpers ------------------------------
 
     fn current(&self) -> &FuncCompiler {
@@ -396,7 +470,18 @@ impl Compiler {
             | OpCode::JumpIfFalse | OpCode::JumpIfTrue
             | OpCode::Jump | OpCode::Loop
             | OpCode::Negate | OpCode::Not | OpCode::Len
-            | OpCode::Import | OpCode::MakeIter => 0,
+            | OpCode::Import | OpCode::MakeIter
+            | OpCode::PushTry | OpCode::PopTry => 0,
+            // Raise pops its message. The runtime never reaches code
+            // after Raise; the compiler still tracks -1 here for
+            // consistency, and the surrounding `raise` compilation
+            // calls `set_stack_height` to override afterwards.
+            OpCode::Raise => -1,
+            // Halt pops the line value before exiting. Tracked as -1
+            // here for the rare case downstream emission needs the
+            // post-Halt height (none currently — Halt is end-of-chunk
+            // for REPL lines).
+            OpCode::Halt => -1,
             // -1: pop two, push one (typical binop / index / extend)
             OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
             | OpCode::Mod | OpCode::Pow | OpCode::Eq | OpCode::Neq
@@ -509,6 +594,16 @@ impl Compiler {
             }
             Expr::Break(v) | Expr::Return(v) => {
                 if let Some(v) = v { self.visit_for_hoist(v, out); }
+            }
+            Expr::Raise(v) => self.visit_for_hoist(v, out),
+            // `try ... catch (e) { handler }` — the handler is a
+            // `Scope` per grammar (handles its own hoisting). We only
+            // scan the protected body, treating it like any other
+            // inline expression. A `:=` directly inside `try expr`
+            // (no scope) gets hoisted to the enclosing scope so its
+            // slot survives the surrounding op.
+            Expr::Try { body, catch: _ } => {
+                self.visit_for_hoist(body, out);
             }
             Expr::Assign(_, _, v) => self.visit_for_hoist(v, out),
             Expr::Array(items) => for i in items { self.visit_for_hoist(i, out); },
@@ -670,6 +765,14 @@ impl Compiler {
 
             Expr::Break(value) => {
                 self.compile_break(value.as_deref(), line, e.span)?;
+            }
+
+            Expr::Try { body, catch } => {
+                self.compile_try(body, catch.as_ref(), line, e.span)?;
+            }
+
+            Expr::Raise(value) => {
+                self.compile_raise(value, line)?;
             }
 
             Expr::Decl(pat, init) => {
@@ -1400,6 +1503,86 @@ impl Compiler {
         Ok(())
     }
 
+    /// `try` / `catch` lowering (spec §9.6).
+    ///
+    /// Success path:
+    /// ```text
+    ///   push_try catch_pc        ; snapshot stack length
+    ///   <body>                   ; pushes 1
+    ///   pop_try                  ; success — discard the try-frame
+    ///   jump end
+    /// catch_pc:                  ; reached only via Raise — at this
+    ///                            ; point the VM has truncated stack
+    ///                            ; to the snapshot and pushed the
+    ///                            ; error string
+    ///   (no-catch)  pop          ; drop error
+    ///               push_null    ; produce null
+    ///   (catch)     <handler>    ; runs in a scope with `param` bound
+    ///                            ; to the error
+    /// end:                       ; either path leaves +1 on the stack
+    /// ```
+    fn compile_try(
+        &mut self,
+        body: &SpannedExpr,
+        catch: Option<&(String, Box<SpannedExpr>)>,
+        line: u32,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        // Snapshot AT the PushTry — this is the stack height the VM
+        // restores to before pushing the error.
+        let push_try_at = self.emit_jump(OpCode::PushTry, line);
+
+        self.compile_expr(body)?;
+        let success_height = self.current().stack_height;
+
+        self.emit_op(OpCode::PopTry, line);
+        let end_jump = self.emit_jump(OpCode::Jump, line);
+
+        // Catch path. PushTry's target lands here; VM has already
+        // pushed the error value, so reset the tracker accordingly.
+        self.patch_jump(push_try_at)?;
+        // success_height = snapshot + 1 (from <body>); catch path also
+        // leaves snapshot + 1 (the error value the VM pushed). Use
+        // success_height directly.
+        self.set_stack_height(success_height);
+
+        if let Some((param, handler)) = catch {
+            // Declare `param` so the handler scope sees the error
+            // value as `param`. Use a real scope so the binding goes
+            // out of scope after the handler, and CloseScope drops
+            // it while preserving the handler's value.
+            self.begin_scope();
+            self.declare_local(param, span)?;
+            self.compile_expr(handler)?;
+            self.end_scope(line)?;
+        } else {
+            // No catch: discard the error, produce null.
+            self.emit_op(OpCode::Pop, line);
+            self.emit_op(OpCode::PushNull, line);
+        }
+
+        self.patch_jump(end_jump)?;
+        // Both arms converge at the success height.
+        self.set_stack_height(success_height);
+        Ok(())
+    }
+
+    /// `raise` lowering (spec §9.6). Compiles the value, emits Raise.
+    /// The runtime never reaches code after Raise; we reset the
+    /// compiler's stack tracker to "+1 over entry" so downstream
+    /// emission stays consistent (mirrors how `break` is handled).
+    fn compile_raise(
+        &mut self,
+        value: &SpannedExpr,
+        line: u32,
+    ) -> Result<(), CompileError> {
+        let entry_height = self.current().stack_height;
+        self.compile_expr(value)?;
+        self.emit_op(OpCode::Raise, line);
+        self.set_stack_height(entry_height + 1);
+        Ok(())
+    }
+
     // -- function literal --------------------------------------------
 
     fn compile_fn(
@@ -1557,34 +1740,41 @@ impl Compiler {
         Ok(())
     }
 
-    /// Resolve an `import 'path'` to an absolute path, store it in
-    /// the constant pool, and emit `Import idx`. Path resolution
-    /// mirrors spec §12: relative to the importing file's directory,
-    /// `.tg` appended if absent.
+    /// Resolve an `import 'path'` to a constant the runtime can use,
+    /// then emit `Import`. Two flavors:
+    ///
+    /// - **Bare name** (no `/`, `\`, or `.`): emit the raw name. The
+    ///   VM tries the native-module registry first; if nothing
+    ///   matches, the import raises a catchable error. This is what
+    ///   `import 'IO'` / `import 'Array'` uses.
+    /// - **Path-shaped**: absolutize relative to the importing file
+    ///   (per spec §12), append `.tg` if no extension. The VM caches
+    ///   the result so a second import of the same path is free.
     fn compile_import(
         &mut self,
         path: &str,
         line: u32,
         span: Span,
     ) -> Result<(), CompileError> {
-        let mut resolved = if std::path::Path::new(path).is_absolute() {
-            PathBuf::from(path)
+        let is_bare = !path.contains('/') && !path.contains('\\') && !path.contains('.');
+        let emitted = if is_bare {
+            path.to_string()
         } else {
-            match &self.base_dir {
-                Some(d) => d.join(path),
-                None => PathBuf::from(path),
+            let mut resolved = if std::path::Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                match &self.base_dir {
+                    Some(d) => d.join(path),
+                    None => PathBuf::from(path),
+                }
+            };
+            if resolved.extension().is_none() {
+                resolved.set_extension("tg");
             }
+            resolved.to_string_lossy().to_string()
         };
-        if resolved.extension().is_none() {
-            resolved.set_extension("tg");
-        }
-        let path_str = resolved.to_string_lossy().to_string();
-        self.emit_constant(Value::Str(path_str.into()), line, span)?;
+        self.emit_constant(Value::Str(emitted.into()), line, span)?;
         self.emit_op(OpCode::Import, line);
-        // The Import opcode operand is the const index of the path
-        // that we just pushed — but we already used LoadConst to
-        // push it onto the stack, so Import just consumes it. No
-        // additional operand needed.
         Ok(())
     }
 

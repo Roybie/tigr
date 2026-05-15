@@ -1516,6 +1516,710 @@ fn phase7_rest_not_last_errors() {
     assert!(msg.contains("last") || msg.contains("rest"), "got {msg}");
 }
 
+// ---- v0.3: try / catch / raise ----
+
+#[test]
+fn v03_try_success_no_catch() {
+    // No error → try evaluates to the body's value.
+    assert_eq!(run("try (1 + 2)"), Value::Int(3));
+}
+
+#[test]
+fn v03_try_no_catch_swallows_error() {
+    // Builtin error (cannot convert) → caught silently as null.
+    assert_eq!(run("try num([1, 2])"), Value::Null);
+}
+
+#[test]
+fn v03_try_catch_binds_error_message() {
+    // Catch handler runs with the error message bound to `e`.
+    let src = "try (raise 'oops') catch (e) { 'got: ' + e }";
+    assert_eq!(run(src), Value::Str("got: oops".into()));
+}
+
+#[test]
+fn v03_try_catch_runtime_error() {
+    // Built-in TypeMismatch reaches the catch with the message
+    // produced by RuntimeError::Display ("type mismatch: ...").
+    let src = "try int([1]) catch (e) { e }";
+    match run(src) {
+        Value::Str(s) => assert!(s.contains("int()") || s.contains("type"), "got {s}"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_try_in_decl() {
+    let src = "
+        x := try (raise 'fail') catch (e) { 42 };
+        x
+    ";
+    assert_eq!(run(src), Value::Int(42));
+}
+
+#[test]
+fn v03_raise_from_nested_fn() {
+    // Raise inside a function called from try → caught in outer frame.
+    let src = "
+        boom := fn() { raise 'inner' };
+        try boom() catch (e) { 'caught: ' + e }
+    ";
+    assert_eq!(run(src), Value::Str("caught: inner".into()));
+}
+
+#[test]
+fn v03_uncaught_raise_propagates() {
+    // No try → error surfaces with the raised message.
+    let msg = run_err("raise 'bang'");
+    assert!(msg.contains("bang"), "got {msg}");
+}
+
+#[test]
+fn v03_nested_try_inner_catches() {
+    let src = "
+        try { try (raise 'inner') catch (e) { 'inner-handled:' + e } }
+        catch (e2) { 'outer-handled:' + e2 }
+    ";
+    assert_eq!(run(src), Value::Str("inner-handled:inner".into()));
+}
+
+#[test]
+fn v03_nested_try_outer_catches_when_inner_reraises() {
+    let src = "
+        try { try (raise 'a') catch (e) { raise ('re:' + e) } }
+        catch (e2) { 'outer:' + e2 }
+    ";
+    assert_eq!(run(src), Value::Str("outer:re:a".into()));
+}
+
+#[test]
+fn v03_try_inside_loop_preserves_break() {
+    // try inside a for body shouldn't disturb break-with-value.
+    let src = "
+        for (i, 1..=10) {
+            try (if i == 3 { raise 'stop' }) catch (e) {
+                break i * 100
+            }
+        }
+    ";
+    assert_eq!(run(src), Value::Int(300));
+}
+
+#[test]
+fn v03_try_in_expression_position() {
+    // try composes with || for default-on-error.
+    let src = "(try (raise 'no') || 'default') + '!'";
+    assert_eq!(run(src), Value::Str("default!".into()));
+}
+
+#[test]
+fn v03_raise_non_string_coerces() {
+    // Non-string raises stringify via Display.
+    let src = "try (raise 42) catch (e) { e }";
+    assert_eq!(run(src), Value::Str("42".into()));
+}
+
+#[test]
+fn v03_try_closure_captures() {
+    // Catch param can be captured by an inner closure (open upvalue
+    // closes correctly when scope ends).
+    let src = "
+        get_handler := fn() {
+            try (raise 'captured') catch (e) { fn() { e } }
+        };
+        h := get_handler();
+        h()
+    ";
+    assert_eq!(run(src), Value::Str("captured".into()));
+}
+
+#[test]
+fn v03_try_inside_call_args() {
+    // try expressions work as function call arguments.
+    let src = "
+        identity := fn(x) { x };
+        identity(try (raise 'arg') catch (e) { e })
+    ";
+    assert_eq!(run(src), Value::Str("arg".into()));
+}
+
+// ---- v0.3 Phase 5: REPL ----
+//
+// These exercise the `Repl::eval` API directly — the IO loop in
+// `Repl::run` is harder to unit-test cleanly. The session-state
+// behaviour (locals persisting, errors not killing state, closures
+// sharing upvalues across lines) is what matters; the IO loop just
+// pipes stdin to `eval`.
+
+#[test]
+fn v03_repl_persists_locals() {
+    let mut repl = crate::repl::Repl::new();
+    assert_eq!(repl.eval("x := 5").unwrap(), Value::Int(5));
+    assert_eq!(repl.eval("x * 2").unwrap(), Value::Int(10));
+}
+
+#[test]
+fn v03_repl_multiple_declarations() {
+    let mut repl = crate::repl::Repl::new();
+    repl.eval("a := 3").unwrap();
+    repl.eval("b := 4").unwrap();
+    assert_eq!(repl.eval("a + b").unwrap(), Value::Int(7));
+}
+
+#[test]
+fn v03_repl_error_preserves_state() {
+    let mut repl = crate::repl::Repl::new();
+    repl.eval("keep := 42").unwrap();
+    assert!(repl.eval("raise 'boom'").is_err());
+    // State must survive the uncaught raise.
+    assert_eq!(repl.eval("keep").unwrap(), Value::Int(42));
+}
+
+#[test]
+fn v03_repl_error_discards_partial_decl() {
+    let mut repl = crate::repl::Repl::new();
+    // Decl succeeds, then raise — but the line errored mid-way after
+    // declaring; the REPL should NOT commit `partial` to its state.
+    let _ = repl.eval("partial := 99; raise 'mid'");
+    // Referencing `partial` should now be an undeclared variable.
+    assert!(repl.eval("partial").is_err());
+}
+
+#[test]
+fn v03_repl_closures_share_upvalues() {
+    let mut repl = crate::repl::Repl::new();
+    repl.eval("n := 0").unwrap();
+    repl.eval("inc := fn() { n = n + 1; n }").unwrap();
+    repl.eval("read := fn() { n }").unwrap();
+    assert_eq!(repl.eval("inc()").unwrap(), Value::Int(1));
+    assert_eq!(repl.eval("inc()").unwrap(), Value::Int(2));
+    // The closure captured at "inc" definition time sees the SAME `n`
+    // as the closure captured later at "read" definition.
+    assert_eq!(repl.eval("read()").unwrap(), Value::Int(2));
+    // Mutating directly is also visible through the closures.
+    repl.eval("n = 100").unwrap();
+    assert_eq!(repl.eval("read()").unwrap(), Value::Int(100));
+}
+
+#[test]
+fn v03_repl_counter_closure_persists() {
+    let mut repl = crate::repl::Repl::new();
+    repl.eval(
+        "make := fn() { n := 0; fn() { n = n + 1; n } }"
+    ).unwrap();
+    repl.eval("c := make()").unwrap();
+    assert_eq!(repl.eval("c()").unwrap(), Value::Int(1));
+    assert_eq!(repl.eval("c()").unwrap(), Value::Int(2));
+    assert_eq!(repl.eval("c()").unwrap(), Value::Int(3));
+}
+
+#[test]
+fn v03_repl_stdlib_import() {
+    let mut repl = crate::repl::Repl::new();
+    repl.eval("Array := import 'Array'").unwrap();
+    assert_eq!(repl.eval("Array.sum([1, 2, 3])").unwrap(), Value::Int(6));
+}
+
+#[test]
+fn v03_repl_try_catch_works() {
+    let mut repl = crate::repl::Repl::new();
+    let v = repl.eval("try (raise 'msg') catch (e) { 'got: ' + e }").unwrap();
+    assert_eq!(v, Value::Str("got: msg".into()));
+}
+
+#[test]
+fn v03_repl_redeclare_shadows() {
+    // Re-declaring a name in the REPL adds a NEW local at a new slot.
+    // Per spec §4.1, `:=` in the same scope of the same name is a
+    // DuplicateDeclaration error — and that's what should happen here
+    // (REPL session is one scope).
+    let mut repl = crate::repl::Repl::new();
+    repl.eval("x := 1").unwrap();
+    assert!(repl.eval("x := 2").is_err());
+    // Original still works.
+    assert_eq!(repl.eval("x").unwrap(), Value::Int(1));
+}
+
+// ---- v0.3 Phase 4: source stdlib (Array / String / Math) ----
+
+#[test]
+fn v03_array_map() {
+    let src = "
+        Array := import 'Array';
+        Array.map([1, 2, 3], fn(x) { x * x })
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 3);
+            assert_eq!(b[0], Value::Int(1));
+            assert_eq!(b[1], Value::Int(4));
+            assert_eq!(b[2], Value::Int(9));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_filter() {
+    let src = "
+        Array := import 'Array';
+        Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 })
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 2);
+            assert_eq!(b[0], Value::Int(2));
+            assert_eq!(b[1], Value::Int(4));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_reduce() {
+    let src = "
+        Array := import 'Array';
+        Array.reduce([1, 2, 3, 4], fn(acc, x) { acc + x }, 0)
+    ";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v03_array_reduce_empty_returns_seed() {
+    let src = "
+        Array := import 'Array';
+        Array.reduce([], fn(acc, x) { acc + x }, 42)
+    ";
+    assert_eq!(run(src), Value::Int(42));
+}
+
+#[test]
+fn v03_array_find_returns_first_match() {
+    let src = "
+        Array := import 'Array';
+        Array.find([1, 2, 3, 4], fn(x) { x > 2 })
+    ";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn v03_array_find_no_match_returns_null() {
+    let src = "
+        Array := import 'Array';
+        Array.find([1, 2, 3], fn(x) { x > 99 })
+    ";
+    assert_eq!(run(src), Value::Null);
+}
+
+#[test]
+fn v03_array_any_all() {
+    let src = "
+        Array := import 'Array';
+        [
+            Array.any([1, 2, 3], fn(x) { x > 2 }),
+            Array.any([1, 2, 3], fn(x) { x > 99 }),
+            Array.all([2, 4, 6], fn(x) { x % 2 == 0 }),
+            Array.all([2, 4, 5], fn(x) { x % 2 == 0 })
+        ]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert_eq!(b[1], Value::Bool(false));
+            assert_eq!(b[2], Value::Bool(true));
+            assert_eq!(b[3], Value::Bool(false));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_sort() {
+    let src = "
+        Array := import 'Array';
+        Array.sort([3, 1, 4, 1, 5, 9, 2, 6])
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            let nums: Vec<i64> = b.iter()
+                .map(|v| if let Value::Int(n) = v { *n } else { panic!() })
+                .collect();
+            assert_eq!(nums, vec![1, 1, 2, 3, 4, 5, 6, 9]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_uniq() {
+    let src = "
+        Array := import 'Array';
+        Array.uniq([1, 2, 2, 3, 1, 4, 3])
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            let nums: Vec<i64> = b.iter()
+                .map(|v| if let Value::Int(n) = v { *n } else { panic!() })
+                .collect();
+            assert_eq!(nums, vec![1, 2, 3, 4]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_zip_min_length() {
+    let src = "
+        Array := import 'Array';
+        Array.zip([1, 2, 3], ['a', 'b'])
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 2);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_array_join() {
+    let src = "
+        Array := import 'Array';
+        Array.join([1, 2, 3], ', ')
+    ";
+    assert_eq!(run(src), Value::Str("1, 2, 3".into()));
+}
+
+#[test]
+fn v03_string_split_join() {
+    let src = "
+        String := import 'String';
+        parts := String.split('a,b,c,d', ',');
+        String.join(parts, '-')
+    ";
+    assert_eq!(run(src), Value::Str("a-b-c-d".into()));
+}
+
+#[test]
+fn v03_string_replace() {
+    let src = "
+        String := import 'String';
+        String.replace('hello world', 'world', 'tigr')
+    ";
+    assert_eq!(run(src), Value::Str("hello tigr".into()));
+}
+
+#[test]
+fn v03_string_predicates() {
+    let src = "
+        S := import 'String';
+        [
+            S.contains('hello world', 'world'),
+            S.starts_with('hello world', 'hello'),
+            S.ends_with('hello world', 'world'),
+            S.contains('hello', 'xyz')
+        ]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert_eq!(b[1], Value::Bool(true));
+            assert_eq!(b[2], Value::Bool(true));
+            assert_eq!(b[3], Value::Bool(false));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_string_case() {
+    let src = "
+        S := import 'String';
+        [S.upper('hello'), S.lower('HELLO')]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Str("HELLO".into()));
+            assert_eq!(b[1], Value::Str("hello".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_string_trim_pad() {
+    let src = "
+        S := import 'String';
+        [S.trim('  hi  '), S.pad_start('5', 3, '0'), S.pad_end('hi', 5, '.')]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Str("hi".into()));
+            assert_eq!(b[1], Value::Str("005".into()));
+            assert_eq!(b[2], Value::Str("hi...".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_math_sqrt_pi() {
+    let src = "
+        Math := import 'Math';
+        [Math.sqrt(4), Math.PI > 3.14, Math.PI < 3.15]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Float(2.0));
+            assert_eq!(b[1], Value::Bool(true));
+            assert_eq!(b[2], Value::Bool(true));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_math_abs_sign_clamp() {
+    let src = "
+        Math := import 'Math';
+        [Math.abs(-7), Math.sign(-3), Math.sign(0), Math.sign(5), Math.clamp(15, 0, 10)]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(7));
+            assert_eq!(b[1], Value::Int(-1));
+            assert_eq!(b[2], Value::Int(0));
+            assert_eq!(b[3], Value::Int(1));
+            assert_eq!(b[4], Value::Int(10));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_math_min_max() {
+    let src = "
+        Math := import 'Math';
+        [Math.min(3, 7), Math.max(3, 7)]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(3));
+            assert_eq!(b[1], Value::Int(7));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_stdlib_modules_cached() {
+    // Same import twice → same object reference (== compares
+    // structurally for objects, so this checks identity-of-content
+    // at minimum).
+    let src = "
+        a := import 'Array';
+        b := import 'Array';
+        a == b
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+// ---- v0.3 Phase 3: native modules (IO / Os / Time) ----
+
+#[test]
+fn v03_io_write_then_read_roundtrip() {
+    let dir = std::env::temp_dir().join(format!(
+        "tigr_v03_io_rw_{}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("data.txt");
+    let path_str = path.to_string_lossy().to_string();
+    let src = format!(
+        "IO := import 'IO';
+         IO.write_file('{path}', 'roundtrip');
+         IO.read_file('{path}')",
+        path = path_str
+    );
+    assert_eq!(run(&src), Value::Str("roundtrip".into()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v03_io_exists_for_missing_returns_false() {
+    let src = "IO := import 'IO'; IO.exists('/definitely/not/a/path/xyz123')";
+    assert_eq!(run(src), Value::Bool(false));
+}
+
+#[test]
+fn v03_io_read_missing_raises_catchable() {
+    let src = "
+        IO := import 'IO';
+        try IO.read_file('/definitely/not/a/path/xyz123')
+        catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+#[test]
+fn v03_io_module_is_cached() {
+    // Two `import 'IO'` calls hand back the same Object.
+    let src = "
+        a := import 'IO';
+        b := import 'IO';
+        a == b
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v03_os_args_is_array() {
+    // The actual values depend on the test runner; just verify the
+    // shape: an Array of strings, length > 0 (always includes argv[0]).
+    let src = "
+        Os := import 'Os';
+        [#Os.args > 0, Os.args[0]]
+    ";
+    let v = run(src);
+    match v {
+        Value::Array(arr) => {
+            let b = arr.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert!(matches!(b[1], Value::Str(_)));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v03_os_env_missing_is_null() {
+    let src = "
+        Os := import 'Os';
+        Os.env('TIGR_DEFINITELY_NOT_SET_VAR_98765')
+    ";
+    assert_eq!(run(src), Value::Null);
+}
+
+#[test]
+fn v03_os_env_present() {
+    // PATH is essentially always set; if not, this would fail
+    // (acceptable for a hobby-lang test suite).
+    std::env::set_var("TIGR_TEST_VAR_PRESENT", "yes");
+    let src = "
+        Os := import 'Os';
+        Os.env('TIGR_TEST_VAR_PRESENT')
+    ";
+    assert_eq!(run(src), Value::Str("yes".into()));
+    std::env::remove_var("TIGR_TEST_VAR_PRESENT");
+}
+
+#[test]
+fn v03_os_cwd_non_empty() {
+    let src = "Os := import 'Os'; #Os.cwd() > 0";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v03_time_now_ms_is_int() {
+    let src = "Time := import 'Time'; Time.now_ms() > 0";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v03_time_now_ms_monotonic() {
+    // Two reads — the second should be ≥ the first.
+    let src = "
+        Time := import 'Time';
+        a := Time.now_ms();
+        b := Time.now_ms();
+        b >= a
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+// ---- v0.3 Phase 2: module caching + native dispatch ----
+
+#[test]
+fn v03_import_cached_returns_same_object() {
+    // Two imports of the same path should yield the same Object
+    // (reference shared via cache, not re-evaluated). Mutating one
+    // is visible through the other.
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!(
+        "tigr_v03_cache_{}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mod_path = dir.join("counter.tg");
+    {
+        let mut f = std::fs::File::create(&mod_path).unwrap();
+        writeln!(f, "${{count: 0}}").unwrap();
+    }
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f,
+            "m1 := import './counter';
+             m2 := import './counter';
+             m1.count = 7;
+             m2.count").unwrap();
+    }
+    let value = crate::vm::run_file(&main_path).unwrap();
+    assert_eq!(value, Value::Int(7));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v03_import_circular_is_catchable() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!(
+        "tigr_v03_cycle_{}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let mut f = std::fs::File::create(dir.join("a.tg")).unwrap();
+        writeln!(f, "b := import './b'; 'a-done'").unwrap();
+    }
+    {
+        let mut f = std::fs::File::create(dir.join("b.tg")).unwrap();
+        writeln!(f, "a := import './a'; 'b-done'").unwrap();
+    }
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f,
+            "try import './a' catch (e) {{ if #e > 0 {{ 'caught' }} else {{ e }} }}"
+        ).unwrap();
+    }
+    let value = crate::vm::run_file(&main_path).unwrap();
+    assert_eq!(value, Value::Str("caught".into()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v03_import_bare_unknown_is_catchable() {
+    // No native module is registered yet; bare-name import should
+    // raise a catchable error.
+    let src = "try import 'NotARealModule' catch (e) { 'failed' }";
+    assert_eq!(run(src), Value::Str("failed".into()));
+}
+
+#[test]
+fn v03_import_missing_file_is_catchable() {
+    let src = "try import './definitely_does_not_exist' catch (e) { 'missing' }";
+    assert_eq!(run(src), Value::Str("missing".into()));
+}
+
 #[test]
 fn phase7_import_file() {
     // Write a temp module and import it.

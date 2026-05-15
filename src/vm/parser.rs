@@ -480,8 +480,48 @@ impl Parser {
             Token::Return => self.parse_return(),
             Token::Break => self.parse_break(),
             Token::Import => self.parse_import(),
+            Token::Try => self.parse_try(),
+            Token::Raise => self.parse_raise(),
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
+    }
+
+    /// `try expr` or `try expr catch (param) { handler }` — both
+    /// produce values per spec §9.6. The handler is required to be a
+    /// scope `{ ... }`.
+    ///
+    /// The body is parsed at `&&` precedence (one level tighter than
+    /// `||`) so that `try f(x) || 'default'` parses as
+    /// `(try f(x)) || 'default'` — the natural fallback idiom. Users
+    /// who want `try` to span an `||`-expression must parenthesize.
+    fn parse_try(&mut self) -> Result<SpannedExpr, ParseError> {
+        let try_span = self.expect(&Token::Try)?;
+        let body = self.parse_logic_and()?;
+        let (catch, end_span) = if self.matches(&Token::Catch) {
+            self.expect(&Token::LParen)?;
+            let param = self.parse_ident_token()?;
+            self.expect(&Token::RParen)?;
+            let handler = self.parse_scope()?;
+            let span = handler.span;
+            (Some((param, Box::new(handler))), span)
+        } else {
+            (None, body.span)
+        };
+        let span = try_span.join(end_span);
+        Ok(SpannedExpr::new(
+            Expr::Try { body: Box::new(body), catch },
+            span,
+        ))
+    }
+
+    /// `raise expr` — always carries a value; the value is the error
+    /// message (coerced to string at runtime). Unlike `break`/`return`,
+    /// there's no zero-arg form because an empty raise has no meaning.
+    fn parse_raise(&mut self) -> Result<SpannedExpr, ParseError> {
+        let raise_span = self.expect(&Token::Raise)?;
+        let value = self.parse_expr()?;
+        let span = raise_span.join(value.span);
+        Ok(SpannedExpr::new(Expr::Raise(Box::new(value)), span))
     }
 
     fn parse_fn(&mut self) -> Result<SpannedExpr, ParseError> {

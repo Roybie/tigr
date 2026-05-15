@@ -1,8 +1,8 @@
 # tigr
 
-A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break` and `return` — produces a value. There are no statements.
+A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents the **v0.2** bytecode VM implementation. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.3**: the v0.2 bytecode VM plus recoverable errors, a bundled stdlib, native I/O modules, and an interactive REPL. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -16,12 +16,14 @@ print('first square doubled:', double(squares[0]));   // 'first square doubled: 
 
 ```bash
 cargo build --release
-./target/release/tigr path/to/program.tg
+./target/release/tigr path/to/program.tg              # run a script
+./target/release/tigr path/to/program.tg arg1 arg2    # script + args (Os.args)
+./target/release/tigr                                  # interactive REPL
 ```
 
-When the program finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`.
+When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus a few Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/).
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/).
 
 ---
 
@@ -330,6 +332,25 @@ find := fn(arr, target) {
 };
 ```
 
+### `try` / `catch` / `raise`
+
+Recoverable errors. `raise expr` aborts the current evaluation with a string message; `try expr` evaluates `expr` and yields its value on success, or `null` on a raised/runtime error. `try expr catch (e) { handler }` runs the handler with the error message bound to `e`. All three are expressions.
+
+```
+content := try IO.read_file('config.tg') catch (e) {
+    print('warning:', e);
+    ''
+};
+
+n := try int(input) || 0;       // null on parse failure → 0
+
+raise 'database connection lost'
+```
+
+Built-in runtime errors (division by zero, type mismatch, out-of-bounds, missing file...) are catchable — the catch handler sees the same message that an uncaught error would print.
+
+The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
+
 ---
 
 ## Functions
@@ -424,16 +445,19 @@ ${user: ${id, name}} := response;
 ## Modules / imports
 
 ```
-Array := import 'Array';
-util  := import './lib/util';
+Array := import 'Array';       // bare name → bundled stdlib / native module
+local := import './lib/util';  // path → user file
 ```
 
-`import` evaluates the named file as a complete program in a fresh root environment and returns its final value. Paths are resolved relative to the importing file. The `.tg` extension is added automatically if absent.
+There are two flavors:
 
-A module is typically just an object literal:
+- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `String`, `Math` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
+- **Path-shaped**: resolved relative to the importing file. The `.tg` extension is added automatically if absent.
+
+A user module is typically just an object literal:
 
 ```
-// Array.tg
+// lib/util.tg
 ${
     map: fn(arr, f) { for[] (x, arr) { f(x) } },
     filter: fn(arr, f) { for[] (x, arr) { if f(x) { x } } },
@@ -441,7 +465,7 @@ ${
 }
 ```
 
-Each `import` re-evaluates the file — there's no caching in v0.2.
+Each path is evaluated **at most once per session** — subsequent imports of the same path return the cached value, so two `import 'X'` calls return the same underlying object. Circular imports raise a catchable error.
 
 ---
 
@@ -465,9 +489,117 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 
 ---
 
-## A worked example
+## Bundled modules (v0.3)
 
-Project Euler #4 — largest palindrome made from the product of two 3-digit numbers:
+Imported via `import 'Name'`. The first three are tigr-source modules; the rest are native (Rust-backed).
+
+### `Array`
+
+`create`, `concat`, `map`, `filter`, `reduce`, `flatten`, `reverse`, `index`, `find`, `find_index`, `any`, `all`, `head`, `tail`, `take`, `drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`, `join`, `sort`, `sort_by`.
+
+Callbacks receive `(elem, index, whole_array)` — pass a 1-arg `fn(x)` and the extras are dropped per spec §10.3.
+
+```
+Array := import 'Array';
+Array.sum(Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 }))   // 6
+```
+
+### `String`
+
+`split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`, `starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`, `repeat`, `chars`, `pad_start`, `pad_end`.
+
+```
+S := import 'String';
+S.split('a,b,c', ',') |> S.join('-')   // 'a-b-c'
+```
+
+### `Math`
+
+Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `pow`, `abs`, `sign`, `min`, `max`, `clamp`.
+
+### `IO`
+
+| Entry | Behavior |
+|---|---|
+| `read_file(path)` | UTF-8 file contents; raises on error |
+| `write_file(path, str)` | Overwrite; raises on error |
+| `append_file(path, str)` | Append; creates if missing |
+| `exists(path)` | Bool; never raises |
+| `read_line()` | One line from stdin (no trailing `\n`); null on EOF |
+| `eprint(...args)` | Like `print` but to stderr |
+
+### `Os`
+
+| Entry | Behavior |
+|---|---|
+| `args` | Array of strings: `[interpreter, script, user_args...]` |
+| `env(name)` | Env var value or `null` |
+| `cwd()` | Working directory |
+| `exit(code)` | Real process exit; bypasses `try` |
+
+### `Time`
+
+`now_ms()`, `now_ns()` (UNIX epoch), `sleep_ms(n)`.
+
+---
+
+## REPL
+
+Running `tigr` with no script enters an interactive session:
+
+```
+$ tigr
+tigr> x := 5
+5
+tigr> make_counter := fn() { n := 0; fn() { n = n + 1; n } }
+<fn>
+tigr> c := make_counter()
+<fn>
+tigr> c()
+1
+tigr> c()
+2
+tigr> raise 'oops'
+runtime error (line 1): oops
+tigr> c()
+3
+tigr> :q
+```
+
+Bindings persist across lines. Closures share upvalue cells, so mutating an outer name is visible through closures defined either earlier or later. An uncaught raise prints the error but the session continues with state intact. Multi-line input is supported when the parser sees `{`/`(`/`[`/`'` left open. `:quit` / `:q` exits.
+
+---
+
+## Worked examples
+
+A real v0.3 script — count word frequencies in a file:
+
+```
+IO := import 'IO';
+Os := import 'Os';
+Array := import 'Array';
+String := import 'String';
+
+path := Os.args[2];
+text := try IO.read_file(path) catch (e) {
+    IO.eprint('error:', e);
+    Os.exit(1)
+};
+
+words := text
+    |> String.trim()
+    |> String.lower()
+    |> String.split(' ')
+    |> Array.filter(fn(w) { #w > 0 });
+
+counts := ${};
+for (w, words) {
+    counts[w] = (counts[w] || 0) + 1
+};
+counts
+```
+
+And Project Euler #4 — the "everything is an expression" showpiece, largest palindrome made from the product of two 3-digit numbers:
 
 ```
 for (i, 999..=900) {
@@ -487,7 +619,7 @@ for (i, 999..=900) {
 }
 ```
 
-See [`examples/v02/`](examples/v02/) for many more — destructuring, closures, pipes, imports, the array library, and a handful of Project Euler solutions.
+More examples in [`examples/v02/`](examples/v02/) (v0.2 features) and [`examples/v03/`](examples/v03/) (errors, modules, stdlib).
 
 ---
 
@@ -513,10 +645,19 @@ Low to high, with associativity:
 
 ## Status
 
-v0.2 is feature-complete: the seven build phases of the bytecode VM are shipped and the test suite passes (169 tests). The full spec is in [`LANGUAGE.md`](LANGUAGE.md). The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
+**v0.3 is feature-complete.** 226 tests pass. On top of v0.2's bytecode VM, v0.3 adds:
 
-Known limitations / v0.3 candidates:
+1. `try` / `catch` / `raise` expressions (recoverable errors).
+2. Module caching + bare-name dispatch.
+3. Native modules `IO`, `Os`, `Time` (file/stdio, process, clock).
+4. Source-stdlib modules `Array`, `String`, `Math` (shipped as embedded `.tg`).
+5. Interactive REPL.
 
-- No module caching — every `import` re-evaluates the file.
-- No tracing GC — collections use `Rc<RefCell<...>>`, so cycles leak.
-- Array and object destructuring patterns work fine at the top of a statement but aren't yet hoisted when nested mid-expression (Ident destructures are). Workaround: lift the destructure into a statement of its own.
+See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
+
+Known limitations / v0.4 candidates:
+
+- No tracing GC — collections use `Rc<RefCell<...>>`, so reference cycles leak. Acceptable for hobby-scale data.
+- Array and object destructuring patterns work at the top of a statement but aren't hoisted when nested mid-expression (Ident destructures are). Workaround: lift the destructure into its own statement.
+- `=` (non-`:=`) with patterns isn't wired in — spec §11 says it should be; nothing in practice needs it yet.
+- No JSON, regex, or number-literal extensions (hex, scientific, underscores).

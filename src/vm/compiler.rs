@@ -78,12 +78,16 @@ struct Local {
 ///   expression of a `break` targeting this loop, so that a nested
 ///   `break` inside the value redirects to the next enclosing loop
 ///   (spec §9.4 chained-break semantics).
+/// - `loop_start` — bytecode offset of the loop's head (the `IterNext`
+///   for `for`, the condition for `while`). `continue` emits a backward
+///   `Loop` to this offset.
 struct LoopCtx {
     result_slot: u8,
     base_stack_height: u32,
     is_array_form: bool,
     exit_jumps: Vec<usize>,
     skip: bool,
+    loop_start: usize,
 }
 
 struct FuncCompiler {
@@ -511,7 +515,7 @@ impl Compiler {
             OpCode::Pop => -1,
             // 0: peek / unary in-place / jump / etc.
             OpCode::StoreLocal | OpCode::SetUpvalue
-            | OpCode::JumpIfFalse | OpCode::JumpIfTrue
+            | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::JumpIfNotNull
             | OpCode::Jump | OpCode::Loop
             | OpCode::Negate | OpCode::Not | OpCode::Len | OpCode::BitNot
             | OpCode::Import | OpCode::MakeIter
@@ -687,7 +691,7 @@ impl Compiler {
             }
             // Leaves
             Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_)
-            | Expr::Null | Expr::Ident(_) | Expr::Import(_) => {}
+            | Expr::Null | Expr::Ident(_) | Expr::Import(_) | Expr::Continue => {}
         }
     }
 
@@ -819,6 +823,10 @@ impl Compiler {
 
             Expr::Break(value) => {
                 self.compile_break(value.as_deref(), line, e.span)?;
+            }
+
+            Expr::Continue => {
+                self.compile_continue(line, e.span)?;
             }
 
             Expr::Try { body, catch } => {
@@ -1139,8 +1147,8 @@ impl Compiler {
                 }
             }
 
-            Expr::Fn { params, rest, body } => {
-                self.compile_fn(params, rest.as_deref(), body, e.span)?
+            Expr::Fn { params, defaults, rest, body } => {
+                self.compile_fn(params, defaults, rest.as_deref(), body, e.span)?
             }
 
             Expr::Import(path) => self.compile_import(path, line, e.span)?,
@@ -1582,15 +1590,16 @@ impl Compiler {
 
         let base_stack_height = self.current().stack_height;
 
+        let loop_start = self.current_chunk().code.len();
         self.current_mut().loop_stack.push(LoopCtx {
             result_slot,
             base_stack_height,
             is_array_form: is_array,
             exit_jumps: Vec::new(),
             skip: false,
+            loop_start,
         });
 
-        let loop_start = self.current_chunk().code.len();
         self.compile_expr(cond)?;
         // Snapshot the height with `cond` on the stack; the exit jump
         // target lands here (JumpIfFalse peeks, doesn't pop).
@@ -1728,15 +1737,16 @@ impl Compiler {
         // variables) gets unwound by break / end-of-iter.
         let base_stack_height = self.current().stack_height;
 
+        let loop_start = self.current_chunk().code.len();
         self.current_mut().loop_stack.push(LoopCtx {
             result_slot,
             base_stack_height,
             is_array_form: is_array,
             exit_jumps: Vec::new(),
             skip: false,
+            loop_start,
         });
 
-        let loop_start = self.current_chunk().code.len();
         let iter_op = if vars.len() == 1 { OpCode::IterNext } else { OpCode::IterNext2 };
         let exit_jump = self.emit_jump(iter_op, line);
         // On the success path, IterNext pushes 1 var (IterNext2 pushes
@@ -1863,6 +1873,48 @@ impl Compiler {
         Ok(())
     }
 
+    /// `continue` lowering. Mirrors `compile_break` up to the jump: the
+    /// current iteration contributes `null` (stored into / appended to
+    /// the result slot), nested locals are unwound, then control jumps
+    /// *backward* to the loop head rather than forward to the exit. For
+    /// `for` the head is `IterNext` (which re-reads the still-live
+    /// `$for_iter` IterState below `base_stack_height`); for `while` it
+    /// is the condition re-evaluation.
+    fn compile_continue(&mut self, line: u32, span: Span) -> Result<(), CompileError> {
+        let entry_height = self.current().stack_height;
+        let target = self
+            .current()
+            .loop_stack
+            .iter()
+            .rposition(|lc| !lc.skip)
+            .ok_or_else(|| {
+                CompileError::new(CompileErrorKind::ContinueOutsideLoop, span)
+            })?;
+
+        let ctx = &self.current().loop_stack[target];
+        let result_slot = ctx.result_slot;
+        let base_stack_height = ctx.base_stack_height;
+        let is_array_form = ctx.is_array_form;
+        let loop_start = ctx.loop_start;
+
+        self.emit_op(OpCode::PushNull, line);
+        if is_array_form {
+            self.emit_op(OpCode::IterAppend, line);
+            self.emit_byte(result_slot, line);
+        } else {
+            self.emit_op(OpCode::StoreLocal, line);
+            self.emit_byte(result_slot, line);
+            self.emit_op(OpCode::Pop, line);
+        }
+        self.emit_op(OpCode::Unwind, line);
+        self.emit_byte(base_stack_height as u8, line);
+        self.emit_loop(loop_start, line)?;
+        // Like `break`: code after the backward jump is unreachable;
+        // restore the tracker to the surrounding expression's +1.
+        self.set_stack_height(entry_height + 1);
+        Ok(())
+    }
+
     /// `try` / `catch` lowering (spec §9.6).
     ///
     /// Success path:
@@ -1948,6 +2000,7 @@ impl Compiler {
     fn compile_fn(
         &mut self,
         params: &[Pattern],
+        defaults: &[Option<Box<SpannedExpr>>],
         rest: Option<&str>,
         body: &SpannedExpr,
         span: Span,
@@ -1975,6 +2028,26 @@ impl Compiler {
         if let Some(name) = rest {
             self.current_mut().stack_height += 1;
             self.declare_local(name, span)?;
+        }
+
+        // Default parameter values: where an argument slot holds
+        // `null` (missing or explicitly passed `null`), evaluate the
+        // default and store it. Each block is runtime stack-neutral —
+        // both the not-null and null paths converge at `skip` with the
+        // loaded value on top, which the trailing `Pop` discards.
+        for (i, default) in defaults.iter().enumerate() {
+            if let Some(default) = default {
+                let slot = (i + 1) as u8;
+                self.emit_op(OpCode::LoadLocal, line);
+                self.emit_byte(slot, line);
+                let skip = self.emit_jump(OpCode::JumpIfNotNull, line);
+                self.compile_expr(default)?;
+                self.emit_op(OpCode::StoreLocal, line);
+                self.emit_byte(slot, line);
+                self.emit_op(OpCode::Pop, line);
+                self.patch_jump(skip)?;
+                self.emit_op(OpCode::Pop, line);
+            }
         }
 
         // Now destructure any structural patterns. The argument's

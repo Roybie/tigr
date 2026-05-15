@@ -40,8 +40,8 @@ sensitive. Keywords are reserved and cannot be used as identifiers.
 ### 2.3 Keywords
 
 ```
-fn  if  else  for  while  break  return  import  try  catch  raise
-match  null  true  false
+fn  if  else  for  while  break  continue  return  import  try  catch
+raise  match  null  true  false
 ```
 
 Note: `floor`, `ceil`, `rand`, `for[]`, `while[]` are no longer keywords — see
@@ -507,6 +507,22 @@ for (i, 0..10) {
 }
 ```
 
+### 9.4a continue (v0.6)
+
+`continue` skips the rest of the current loop iteration and proceeds to
+the next. The skipped iteration contributes `null` — so in a `for[]` /
+`while[]` nothing is appended (the same filtering a `null`-valued
+iteration or a bare `break` gets), and in a plain `for` / `while` that
+iteration's value becomes `null`. Unlike `break`, `continue` carries no
+value. `continue` outside any loop is a compile-time error.
+
+```
+evens := for[] (n, 0..10) {
+    if n % 2 != 0 { continue };
+    n
+};                                  // [0, 2, 4, 6, 8]
+```
+
 ### 9.5 return
 
 `return` exits the innermost function, optionally with a value:
@@ -651,6 +667,13 @@ first arg, use pipe: `obj |> method(args)`.
   (possibly empty). Only one rest parameter, must be last.
 - **Destructuring**: any parameter can be a pattern (§11):
   `fn([a, b], ${name}) { ... }`.
+- **Default values (v0.6)**: a parameter may be given a default with `=`,
+  e.g. `fn(a, b = 10) { ... }`. The default is evaluated and bound when
+  that argument slot is `null` — whether the argument was omitted *or*
+  explicitly passed as `null`. Defaults may reference earlier parameters
+  (`fn(a, b = a + 1)`), are evaluated left-to-right, and run only when
+  needed. A default is permitted only on a plain identifier parameter —
+  not a destructuring pattern, and not the rest parameter.
 
 ### 10.4 Closures
 
@@ -816,6 +839,12 @@ destructure or pass them like any other binding.
 | `write_file`  | `write_file(path, str) -> null`    | Overwrite file; raises on error                   |
 | `append_file` | `append_file(path, str) -> null`   | Append; creates if missing; raises on error       |
 | `exists`      | `exists(path) -> Bool`             | True if the path exists; never raises             |
+| `list_dir`    | `list_dir(path) -> Array<String>`  | Names of the directory's entries; raises on error (v0.6) |
+| `mkdir`       | `mkdir(path) -> null`              | Create directory and any missing parents; raises on error (v0.6) |
+| `remove`      | `remove(path) -> null`             | Delete a file, or a directory recursively; raises on error (v0.6) |
+| `is_dir`      | `is_dir(path) -> Bool`             | True if the path is a directory; never raises (v0.6) |
+| `is_file`     | `is_file(path) -> Bool`            | True if the path is a regular file; never raises (v0.6) |
+| `stat`        | `stat(path) -> Object`             | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing (v0.6) |
 | `read_line`   | `read_line() -> String\|null`      | One line from stdin (without trailing `\n`); null on EOF |
 | `eprint`      | `eprint(...args) -> last_arg`      | Like `print` but to stderr                        |
 
@@ -826,7 +855,30 @@ destructure or pass them like any other binding.
 | `args`  | `Array<String>` (value)    | `[interpreter, script, user_arg1, user_arg2, ...]`    |
 | `env`   | `env(name) -> String\|null`| Read environment variable; null if unset              |
 | `cwd`   | `cwd() -> String`          | Current working directory                             |
+| `run`   | `run(cmd, ...args) -> Object` | Run a subprocess, capturing output (v0.6). See below  |
 | `exit`  | `exit(code) -> never`      | Exit the process; bypasses `try` (real process exit)  |
+
+`Os.run(cmd, ...args)` spawns `cmd` with the given string arguments,
+waits for it, and returns `${code, stdout, stderr}` — `code` is the
+exit status (`-1` if the process was killed by a signal), `stdout` /
+`stderr` are the captured streams as Strings. A non-zero exit is a
+normal result, **not** an error; `run` raises only when the process
+cannot be spawned at all (e.g. command not found).
+
+#### `Path` (v0.6)
+
+Pure path-string manipulation backed by the host's path rules; nothing
+here touches the filesystem.
+
+| Entry         | Signature                          | Behavior                                          |
+|---------------|------------------------------------|---------------------------------------------------|
+| `join`        | `join(...parts) -> String`         | Join path segments with the platform separator    |
+| `dirname`     | `dirname(path) -> String`          | The parent directory (`''` if none)               |
+| `basename`    | `basename(path) -> String`         | The final component (`''` if none)                |
+| `ext`         | `ext(path) -> String`              | File extension without the dot (`''` if none)     |
+| `is_absolute` | `is_absolute(path) -> Bool`        | True if the path is absolute                      |
+
+Every `Path` entry raises on a non-String argument.
 
 #### `Time`
 
@@ -835,6 +887,29 @@ destructure or pass them like any other binding.
 | `now_ms`   | `now_ms() -> Int`        | Milliseconds since UNIX epoch           |
 | `now_ns`   | `now_ns() -> Int`        | Nanoseconds since UNIX epoch            |
 | `sleep_ms` | `sleep_ms(n) -> null`    | Block the thread for `n` ms             |
+
+#### `DateTime` (v0.6)
+
+Calendar date/time, **UTC only**. A *components object* is
+`${year, month, day, hour, minute, second, ms, weekday, yearday}` —
+`month` is 1–12, `weekday` is 0=Sunday, `yearday` is the 1-based day of
+the year.
+
+| Entry     | Signature                       | Behavior                                          |
+|-----------|---------------------------------|---------------------------------------------------|
+| `now`     | `now() -> Object`               | The current UTC time as a components object       |
+| `from_ms` | `from_ms(ms) -> Object`         | Convert epoch-milliseconds to a components object |
+| `to_ms`   | `to_ms(obj) -> Int`             | Convert a components object to epoch-milliseconds; missing fields default (year 1970, month/day 1, rest 0) |
+| `format`  | `format(ms, fmt) -> String`     | Render epoch-ms `ms` per `fmt`. Directives: `%Y %m %d %H %M %S %j %%`; other text is literal |
+| `parse`   | `parse(str) -> Int`             | Parse ISO-8601 `YYYY-MM-DD[(T\| )HH:MM:SS[.fff]]` to epoch-ms; raises on malformed input |
+
+`format`'s first argument is epoch-**milliseconds**, not a components
+object — pass a `Time.now_ms()` or `to_ms(...)` result:
+
+```
+DateTime := import 'DateTime';
+DateTime.format(DateTime.to_ms(DateTime.now()), '%Y-%m-%d')   // '2026-05-15'
+```
 
 ### 13.3 Source-stdlib modules (v0.3)
 
@@ -849,6 +924,14 @@ user-defined module.
 `drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`, `join`,
 `sort`, `sort_by`. Callbacks receive `(elem, index, whole_array)`;
 unused trailing args are dropped per spec §10.3.
+
+#### `Object` (v0.6)
+
+`keys`, `values`, `entries`, `from_entries`, `has`, `merge`, `map`,
+`filter`. `keys` / `values` / `entries` return arrays in insertion
+order (`entries` → `[key, value]` pairs; `from_entries` is its
+inverse). `merge` / `map` / `filter` return fresh objects — inputs are
+never mutated. Callbacks receive `(value, key, whole_object)`.
 
 #### `String`
 
@@ -955,6 +1038,7 @@ Primary     ::= Literal
               | ArrayLit | ObjectLit | FunctionLit
               | If | While | WhileA | For | ForA
               | 'break' BreakValue?
+              | 'continue'
               | 'return' ReturnValue?
               | 'import' String
               | Try | Raise | Match
@@ -980,7 +1064,7 @@ ObjectLit   ::= '$' '{' (ObjMember (',' ObjMember)* ','?)? '}'
 ObjMember   ::= '...' Expr | Identifier ':' Expr | String ':' Expr | Identifier   // shorthand
 FunctionLit ::= 'fn' '(' Params? ')' '{' Block '}'
 Params      ::= Param (',' Param)*
-Param       ::= '...' Identifier | Pattern
+Param       ::= '...' Identifier | Pattern | Identifier '=' Expr
 
 Pattern     ::= Identifier | '_' | ArrayPat | ObjectPat
 ArrayPat    ::= '[' (PatternElem (',' PatternElem)* ','?)? ']'
@@ -1208,3 +1292,25 @@ Additions (non-breaking):
     optional `if` guards, comma-separated arms. Non-exhaustive: a
     `match` with no matching arm evaluates to `null`. Or-pattern
     alternatives may not bind variables.
+
+## Appendix E — Changes in v0.6
+
+All additions; no breaking changes.
+
+25. **`continue`** (§9.4a) — a loop-control expression that skips the
+    rest of the current iteration. The iteration contributes `null`;
+    `continue` carries no value. `continue` outside a loop is a
+    compile-time error. `continue` is now a reserved keyword (§2.3).
+26. **Default parameter values** (§10.3) — `fn(a, b = 10) { ... }`. The
+    default is bound when the argument slot is `null` (omitted or
+    explicitly `null`). Identifier parameters only.
+27. **`IO` filesystem entries** (§13.2) — `list_dir`, `mkdir`,
+    `remove`, `is_dir`, `is_file`, `stat`.
+28. **`Path` native module** (§13.2) — `join`, `dirname`, `basename`,
+    `ext`, `is_absolute`.
+29. **`Os.run`** (§13.2) — run a subprocess, capturing
+    `${code, stdout, stderr}`.
+30. **`DateTime` native module** (§13.2) — UTC calendar date/time:
+    `now`, `from_ms`, `to_ms`, `format`, `parse`.
+31. **`Object` source-stdlib module** (§13.3) — `keys`, `values`,
+    `entries`, `from_entries`, `has`, `merge`, `map`, `filter`.

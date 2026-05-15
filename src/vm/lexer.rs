@@ -469,6 +469,7 @@ impl<'src> Lexer<'src> {
             "for" => Token::For,
             "while" => Token::While,
             "break" => Token::Break,
+            "continue" => Token::Continue,
             "return" => Token::Return,
             "import" => Token::Import,
             "try" => Token::Try,

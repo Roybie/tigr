@@ -566,6 +566,7 @@ impl Parser {
             Token::Fn => self.parse_fn(),
             Token::Return => self.parse_return(),
             Token::Break => self.parse_break(),
+            Token::Continue => self.parse_continue(),
             Token::Import => self.parse_import(),
             Token::Try => self.parse_try(),
             Token::Raise => self.parse_raise(),
@@ -789,6 +790,7 @@ impl Parser {
         let fn_span = self.expect(&Token::Fn)?;
         self.expect(&Token::LParen)?;
         let mut params: Vec<Pattern> = Vec::new();
+        let mut defaults: Vec<Option<Box<SpannedExpr>>> = Vec::new();
         let mut rest: Option<String> = None;
         if !self.check(&Token::RParen) {
             loop {
@@ -809,13 +811,44 @@ impl Parser {
                     break;
                 }
                 let expr = self.parse_expr()?;
-                let pat = expr_to_pattern(&expr).map_err(|pe| {
-                    ParseError::new(
-                        ParseErrorKind::InvalidPattern(pe.message().to_string()),
-                        pe.span(),
-                    )
-                })?;
-                params.push(pat);
+                // `name = default` parses as an `Assign` — treat it as a
+                // defaulted parameter. Defaults are identifier-only.
+                match &expr.expr {
+                    Expr::Assign(name, None, rhs) => {
+                        params.push(Pattern::Ident(name.clone()));
+                        defaults.push(Some(rhs.clone()));
+                    }
+                    Expr::Assign(_, Some(_), _) => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidPattern(
+                                "a default parameter value must use `=`, not a \
+                                 compound assignment"
+                                    .into(),
+                            ),
+                            expr.span,
+                        ));
+                    }
+                    Expr::AssignPattern(_, _) => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidPattern(
+                                "default values are only allowed on simple \
+                                 (identifier) parameters"
+                                    .into(),
+                            ),
+                            expr.span,
+                        ));
+                    }
+                    _ => {
+                        let pat = expr_to_pattern(&expr).map_err(|pe| {
+                            ParseError::new(
+                                ParseErrorKind::InvalidPattern(pe.message().to_string()),
+                                pe.span(),
+                            )
+                        })?;
+                        params.push(pat);
+                        defaults.push(None);
+                    }
+                }
                 if !self.matches(&Token::Comma) {
                     break;
                 }
@@ -828,7 +861,7 @@ impl Parser {
         let body = self.parse_scope()?;
         let span = fn_span.join(body.span);
         Ok(SpannedExpr::new(
-            Expr::Fn { params, rest, body: Box::new(body) },
+            Expr::Fn { params, defaults, rest, body: Box::new(body) },
             span,
         ))
     }
@@ -1064,6 +1097,11 @@ impl Parser {
             let span = break_span.join(value.span);
             Ok(SpannedExpr::new(Expr::Break(Some(Box::new(value))), span))
         }
+    }
+
+    fn parse_continue(&mut self) -> Result<SpannedExpr, ParseError> {
+        let span = self.expect(&Token::Continue)?;
+        Ok(SpannedExpr::new(Expr::Continue, span))
     }
 
     /// `[]` immediately after `for` / `while` marks the array-collecting

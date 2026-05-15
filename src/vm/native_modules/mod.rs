@@ -7,10 +7,12 @@
 //! `module_cache` ensures a given module is built at most once per
 //! `Vm` run.
 
+pub mod datetime;
 pub mod io;
 pub mod json;
 pub mod math;
 pub mod os;
+pub mod path;
 pub mod string;
 pub mod time;
 
@@ -29,7 +31,9 @@ pub fn resolve(name: &str) -> Option<Value> {
     match name {
         "IO" => Some(io::module()),
         "Os" => Some(os::module()),
+        "Path" => Some(path::module()),
         "Time" => Some(time::module()),
+        "DateTime" => Some(datetime::module()),
         "JSON" => Some(json::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import

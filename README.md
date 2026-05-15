@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.5**: the v0.4 release plus a `type()` built-in, bitwise operators, and a `match` expression. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.6**: the v0.5 release plus a `continue` keyword, default parameter values, and a wider standard library (`Path`, `Object`, `DateTime`, subprocess execution, and filesystem operations). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -334,6 +334,17 @@ for (i, 0..10) {
 }
 ```
 
+### `continue`
+
+`continue` skips the rest of the current loop iteration and moves to the next. The skipped iteration contributes `null` — so in a `for[]` / `while[]` nothing is appended, and in a plain `for` / `while` that iteration's value becomes `null`. Unlike `break`, `continue` carries no value. Using it outside a loop is a compile-time error.
+
+```
+evens := for[] (n, 0..10) {
+    if n % 2 != 0 { continue };
+    n
+};                                   // [0, 2, 4, 6, 8]
+```
+
 ### `return`
 
 Exits the innermost function. Like `break`, it's an expression and can be chained.
@@ -442,6 +453,7 @@ c();                                 // 2
 - **Positional**: missing args become `null`, extra args are dropped.
 - **Rest**: a final `...name` collects the remaining args as an array.
 - **Patterns**: any parameter can be a destructuring pattern.
+- **Defaults**: a parameter can have a default — `fn(a, b = 10)`. The default fills in when that argument slot is `null` (omitted *or* explicitly passed `null`).
 
 ```
 length := fn(...args) { #args };
@@ -450,7 +462,14 @@ length(1, 2, 3);                     // 3
 
 greet := fn(${name, age}) { 'hi {name}, {age}!' };
 greet(${name: 'tigr', age: 0});      // 'hi tigr, 0!'
+
+scale := fn(x, factor = 2) { x * factor };
+scale(10);                           // 20  — default used
+scale(10, 5);                        // 50
+scale(10, null);                     // 20  — explicit null also triggers it
 ```
+
+A default is only allowed on a plain identifier parameter (not a destructuring pattern, not the rest parameter). Defaults may reference earlier parameters (`fn(a, b = a + 1)`), evaluate left-to-right, and run only when needed. Note a falsy-but-not-null value like `0` does **not** trigger the default — only `null` does.
 
 ### Method-style calls
 
@@ -587,15 +606,41 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ---
 
-## Bundled modules (v0.3)
+## Standard library reference
 
-Imported via `import 'Name'`. The first three are tigr-source modules; the rest are native (Rust-backed).
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `String`, `Math`, and `Object` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
-`create`, `concat`, `map`, `filter`, `reduce`, `flatten`, `reverse`, `index`, `find`, `find_index`, `any`, `all`, `head`, `tail`, `take`, `drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`, `join`, `sort`, `sort_by`.
+A tigr-source module. Several functions take a **callback** — a function value you supply, which the module calls for you. These are the parameters named `func`, `pred`, and `key` in the table below. Unless a row's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`; since tigr drops extra arguments, declare it with only the parameters you need — `fn(x)`, `fn(x, i)`, or `fn(x, i, arr)` all work. (`reduce`, `create`, and `sort_by` use different callback signatures — see their rows.) Pure tigr: these raise only when an operation they perform does (e.g. `sum` on non-numbers).
 
-Callbacks receive `(elem, index, whole_array)` — pass a 1-arg `fn(x)` and the extras are dropped per spec §10.3.
+| Function | Returns | Behavior |
+|---|---|---|
+| `create(len, func)` | `Array` | Length-`len` array; element `i` is `func(i)` |
+| `concat(a, b)` | `Array` | Concatenate arrays `a` and `b` |
+| `map(arr, func)` | `Array` | Apply `func` to each element |
+| `filter(arr, pred)` | `Array` | Keep elements where `pred` is truthy |
+| `reduce(arr, func, seed)` | value | Left fold; `func(acc, elem, index, arr)` starting from `seed` |
+| `flatten(arr)` | `Array` | Concatenate one level of nested arrays |
+| `reverse(arr)` | `Array` | Elements in reverse order |
+| `index(arr, elem)` | `Int \| null` | First index `==` to `elem`, or `null` |
+| `find(arr, pred)` | value `\| null` | First element where `pred` is truthy, or `null` |
+| `find_index(arr, pred)` | `Int` | Index of the first match, or `-1` |
+| `any(arr, pred)` | `Bool` | True if `pred` holds for at least one element |
+| `all(arr, pred)` | `Bool` | True if `pred` holds for every element |
+| `head(arr, n)` | `Array` | First `n` elements (clamped to length) |
+| `tail(arr, n)` | `Array` | Last `n` elements (clamped to length) |
+| `take(arr, n)` | `Array` | First `n` elements (`n` clamped to `0..#arr`) |
+| `drop(arr, n)` | `Array` | All but the first `n` elements |
+| `slice(arr, start, end)` | `Array` | Elements `[start, end)`; out-of-range bounds clamp |
+| `sum(arr)` | `Number` | Sum of elements (`0` if empty) |
+| `max_of(arr)` | value `\| null` | Largest element, or `null` if empty |
+| `min_of(arr)` | value `\| null` | Smallest element, or `null` if empty |
+| `uniq(arr)` | `Array` | First-seen unique elements, order preserved |
+| `zip(a, b)` | `Array` | Pairwise `[a[i], b[i]]`; length is `min(#a, #b)` |
+| `join(arr, sep)` | `String` | `str()` each element, joined by `sep` |
+| `sort(arr)` | `Array` | Ascending order (insertion sort) |
+| `sort_by(arr, key)` | `Array` | Ascending by `key(element)` |
 
 ```
 Array := import 'Array';
@@ -604,7 +649,26 @@ Array.sum(Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 }))   // 6
 
 ### `String`
 
-`split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`, `starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`, `repeat`, `chars`, `pad_start`, `pad_end`.
+A tigr-source module wrapping native primitives. Every entry raises on a non-`String` argument. Indices and lengths are **byte** offsets, consistent with `#` counting bytes.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `split(s, sep)` | `Array<String>` | Split `s` on `sep`; an empty `sep` splits into characters |
+| `join(parts, sep)` | `String` | `str()` each of `parts`, joined by `sep` |
+| `replace(s, from, to)` | `String` | Replace every `from` with `to`; an empty `from` returns `s` unchanged |
+| `contains(s, needle)` | `Bool` | True if `s` contains `needle` |
+| `index_of(s, needle)` | `Int` | Byte index of the first `needle`, or `-1` |
+| `lower(s)` | `String` | Lowercased |
+| `upper(s)` | `String` | Uppercased |
+| `starts_with(s, prefix)` | `Bool` | True if `s` starts with `prefix` |
+| `ends_with(s, suffix)` | `Bool` | True if `s` ends with `suffix` |
+| `trim(s)` | `String` | Whitespace removed from both ends |
+| `trim_start(s)` | `String` | Leading whitespace removed |
+| `trim_end(s)` | `String` | Trailing whitespace removed |
+| `repeat(s, n)` | `String` | `s` repeated `n` times; a negative `n` raises |
+| `chars(s)` | `Array<String>` | One-character strings, one per Unicode character |
+| `pad_start(s, len, ch)` | `String` | Left-pad `s` with `ch` until it reaches length `len` |
+| `pad_end(s, len, ch)` | `String` | Right-pad `s` with `ch` until it reaches length `len` |
 
 ```
 S := import 'String';
@@ -613,49 +677,144 @@ S.split('a,b,c', ',') |> S.join('-')   // 'a-b-c'
 
 ### `Math`
 
-Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `pow`, `abs`, `sign`, `min`, `max`, `clamp`.
+A tigr-source module; trig / log / exp are backed by native code. Numeric functions raise on a non-`Number` argument.
+
+| Name | Returns | Behavior |
+|---|---|---|
+| `PI` | `Float` | `3.141592653589793` — a value, not a function |
+| `E` | `Float` | `2.718281828459045` — a value |
+| `sqrt(x)` | `Float` | Square root |
+| `log(x)` | `Float` | Natural logarithm |
+| `log2(x)` | `Float` | Base-2 logarithm |
+| `log10(x)` | `Float` | Base-10 logarithm |
+| `exp(x)` | `Float` | `e` raised to `x` |
+| `sin(x)`, `cos(x)`, `tan(x)` | `Float` | Trigonometric functions (radians) |
+| `pow(x, y)` | `Float` | `x` raised to `y` |
+| `abs(x)` | `Number` | Absolute value |
+| `sign(x)` | `Int` | `-1`, `0`, or `1` |
+| `min(a, b)` | value | The smaller of `a` and `b` |
+| `max(a, b)` | value | The larger of `a` and `b` |
+| `clamp(x, lo, hi)` | value | `x` constrained to `[lo, hi]` |
+
+### `Object` (v0.6)
+
+A tigr-source module. `map` and `filter` take a **callback** as their second argument — the parameters named `func` and `pred` in the table below. A callback is a function value the module calls for you; here it is invoked as `callback(value, key, whole_object)`, so declare it with as many parameters as you need (extras are dropped). `merge` / `map` / `filter` return fresh objects — they never mutate their input.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `keys(obj)` | `Array<String>` | Keys in insertion order |
+| `values(obj)` | `Array` | Values in insertion order |
+| `entries(obj)` | `Array` | `[key, value]` pairs in insertion order |
+| `from_entries(pairs)` | `Object` | Build an object from `[key, value]` pairs; later pairs win |
+| `has(obj, key)` | `Bool` | True if `key` is present — distinguishes a missing key from a `null` value |
+| `merge(a, b)` | `Object` | Shallow merge into a fresh object; `b` wins on collisions |
+| `map(obj, func)` | `Object` | Fresh object, each value replaced by `func(value, key, obj)` |
+| `filter(obj, pred)` | `Object` | Fresh object keeping entries where `pred(value, key, obj)` is truthy |
+
+```
+Object := import 'Object';
+Object.entries(${a: 1, b: 2})                  // [['a', 1], ['b', 2]]
+Object.map(${a: 1, b: 2}, fn(v) { v * 10 })    // ${a: 10, b: 20}  — fn is the callback
+```
 
 ### `IO`
 
-| Entry | Behavior |
-|---|---|
-| `read_file(path)` | UTF-8 file contents; raises on error |
-| `write_file(path, str)` | Overwrite; raises on error |
-| `append_file(path, str)` | Append; creates if missing |
-| `exists(path)` | Bool; never raises |
-| `read_line()` | One line from stdin (no trailing `\n`); null on EOF |
-| `eprint(...args)` | Like `print` but to stderr |
+A native module. File operations raise a catchable error on failure; the predicate entries never raise.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `read_file(path)` | `String` | Entire file contents as UTF-8; raises on error |
+| `write_file(path, text)` | `null` | Overwrite the file with `text`; raises on error |
+| `append_file(path, text)` | `null` | Append `text`, creating the file if missing; raises on error |
+| `exists(path)` | `Bool` | True if the path exists; never raises |
+| `list_dir(path)` | `Array<String>` | Names of the directory's entries; raises on error *(v0.6)* |
+| `mkdir(path)` | `null` | Create the directory and any missing parents; raises on error *(v0.6)* |
+| `remove(path)` | `null` | Delete a file, or a directory and its contents; raises on error *(v0.6)* |
+| `is_dir(path)` | `Bool` | True if the path is a directory; never raises *(v0.6)* |
+| `is_file(path)` | `Bool` | True if the path is a regular file; never raises *(v0.6)* |
+| `stat(path)` | `Object` | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing *(v0.6)* |
+| `read_line()` | `String \| null` | One line from stdin without the trailing newline; `null` on EOF |
+| `eprint(...args)` | last arg | Like `print`, but writes to stderr |
+
+### `Path` (v0.6)
+
+A native module for path-string manipulation — nothing here touches the filesystem. Every entry raises on a non-`String` argument.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `join(...parts)` | `String` | Join segments with the platform separator |
+| `dirname(path)` | `String` | The parent directory, or `''` if none |
+| `basename(path)` | `String` | The final component, or `''` if none |
+| `ext(path)` | `String` | File extension without the dot, or `''` if none |
+| `is_absolute(path)` | `Bool` | True if `path` is absolute |
 
 ### `Os`
 
-| Entry | Behavior |
-|---|---|
-| `args` | Array of strings: `[interpreter, script, user_args...]` |
-| `env(name)` | Env var value or `null` |
-| `cwd()` | Working directory |
-| `exit(code)` | Real process exit; bypasses `try` |
+A native module for process and environment access.
+
+| Name | Returns | Behavior |
+|---|---|---|
+| `args` | `Array<String>` | Command-line arguments `[interpreter, script, user_args...]` — a value, not a function |
+| `env(name)` | `String \| null` | Value of environment variable `name`, or `null` if unset |
+| `cwd()` | `String` | Current working directory; raises on error |
+| `run(cmd, ...args)` | `Object` | Run a subprocess *(v0.6)* — see below |
+| `exit(code)` | never returns | Exit the process immediately with `code`; bypasses `try` |
+
+`Os.run(cmd, ...args)` runs `cmd` with the given string arguments and returns `${code, stdout, stderr}` — `code` is the exit status (`-1` if the process was killed by a signal), `stdout` / `stderr` are the captured output streams as strings. A non-zero exit is a normal result, not an error; `run` raises only when the process cannot be spawned (e.g. command not found).
+
+```
+Os := import 'Os';
+String := import 'String';
+r := Os.run('git', 'rev-parse', '--short', 'HEAD');
+if r.code == 0 { print('at', String.trim(r.stdout)) }
+```
 
 ### `Time`
 
-`now_ms()`, `now_ns()` (UNIX epoch), `sleep_ms(n)`.
+A native module for wall-clock access.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `now_ms()` | `Int` | Milliseconds since the UNIX epoch |
+| `now_ns()` | `Int` | Nanoseconds since the UNIX epoch |
+| `sleep_ms(n)` | `null` | Block the thread for `n` milliseconds; a negative `n` raises |
+
+### `DateTime` (v0.6)
+
+A native module for calendar date/time, **UTC only** (no timezone support). A *components object* has the fields `${year, month, day, hour, minute, second, ms, weekday, yearday}` — `month` is 1–12, `weekday` is 0=Sunday, `yearday` is the 1-based day of the year.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `now()` | `Object` | The current UTC time as a components object |
+| `from_ms(ms)` | `Object` | Convert epoch-milliseconds to a components object |
+| `to_ms(obj)` | `Int` | Convert a components object to epoch-milliseconds; missing fields default (year 1970, month/day 1, others 0) |
+| `format(ms, fmt)` | `String` | Render epoch-milliseconds `ms` per `fmt`. Directives: `%Y %m %d %H %M %S %j %%`; other text is literal |
+| `parse(str)` | `Int` | Parse ISO-8601 `YYYY-MM-DD`, optionally `(T or space)HH:MM:SS[.fff]`, to epoch-milliseconds; raises on malformed input |
+
+`format` takes epoch-**milliseconds**, not a components object:
+
+```
+DateTime := import 'DateTime';
+DateTime.format(DateTime.to_ms(DateTime.now()), '%Y-%m-%d')   // '2026-05-15'
+```
 
 ### `JSON` (v0.4)
 
-| Entry | Behavior |
-|---|---|
-| `parse(str)` | Parse a JSON string. Numbers always come back as `Float`. Raises on malformed input. |
-| `stringify(value)` | Compact JSON text. Raises on `Function`/`Range`/`Iter`/`NativeFn`/`NaN`/`Infinity`. |
-| `stringify(value, indent)` | Pretty-printed; `indent` is `Int` (n spaces) or `Str` (literal indent). |
+A native module.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `parse(str)` | value | Parse a JSON string. Numbers always come back as `Float`. Raises on malformed input |
+| `stringify(value)` | `String` | Compact JSON text. Raises on `Function` / `Range` / `Iter` / `NativeFn` / `NaN` / `Infinity` |
+| `stringify(value, indent)` | `String` | Pretty-printed; `indent` is an `Int` (number of spaces) or a `String` (literal indent unit) |
 
 ```
 JSON := import 'JSON';
-JSON.stringify(${name: 'tigr', v: 0.4}, 2)
-// '{\n  "name": "tigr",\n  "v": 0.4\n}'
+JSON.stringify(${name: 'tigr', v: 0.6}, 2)
+// '{\n  "name": "tigr",\n  "v": 0.6\n}'
 ```
 
-JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and integer-valued `Float` keeps a `.0` suffix.
-
-Cycles in arrays/objects aren't detected and will overflow the call stack — same posture as the wider Rc-cycle story.
+JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and an integer-valued `Float` keeps a `.0` suffix. Cycles in arrays/objects aren't detected and will overflow the call stack — same posture as the wider Rc-cycle story.
 
 ---
 
@@ -798,14 +957,15 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.5 is feature-complete.** 304 tests pass. On top of v0.4, v0.5 adds:
+**v0.6 is feature-complete.** 351 tests pass. On top of v0.5, v0.6 adds:
 
-1. **`type()` built-in** — names a value's runtime type. User closures and native built-ins both report `'function'`. `str()` also gains optional `radix` / `prefix` arguments for rendering an `Int` in base 2..=36.
-2. **Bitwise operators** — `& | ^ ~ << >>`, `Int`-only. `^` is bitwise XOR; exponentiation moved to the new `^^` operator (the one breaking change). `>>` is an arithmetic shift; out-of-range shift amounts raise.
-3. **`match` expression** — refutable pattern matching: literal/binding/wildcard/range/array/object/or-patterns, optional `if` guards, comma-separated arms. Non-exhaustive (no match → `null`); or-pattern alternatives may not bind.
+1. **`continue`** — skip the rest of a loop iteration; the iteration contributes `null`. Now a reserved keyword.
+2. **Default parameter values** — `fn(a, b = 10)`; the default fills in when the argument slot is `null`.
+3. **Wider standard library** — filesystem operations on `IO` (`list_dir`, `mkdir`, `remove`, `is_dir`, `is_file`, `stat`); a new `Path` module; subprocess execution via `Os.run`; an `Object` source-stdlib module; and a `DateTime` module (UTC calendar date/time).
 
 Earlier releases:
 
+- **v0.5**: `type()` built-in, bitwise operators (`& | ^ ~ << >>`; `^` became XOR, `^^` is power), `match` expression with refutable patterns.
 - **v0.4**: rendered errors with source snippets, extended number literals (`0xFF`/`1e6`/`.5`/`_`), patterns on `=` + mid-expression decls, `JSON` module.
 - **v0.3**: `try`/`catch`/`raise`, module caching + bare-name dispatch, native modules (`IO`/`Os`/`Time`), source-stdlib (`Array`/`String`/`Math`), interactive REPL.
 - **v0.2**: bytecode VM, closures with Lox-style upvalues, first-class ranges, destructuring patterns, pipe `|>`, spread `...`, string interpolation.

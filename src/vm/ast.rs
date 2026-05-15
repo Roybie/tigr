@@ -316,6 +316,11 @@ pub enum Expr {
     // into another break.
     Break(Option<Box<SpannedExpr>>),
 
+    // `continue` — skip the rest of the current loop iteration. The
+    // iteration contributes `null` (nothing appended in `for[]`/
+    // `while[]`). Carries no value.
+    Continue,
+
     // `[a, b, c]` — array literal. Items may be `Expr::Spread(...)`.
     Array(Vec<SpannedExpr>),
 
@@ -350,8 +355,14 @@ pub enum Expr {
     // `fn(p1, p2, ...rest) { body }`. Each param is a `Pattern` so
     // call sites can pass `fn([a, b], ${name}) { ... }`. `rest` is
     // the optional final `...name` parameter (spec §10.3).
+    //
+    // `defaults` runs parallel to `params`: `defaults[i]` is the
+    // `Some(expr)` default for `params[i]`, used when that argument
+    // slot is `null`. Defaults are only permitted on `Pattern::Ident`
+    // parameters (the parser enforces this).
     Fn {
         params: Vec<Pattern>,
+        defaults: Vec<Option<Box<SpannedExpr>>>,
         rest: Option<String>,
         body: Box<SpannedExpr>,
     },

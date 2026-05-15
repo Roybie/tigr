@@ -109,6 +109,7 @@ pub enum CompileErrorKind {
     TooManyUpvalues,
     JumpTooFar,
     BreakOutsideLoop,
+    ContinueOutsideLoop,
     SpreadInInvalidPosition,
     InvalidMatchPattern(String),
 }
@@ -133,6 +134,9 @@ impl fmt::Display for CompileError {
             CompileErrorKind::TooManyUpvalues => f.write_str("too many captured variables"),
             CompileErrorKind::JumpTooFar => f.write_str("jump distance exceeds 64KiB"),
             CompileErrorKind::BreakOutsideLoop => f.write_str("`break` outside of any loop"),
+            CompileErrorKind::ContinueOutsideLoop => {
+                f.write_str("`continue` outside of any loop")
+            }
             CompileErrorKind::SpreadInInvalidPosition => f.write_str(
                 "spread `...` is only allowed in array literals, call args, or object literals"
             ),

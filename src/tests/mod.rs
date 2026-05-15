@@ -3010,3 +3010,670 @@ fn v05_match_in_loop_with_break() {
     let src = "for (i, 0..10) { match i { 3 => break (i * 100), _ => i } }";
     assert_eq!(run(src), Value::Int(300));
 }
+
+// ---- v0.6 Phase 1: IO filesystem operations ----
+
+#[test]
+fn v06_io_list_dir() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_listdir_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "1").unwrap();
+    std::fs::write(dir.join("b.txt"), "2").unwrap();
+    let src = format!("IO := import 'IO'; IO.list_dir('{}')", dir.to_string_lossy());
+    match run(&src) {
+        Value::Array(a) => {
+            let mut names: Vec<String> = a
+                .borrow()
+                .iter()
+                .map(|v| match v {
+                    Value::Str(s) => s.to_string(),
+                    other => panic!("got {other:?}"),
+                })
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["a.txt".to_string(), "b.txt".to_string()]);
+        }
+        v => panic!("got {v:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_mkdir_creates_nested() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_mkdir_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let nested = dir.join("x").join("y");
+    let src = format!(
+        "IO := import 'IO'; IO.mkdir('{p}'); IO.is_dir('{p}')",
+        p = nested.to_string_lossy()
+    );
+    assert_eq!(run(&src), Value::Bool(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_remove_file() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_rmfile_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("gone.txt");
+    std::fs::write(&path, "bye").unwrap();
+    let src = format!(
+        "IO := import 'IO'; IO.remove('{p}'); IO.exists('{p}')",
+        p = path.to_string_lossy()
+    );
+    assert_eq!(run(&src), Value::Bool(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_remove_dir_recursive() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_rmdir_{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("f.txt"), "x").unwrap();
+    let src = format!(
+        "IO := import 'IO'; IO.remove('{p}'); IO.exists('{p}')",
+        p = dir.to_string_lossy()
+    );
+    assert_eq!(run(&src), Value::Bool(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_is_dir_is_file() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_isdir_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("f.txt");
+    std::fs::write(&file, "x").unwrap();
+    let src = format!(
+        "IO := import 'IO';
+         [IO.is_dir('{d}'), IO.is_file('{d}'), IO.is_dir('{f}'), IO.is_file('{f}')]",
+        d = dir.to_string_lossy(),
+        f = file.to_string_lossy()
+    );
+    match run(&src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert_eq!(b[1], Value::Bool(false));
+            assert_eq!(b[2], Value::Bool(false));
+            assert_eq!(b[3], Value::Bool(true));
+        }
+        v => panic!("got {v:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_stat_file() {
+    let dir = std::env::temp_dir().join(format!("tigr_v06_stat_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("f.txt");
+    std::fs::write(&file, "hello").unwrap();
+    let src = format!(
+        "IO := import 'IO';
+         s := IO.stat('{f}');
+         [s.size, s.is_file, s.is_dir]",
+        f = file.to_string_lossy()
+    );
+    match run(&src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(5));
+            assert_eq!(b[1], Value::Bool(true));
+            assert_eq!(b[2], Value::Bool(false));
+        }
+        v => panic!("got {v:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v06_io_list_dir_missing_raises_catchable() {
+    let src = "
+        IO := import 'IO';
+        try IO.list_dir('/definitely/not/a/path/xyz123') catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+#[test]
+fn v06_io_stat_missing_raises_catchable() {
+    let src = "
+        IO := import 'IO';
+        try IO.stat('/definitely/not/a/path/xyz123') catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+// ---- v0.6 Phase 2: Path native module ----
+
+#[test]
+fn v06_path_join() {
+    let src = "Path := import 'Path'; Path.join('a', 'b', 'c')";
+    assert_eq!(run(src), Value::Str("a/b/c".into()));
+}
+
+#[test]
+fn v06_path_join_absolute_segment_resets() {
+    let src = "Path := import 'Path'; Path.join('a', '/b', 'c')";
+    assert_eq!(run(src), Value::Str("/b/c".into()));
+}
+
+#[test]
+fn v06_path_dirname() {
+    let src = "Path := import 'Path'; Path.dirname('a/b/c.txt')";
+    assert_eq!(run(src), Value::Str("a/b".into()));
+}
+
+#[test]
+fn v06_path_basename() {
+    let src = "Path := import 'Path'; Path.basename('a/b/c.txt')";
+    assert_eq!(run(src), Value::Str("c.txt".into()));
+}
+
+#[test]
+fn v06_path_ext() {
+    let src = "Path := import 'Path'; [Path.ext('a/b/c.txt'), Path.ext('noext')]";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Str("txt".into()));
+            assert_eq!(b[1], Value::Str("".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_path_is_absolute() {
+    let src = "Path := import 'Path'; [Path.is_absolute('/a/b'), Path.is_absolute('a/b')]";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert_eq!(b[1], Value::Bool(false));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_path_non_string_arg_raises_catchable() {
+    let src = "Path := import 'Path'; try Path.dirname(42) catch (e) { 'caught' }";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+// ---- v0.6 Phase 3: Os.run subprocess ----
+
+#[test]
+fn v06_os_run_echo_captures_stdout() {
+    let src = "Os := import 'Os'; r := Os.run('echo', 'hello'); [r.code, r.stdout]";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(0));
+            assert_eq!(b[1], Value::Str("hello\n".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_os_run_nonzero_exit_is_not_an_error() {
+    let src = "Os := import 'Os'; Os.run('false').code";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v06_os_run_captures_stderr() {
+    let src = "Os := import 'Os'; Os.run('sh', '-c', 'echo oops 1>&2').stderr";
+    assert_eq!(run(src), Value::Str("oops\n".into()));
+}
+
+#[test]
+fn v06_os_run_missing_command_raises_catchable() {
+    let src = "
+        Os := import 'Os';
+        try Os.run('definitely_not_a_real_command_xyz123') catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+// ---- v0.6 Phase 4: Object source-stdlib module ----
+
+#[test]
+fn v06_object_keys() {
+    let src = "Object := import 'Object'; Object.keys(${a: 1, b: 2, c: 3})";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 3);
+            assert_eq!(b[0], Value::Str("a".into()));
+            assert_eq!(b[1], Value::Str("b".into()));
+            assert_eq!(b[2], Value::Str("c".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_object_values_keeps_nulls() {
+    // A `null` value must survive — `for[]` would have dropped it.
+    let src = "Object := import 'Object'; Object.values(${a: null, b: 2})";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 2);
+            assert_eq!(b[0], Value::Null);
+            assert_eq!(b[1], Value::Int(2));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_object_entries_and_from_entries_roundtrip() {
+    let src = "
+        Object := import 'Object';
+        o := ${a: 1, b: 2};
+        Object.from_entries(Object.entries(o)) == o
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v06_object_has() {
+    let src = "
+        Object := import 'Object';
+        o := ${a: 1, b: null};
+        [Object.has(o, 'a'), Object.has(o, 'b'), Object.has(o, 'missing')]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(true));
+            assert_eq!(b[1], Value::Bool(true));
+            assert_eq!(b[2], Value::Bool(false));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_object_merge_does_not_mutate() {
+    let src = "
+        Object := import 'Object';
+        a := ${x: 1, y: 2};
+        m := Object.merge(a, ${y: 9, z: 3});
+        [m.x, m.y, m.z, a.y, #a]
+    ";
+    match run(src) {
+        Value::Array(arr) => {
+            let b = arr.borrow();
+            assert_eq!(b[0], Value::Int(1));
+            assert_eq!(b[1], Value::Int(9));
+            assert_eq!(b[2], Value::Int(3));
+            assert_eq!(b[3], Value::Int(2)); // a.y unchanged
+            assert_eq!(b[4], Value::Int(2)); // #a unchanged — no `z`
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_object_map() {
+    let src = "
+        Object := import 'Object';
+        m := Object.map(${a: 1, b: 2}, fn(v) { v * 10 });
+        [m.a, m.b]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(10));
+            assert_eq!(b[1], Value::Int(20));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_object_filter() {
+    let src = "
+        Object := import 'Object';
+        m := Object.filter(${a: 1, b: 2, c: 3}, fn(v) { v > 1 });
+        [Object.has(m, 'a'), m.b, m.c]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Bool(false));
+            assert_eq!(b[1], Value::Int(2));
+            assert_eq!(b[2], Value::Int(3));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+// ---- v0.6 Phase 5: DateTime native module ----
+
+#[test]
+fn v06_datetime_from_ms_epoch() {
+    let src = "
+        DateTime := import 'DateTime';
+        d := DateTime.from_ms(0);
+        [d.year, d.month, d.day, d.hour, d.weekday, d.yearday]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(1970));
+            assert_eq!(b[1], Value::Int(1));
+            assert_eq!(b[2], Value::Int(1));
+            assert_eq!(b[3], Value::Int(0));
+            assert_eq!(b[4], Value::Int(4)); // Thursday
+            assert_eq!(b[5], Value::Int(1));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_datetime_from_ms_known_date() {
+    // 2021-01-01T00:00:00 UTC == 1609459200000 ms.
+    let src = "
+        DateTime := import 'DateTime';
+        d := DateTime.from_ms(1609459200000);
+        [d.year, d.month, d.day, d.weekday]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(2021));
+            assert_eq!(b[1], Value::Int(1));
+            assert_eq!(b[2], Value::Int(1));
+            assert_eq!(b[3], Value::Int(5)); // Friday
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_datetime_to_ms_roundtrip() {
+    let src = "
+        DateTime := import 'DateTime';
+        DateTime.to_ms(DateTime.from_ms(1700000000000))
+    ";
+    assert_eq!(run(src), Value::Int(1700000000000));
+}
+
+#[test]
+fn v06_datetime_format() {
+    let src = "
+        DateTime := import 'DateTime';
+        [DateTime.format(0, '%Y-%m-%d %H:%M:%S'),
+         DateTime.format(0, '%j'),
+         DateTime.format(0, 'y%%')]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Str("1970-01-01 00:00:00".into()));
+            assert_eq!(b[1], Value::Str("001".into()));
+            assert_eq!(b[2], Value::Str("y%".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_datetime_parse() {
+    let src = "
+        DateTime := import 'DateTime';
+        [DateTime.parse('1970-01-01'),
+         DateTime.parse('2021-01-01T00:00:00'),
+         DateTime.parse('2021-01-01T00:00:00.250')]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(0));
+            assert_eq!(b[1], Value::Int(1609459200000));
+            assert_eq!(b[2], Value::Int(1609459200250));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_datetime_parse_invalid_raises_catchable() {
+    let src = "
+        DateTime := import 'DateTime';
+        try DateTime.parse('2021/01/01') catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+#[test]
+fn v06_datetime_now_is_object() {
+    let src = "
+        DateTime := import 'DateTime';
+        d := DateTime.now();
+        [type(d), d.year >= 2020]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Str("object".into()));
+            assert_eq!(b[1], Value::Bool(true));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+// ---- v0.6 Phase 6: continue ----
+
+#[test]
+fn v06_continue_in_for_array_skips_iteration() {
+    // Even `i` continues — contributes null, so nothing is appended.
+    let src = "for[] (i, 0..6) { if i % 2 == 0 { continue }; i }";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 3);
+            assert_eq!(b[0], Value::Int(1));
+            assert_eq!(b[1], Value::Int(3));
+            assert_eq!(b[2], Value::Int(5));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_continue_in_plain_for() {
+    // i 0..3 continue; i==4 yields 40 — the plain-for value is the
+    // last iteration's value.
+    let src = "for (i, 0..5) { if i < 4 { continue }; i * 10 }";
+    assert_eq!(run(src), Value::Int(40));
+}
+
+#[test]
+fn v06_continue_in_while_array() {
+    let src = "
+        i := 0;
+        while[] (i < 5) {
+            i = i + 1;
+            if i == 3 { continue };
+            i
+        }
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 4);
+            assert_eq!(b[0], Value::Int(1));
+            assert_eq!(b[1], Value::Int(2));
+            assert_eq!(b[2], Value::Int(4));
+            assert_eq!(b[3], Value::Int(5));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_continue_targets_innermost_loop() {
+    let src = "
+        n := 0;
+        for (i, 0..3) {
+            for (j, 0..3) {
+                if j == 1 { continue };
+                n = n + 1
+            }
+        };
+        n
+    ";
+    assert_eq!(run(src), Value::Int(6));
+}
+
+#[test]
+fn v06_continue_preserves_fresh_closure_slots() {
+    // `continue` unwinds the per-iteration scope; closures from the
+    // non-continued iterations still capture their own `i`.
+    let src = "
+        fns := for[] (i, 0..4) {
+            if i == 2 { continue };
+            fn() { i }
+        };
+        [#fns, fns[0](), fns[1](), fns[2]()]
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(3)); // i=2 skipped
+            assert_eq!(b[1], Value::Int(0));
+            assert_eq!(b[2], Value::Int(1));
+            assert_eq!(b[3], Value::Int(3));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_continue_outside_loop_is_compile_error() {
+    let err = run_err("continue");
+    assert!(err.contains("continue"), "got: {err}");
+}
+
+// ---- v0.6 Phase 7: default parameter values ----
+
+#[test]
+fn v06_default_param_used_when_missing() {
+    let src = "f := fn(x, n = 10) { [x, n] }; f(1)";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(1));
+            assert_eq!(b[1], Value::Int(10));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_default_param_triggered_by_explicit_null() {
+    let src = "f := fn(x, n = 10) { n }; f(1, null)";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v06_default_param_overridden_by_value() {
+    let src = "f := fn(x, n = 10) { n }; f(1, 5)";
+    assert_eq!(run(src), Value::Int(5));
+}
+
+#[test]
+fn v06_default_param_falsy_value_not_overridden() {
+    // 0 is falsy but NOT null — the default must NOT fire.
+    let src = "f := fn(n = 10) { n }; [f(0), f(false), f('')]";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b[0], Value::Int(0));
+            assert_eq!(b[1], Value::Bool(false));
+            assert_eq!(b[2], Value::Str("".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_default_param_references_earlier_param() {
+    let src = "f := fn(a, b = a + 1) { b }; f(10)";
+    assert_eq!(run(src), Value::Int(11));
+}
+
+#[test]
+fn v06_default_param_only_evaluated_when_needed() {
+    // The default expression must not run when the arg is supplied.
+    let src = "
+        count := 0;
+        bump := fn() { count = count + 1; count };
+        f := fn(n = bump()) { n };
+        a := f(99);
+        b := f();
+        [a, b, count]
+    ";
+    match run(src) {
+        Value::Array(arr) => {
+            let v = arr.borrow();
+            assert_eq!(v[0], Value::Int(99)); // default skipped
+            assert_eq!(v[1], Value::Int(1));  // default ran once
+            assert_eq!(v[2], Value::Int(1));  // bump called exactly once
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_default_param_with_rest() {
+    let src = "
+        f := fn(a, b = 2, ...rest) { [a, b, rest] };
+        [f(1), f(1, 9, 8, 7)]
+    ";
+    match run(src) {
+        Value::Array(outer) => {
+            let o = outer.borrow();
+            match (&o[0], &o[1]) {
+                (Value::Array(first), Value::Array(second)) => {
+                    let f = first.borrow();
+                    assert_eq!(f[0], Value::Int(1));
+                    assert_eq!(f[1], Value::Int(2)); // default
+                    match &f[2] {
+                        Value::Array(rest) => assert_eq!(rest.borrow().len(), 0),
+                        v => panic!("got {v:?}"),
+                    }
+                    let s = second.borrow();
+                    assert_eq!(s[0], Value::Int(1));
+                    assert_eq!(s[1], Value::Int(9)); // overridden
+                    match &s[2] {
+                        Value::Array(rest) => {
+                            let r = rest.borrow();
+                            assert_eq!(r.len(), 2);
+                            assert_eq!(r[0], Value::Int(8));
+                            assert_eq!(r[1], Value::Int(7));
+                        }
+                        v => panic!("got {v:?}"),
+                    }
+                }
+                vs => panic!("got {vs:?}"),
+            }
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v06_default_on_pattern_param_is_error() {
+    let err = run_err("fn([a, b] = [1, 2]) { a }");
+    assert!(err.contains("default"), "got: {err}");
+}

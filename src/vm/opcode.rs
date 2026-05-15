@@ -216,6 +216,11 @@ pub enum OpCode {
     /// 0=Int 1=Float 2=Bool 3=Str 4=Array 5=Object 6=Range 7=Null
     /// 8=Number(Int|Float) 9=callable(Function|NativeFn).
     TypeTest,
+
+    // -- v0.6 — default parameters --
+    /// Peek top; if it is NOT `null`, jump forward by operand. Does NOT
+    /// pop. Operand: u16 BE. Used to fill in default parameter values.
+    JumpIfNotNull,
 }
 
 impl OpCode {
@@ -284,6 +289,7 @@ impl OpCode {
             59 => Shl,
             60 => Shr,
             61 => TypeTest,
+            62 => JumpIfNotNull,
             _ => return None,
         })
     }
@@ -302,7 +308,7 @@ impl OpCode {
             // disassembler handles it specially, so we report only the
             // fn_idx here. This method is informational only.
             Closure => 1,
-            Jump | Loop | JumpIfFalse | JumpIfTrue
+            Jump | Loop | JumpIfFalse | JumpIfTrue | JumpIfNotNull
             | IterNext | IterNext2 | PushTry => 2,
             _ => 0,
         }

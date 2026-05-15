@@ -425,6 +425,14 @@ impl Vm {
                         ip += dist as usize;
                     }
                 }
+                OpCode::JumpIfNotNull => {
+                    let dist = chunk.read_u16(ip);
+                    ip += 2;
+                    let top = self.stack.last().ok_or_else(|| underflow(line))?;
+                    if !matches!(top, Value::Null) {
+                        ip += dist as usize;
+                    }
+                }
                 OpCode::CloseScope => {
                     let n = chunk.code[ip] as usize;
                     ip += 1;

@@ -1,0 +1,76 @@
+// Tigr stdlib — `import 'Object'`.
+//
+// Pure-tigr object utilities. Callbacks receive
+// `(value, key, whole_object)`, mirroring Array's
+// `(element, index, whole_array)`; tigr drops extra args, so a
+// 1-arg `fn(v) { ... }` still works.
+//
+// `keys` / `values` / `entries` accumulate explicitly rather than via
+// `for[]` — a `for[]` body filters out `null`, which would silently
+// drop entries whose value is `null`.
+
+${
+    // -------- destructuring --------
+
+    // Keys in insertion order.
+    keys: fn(obj) {
+        out := [];
+        for (k, v, obj) { out = out + [k] };
+        out
+    },
+
+    // Values in insertion order.
+    values: fn(obj) {
+        out := [];
+        for (k, v, obj) { out = out + [v] };
+        out
+    },
+
+    // Array of `[key, value]` pairs in insertion order.
+    entries: fn(obj) {
+        out := [];
+        for (k, v, obj) { out = out + [[k, v]] };
+        out
+    },
+
+    // Build an object from an array of `[key, value]` pairs. The
+    // inverse of `entries`; later pairs win on a duplicate key.
+    from_entries: fn(pairs) {
+        out := ${};
+        for (pair, pairs) { out[pair[0]] = pair[1] };
+        out
+    },
+
+    // -------- queries --------
+
+    // True if `obj` has `key`. Iterates keys — indexing can't tell a
+    // missing key from a present `null` value.
+    has: fn(obj, key) {
+        for (k, v, obj) {
+            if k == key { return true }
+        };
+        false
+    },
+
+    // -------- transformations --------
+    // All return a fresh object; the inputs are never mutated.
+
+    // Shallow merge; on a key collision `b` wins.
+    merge: fn(a, b) { ${...a, ...b} },
+
+    // Transform each value via `func(value, key, whole_object)`.
+    map: fn(obj, func) {
+        out := ${};
+        for (k, v, obj) { out[k] = func(v, k, obj) };
+        out
+    },
+
+    // Keep entries for which `pred(value, key, whole_object)` is truthy.
+    filter: fn(obj, pred) {
+        out := ${};
+        for (k, v, obj) {
+            if pred(v, k, obj) { out[k] = v }
+        };
+        out
+    },
+}

@@ -639,12 +639,20 @@ A tigr-source module. Several functions take a **callback** — a function value
 | `uniq(arr)` | `Array` | First-seen unique elements, order preserved |
 | `zip(a, b)` | `Array` | Pairwise `[a[i], b[i]]`; length is `min(#a, #b)` |
 | `join(arr, sep)` | `String` | `str()` each element, joined by `sep` |
-| `sort(arr)` | `Array` | Ascending order (insertion sort) |
-| `sort_by(arr, key)` | `Array` | Ascending by `key(element)` |
+| `sort(arr)` | `Array` | Ascending order, comparing elements directly (insertion sort) |
+| `sort_by(arr, key)` | `Array` | Ascending order, but comparing `key(element)` instead of the elements themselves. `key` is a callback applied to each element to derive the value to sort on — use it to sort by a field or a computed property |
 
 ```
 Array := import 'Array';
 Array.sum(Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 }))   // 6
+
+// sort_by: the `key` callback maps each element to the value to sort on.
+people := [${name: 'Cy', age: 30}, ${name: 'Al', age: 25}];
+Array.sort_by(people, fn(p) { p.age })
+// [${name: 'Al', age: 25}, ${name: 'Cy', age: 30}]   — ordered by age
+
+// sort a list of words by length
+Array.sort_by(['ccc', 'a', 'bb'], fn(w) { #w })       // ['a', 'bb', 'ccc']
 ```
 
 ### `String`

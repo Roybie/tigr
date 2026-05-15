@@ -391,17 +391,9 @@ fn phase3_array_plus_does_not_mutate_lhs() {
 
 #[test]
 fn phase3_compound_assign_array_append() {
-    // arr += v: rebinds arr to a new array containing v
-    let src = "arr := [1, 2]; arr += 3; arr + 0";
-    let v = run(src);
-    match v {
-        Value::Array(a) => {
-            let a = a.borrow();
-            assert_eq!(a.len(), 4);
-            assert_eq!(a[2], Value::Int(3));
-        }
-        _ => panic!("expected array, got {v:?}"),
-    }
+    // arr += v: appends v to arr in place (v0.7 semantics).
+    let src = "arr := [1, 2]; arr += 3; arr";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
 }
 
 #[test]
@@ -3676,4 +3668,378 @@ fn v06_default_param_with_rest() {
 fn v06_default_on_pattern_param_is_error() {
     let err = run_err("fn([a, b] = [1, 2]) { a }");
     assert!(err.contains("default"), "got: {err}");
+}
+
+// ----------------------------------------------------------------
+// v0.7 — Array.push/extend (in-place) + lazy Iter module
+// ----------------------------------------------------------------
+
+/// Extract a `Vec<i64>` from a `Value::Array` of `Int`s.
+fn int_vec(v: &Value) -> Vec<i64> {
+    match v {
+        Value::Array(a) => a
+            .borrow()
+            .iter()
+            .map(|e| match e {
+                Value::Int(n) => *n,
+                other => panic!("expected Int element, got {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn v07_array_push_mutates_in_place() {
+    let src = "
+        Array := import 'Array';
+        a := [1, 2];
+        Array.push(a, 3);
+        a
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
+}
+
+#[test]
+fn v07_array_push_returns_the_array() {
+    // push returns the array so it reads as an expression.
+    let src = "
+        Array := import 'Array';
+        a := [1];
+        Array.push(a, 2)
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2]);
+}
+
+#[test]
+fn v07_array_extend_appends_all() {
+    let src = "
+        Array := import 'Array';
+        a := [1, 2];
+        Array.extend(a, [3, 4, 5]);
+        a
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn v07_array_extend_self_does_not_double_borrow() {
+    let src = "
+        Array := import 'Array';
+        a := [1, 2];
+        Array.extend(a, a);
+        a
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 1, 2]);
+}
+
+#[test]
+fn v07_array_push_non_array_raises_catchable() {
+    let src = "
+        Array := import 'Array';
+        try { Array.push(5, 1); 'no' } catch (e) { 'caught' }
+    ";
+    assert_eq!(run(src), Value::Str("caught".into()));
+}
+
+#[test]
+fn v07_iter_collect_from_array() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3] |> Iter.from() |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
+}
+
+#[test]
+fn v07_iter_from_range() {
+    let src = "
+        Iter := import 'Iter';
+        1..5 |> Iter.from() |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn v07_iter_from_string() {
+    let src = "
+        Iter := import 'Iter';
+        'abc' |> Iter.from() |> Iter.collect()
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 3);
+            assert_eq!(b[0], Value::Str("a".into()));
+            assert_eq!(b[2], Value::Str("c".into()));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v07_iter_map_filter_pipeline() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3, 4, 5]
+          |> Iter.from()
+          |> Iter.map(fn(n){ n * n })
+          |> Iter.filter(fn(n){ n > 4 })
+          |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![9, 16, 25]);
+}
+
+#[test]
+fn v07_iter_count_take_square_pipeline() {
+    // The README example: an infinite source, bounded by `take`.
+    let src = "
+        Iter := import 'Iter';
+        0 |> Iter.count()
+          |> Iter.map(fn(n){ n * n })
+          |> Iter.take(5)
+          |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![0, 1, 4, 9, 16]);
+}
+
+#[test]
+fn v07_iter_take_does_not_overpull() {
+    // `take(3)` over an infinite `count` must run `map` exactly 3
+    // times — proof the pipeline is pull-driven, not materialized.
+    let src = "
+        Iter := import 'Iter';
+        calls := 0;
+        result := 0 |> Iter.count()
+          |> Iter.map(fn(n){ calls = calls + 1; n })
+          |> Iter.take(3)
+          |> Iter.collect();
+        [#result, calls]
+    ";
+    assert_eq!(int_vec(&run(src)), vec![3, 3]);
+}
+
+#[test]
+fn v07_iter_repeat_take() {
+    let src = "
+        Iter := import 'Iter';
+        7 |> Iter.repeat() |> Iter.take(4) |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![7, 7, 7, 7]);
+}
+
+#[test]
+fn v07_iter_drop() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3, 4, 5] |> Iter.from() |> Iter.drop(2) |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![3, 4, 5]);
+}
+
+#[test]
+fn v07_iter_enumerate() {
+    let src = "
+        Iter := import 'Iter';
+        [10, 20, 30]
+          |> Iter.from()
+          |> Iter.enumerate()
+          |> Iter.map(fn(pair){ pair[0] + pair[1] })
+          |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![10, 21, 32]);
+}
+
+#[test]
+fn v07_iter_zip_stops_at_shorter() {
+    let src = "
+        Iter := import 'Iter';
+        a := [1, 2, 3] |> Iter.from();
+        b := [10, 20] |> Iter.from();
+        Iter.zip(a, b)
+          |> Iter.map(fn(pair){ pair[0] + pair[1] })
+          |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![11, 22]);
+}
+
+#[test]
+fn v07_iter_chain() {
+    let src = "
+        Iter := import 'Iter';
+        a := [1, 2] |> Iter.from();
+        b := [3, 4, 5] |> Iter.from();
+        Iter.chain(a, b) |> Iter.collect()
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn v07_iter_reduce() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3, 4] |> Iter.from() |> Iter.reduce(fn(a, b){ a + b }, 0)
+    ";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v07_iter_for_each_side_effects() {
+    let src = "
+        Iter := import 'Iter';
+        sum := 0;
+        [1, 2, 3, 4] |> Iter.from() |> Iter.for_each(fn(x){ sum = sum + x });
+        sum
+    ";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v07_iter_count_of() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3, 4, 5]
+          |> Iter.from()
+          |> Iter.filter(fn(n){ n % 2 == 0 })
+          |> Iter.count_of()
+    ";
+    assert_eq!(run(src), Value::Int(2));
+}
+
+#[test]
+fn v07_iter_find_short_circuits_infinite() {
+    // `find` on an infinite `count` must terminate at the first match.
+    let src = "
+        Iter := import 'Iter';
+        0 |> Iter.count() |> Iter.find(fn(n){ n > 100 })
+    ";
+    assert_eq!(run(src), Value::Int(101));
+}
+
+#[test]
+fn v07_iter_find_no_match_is_null() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3] |> Iter.from() |> Iter.find(fn(n){ n > 99 })
+    ";
+    assert_eq!(run(src), Value::Null);
+}
+
+#[test]
+fn v07_iter_nth_short_circuits_infinite() {
+    let src = "
+        Iter := import 'Iter';
+        0 |> Iter.count() |> Iter.nth(10)
+    ";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v07_iter_nth_past_end_is_null() {
+    let src = "
+        Iter := import 'Iter';
+        [1, 2, 3] |> Iter.from() |> Iter.nth(99)
+    ";
+    assert_eq!(run(src), Value::Null);
+}
+
+#[test]
+fn v07_iter_large_collect_is_linear() {
+    // A 5000-element collect — would be unusably slow if `collect`
+    // built the array with O(n) `+` instead of in-place `push`.
+    let src = "
+        Iter := import 'Iter';
+        r := 0 |> Iter.count() |> Iter.take(5000) |> Iter.collect();
+        [#r, r[0], r[4999]]
+    ";
+    assert_eq!(int_vec(&run(src)), vec![5000, 0, 4999]);
+}
+
+// ---- v0.7 in-place `+=` ----
+
+#[test]
+fn v07_compound_add_mutates_in_place_visible_via_alias() {
+    // `+=` now mutates the array; an alias sees the change.
+    let src = "a := [1, 2]; b := a; a += 3; [#a, #b, b[2]]";
+    assert_eq!(int_vec(&run(src)), vec![3, 3, 3]);
+}
+
+#[test]
+fn v07_compound_add_array_rhs_extends() {
+    let src = "a := [1, 2]; a += [3, 4]; a";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn v07_compound_add_self_extend() {
+    let src = "a := [1, 2]; a += a; a";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 1, 2]);
+}
+
+#[test]
+fn v07_compound_add_index_target_array() {
+    // `m[0] += 9` mutates the nested array in place.
+    let src = "m := [[1], [2]]; m[0] += 9; m[0]";
+    assert_eq!(int_vec(&run(src)), vec![1, 9]);
+}
+
+#[test]
+fn v07_compound_add_scalar_unaffected() {
+    assert_eq!(run("x := 5; x += 3; x"), Value::Int(8));
+}
+
+#[test]
+fn v07_plain_add_array_stays_fresh() {
+    // Plain `+` (no assignment) must still build a fresh array.
+    let src = "a := [1, 2]; b := a + 3; [#a, #b]";
+    assert_eq!(int_vec(&run(src)), vec![2, 3]);
+}
+
+// ---- v0.7 optimized Array.tg methods ----
+
+#[test]
+fn v07_array_flatten() {
+    let src = "Array := import 'Array'; Array.flatten([[1, 2], [3], [4, 5]])";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn v07_array_flatten_non_array_element_appends_one() {
+    let src = "Array := import 'Array'; Array.flatten([[1], 2, [3]])";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
+}
+
+#[test]
+fn v07_array_reverse() {
+    let src = "Array := import 'Array'; Array.reverse([1, 2, 3, 4])";
+    assert_eq!(int_vec(&run(src)), vec![4, 3, 2, 1]);
+}
+
+#[test]
+fn v07_array_uniq() {
+    let src = "Array := import 'Array'; Array.uniq([1, 2, 2, 3, 1, 3])";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
+}
+
+#[test]
+fn v07_array_uniq_array_elements_appended_whole() {
+    // Each unique element is an array — `uniq` must push it as one
+    // element, not extend the accumulator with its contents.
+    let src = "Array := import 'Array'; #Array.uniq([[1], [2], [1]])";
+    assert_eq!(run(src), Value::Int(2));
+}
+
+#[test]
+fn v07_array_sort() {
+    let src = "Array := import 'Array'; Array.sort([3, 1, 4, 1, 5, 9, 2, 6])";
+    assert_eq!(int_vec(&run(src)), vec![1, 1, 2, 3, 4, 5, 6, 9]);
+}
+
+#[test]
+fn v07_array_sort_by() {
+    let src = "
+        Array := import 'Array';
+        Array.sort_by([3, 1, 2], fn(x){ -x })
+    ";
+    assert_eq!(int_vec(&run(src)), vec![3, 2, 1]);
 }

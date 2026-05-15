@@ -1,0 +1,223 @@
+// Tigr stdlib — `import 'Iter'`.
+//
+// Lazy, pull-based iterators. Where `Array.map |> Array.filter`
+// materializes a full array at every step, an `Iter` pipeline carries
+// one element through the whole chain at a time and never builds an
+// intermediate array.
+//
+// An iterator is just an object `${ next: fn() }`. Each `next()` call
+// returns either `${done: true}` or `${done: false, value: v}`. The
+// adapters (`from`/`count`/`repeat`) create iterators; the combinators
+// (`map`/`filter`/`take`/...) wrap one iterator in another and run no
+// work until pulled; the consumers (`collect`/`reduce`/...) drive the
+// pulling and force evaluation.
+//
+//   0 |> Iter.count() |> Iter.map(fn(n){ n*n }) |> Iter.take(5)
+//     |> Iter.collect()        // [0, 1, 4, 9, 16]
+//
+// `count`/`repeat` are infinite — only ever pair them with a bounded
+// combinator (`take`) or short-circuiting consumer (`find`/`nth`).
+
+_na := import '_NativeArray';
+
+${
+    // -------- adapters: build an iterator from a source --------
+
+    // Wrap a concrete iterable (Array / Range / String) as an
+    // iterator. A non-array source is materialized once via `for[]`;
+    // an array is iterated in place by index.
+    from: fn(it) {
+        src := if type(it) == 'array' { it } else { for[] (x, it) { x } };
+        i := 0;
+        ${ next: fn() {
+            if i >= #src {
+                ${ done: true }
+            } else {
+                v := src[i];
+                i = i + 1;
+                ${ done: false, value: v }
+            }
+        } }
+    },
+
+    // Infinite: start, start+1, start+2, ...
+    count: fn(start) {
+        n := start;
+        ${ next: fn() {
+            v := n;
+            n = n + 1;
+            ${ done: false, value: v }
+        } }
+    },
+
+    // Infinite: v, v, v, ...
+    repeat: fn(v) {
+        ${ next: fn() { ${ done: false, value: v } } }
+    },
+
+    // -------- combinators: iterator -> iterator, all lazy --------
+
+    // Apply `f` to each element as it is pulled.
+    map: fn(src, f) {
+        ${ next: fn() {
+            r := src.next();
+            if r.done { r } else { ${ done: false, value: f(r.value) } }
+        } }
+    },
+
+    // Keep only elements for which `pred` is truthy. Pulls from `src`
+    // until a passing element appears or `src` is exhausted.
+    filter: fn(src, pred) {
+        ${ next: fn() {
+            r := src.next();
+            while !r.done && !pred(r.value) {
+                r = src.next()
+            };
+            r
+        } }
+    },
+
+    // Yield at most the first `n` elements, then report done without
+    // pulling `src` again — this is what makes infinite sources safe.
+    take: fn(src, n) {
+        taken := 0;
+        ${ next: fn() {
+            if taken >= n {
+                ${ done: true }
+            } else {
+                r := src.next();
+                if !r.done { taken = taken + 1 };
+                r
+            }
+        } }
+    },
+
+    // Skip the first `n` elements, then yield the rest.
+    drop: fn(src, n) {
+        skipped := false;
+        ${ next: fn() {
+            if !skipped {
+                skipped = true;
+                k := 0;
+                while k < n {
+                    src.next();
+                    k = k + 1
+                }
+            };
+            src.next()
+        } }
+    },
+
+    // Yield `[index, value]` pairs, index starting at 0.
+    enumerate: fn(src) {
+        i := 0;
+        ${ next: fn() {
+            r := src.next();
+            if r.done { r } else {
+                idx := i;
+                i = i + 1;
+                ${ done: false, value: [idx, r.value] }
+            }
+        } }
+    },
+
+    // Yield `[a_elem, b_elem]` pairs; done as soon as either side is.
+    zip: fn(a, b) {
+        ${ next: fn() {
+            ra := a.next();
+            rb := if ra.done { ${ done: true } } else { b.next() };
+            if ra.done || rb.done {
+                ${ done: true }
+            } else {
+                ${ done: false, value: [ra.value, rb.value] }
+            }
+        } }
+    },
+
+    // Yield every element of `a`, then every element of `b`.
+    chain: fn(a, b) {
+        first := true;
+        ${ next: fn() {
+            if first {
+                r := a.next();
+                if !r.done { r } else {
+                    first = false;
+                    b.next()
+                }
+            } else {
+                b.next()
+            }
+        } }
+    },
+
+    // -------- consumers: force evaluation --------
+
+    // Drain the iterator into a fresh array. Uses the in-place
+    // `_NativeArray.push` so the build is O(n), not O(n^2).
+    collect: fn(it) {
+        out := [];
+        r := it.next();
+        while !r.done {
+            _na.push(out, r.value);
+            r = it.next()
+        };
+        out
+    },
+
+    // Left fold: `f(acc, elem)` over every element, starting at `seed`.
+    reduce: fn(it, f, seed) {
+        acc := seed;
+        r := it.next();
+        while !r.done {
+            acc = f(acc, r.value);
+            r = it.next()
+        };
+        acc
+    },
+
+    // Call `f(elem)` for side effects on every element. Returns null.
+    for_each: fn(it, f) {
+        r := it.next();
+        while !r.done {
+            f(r.value);
+            r = it.next()
+        };
+        null
+    },
+
+    // Number of elements the iterator yields. Diverges on an infinite
+    // iterator — bound it with `take` first.
+    count_of: fn(it) {
+        n := 0;
+        r := it.next();
+        while !r.done {
+            n = n + 1;
+            r = it.next()
+        };
+        n
+    },
+
+    // First element matching `pred`, or null. Short-circuits, so it is
+    // safe on an infinite iterator that contains a match.
+    find: fn(it, pred) {
+        r := it.next();
+        while !r.done {
+            if pred(r.value) { return r.value };
+            r = it.next()
+        };
+        null
+    },
+
+    // The element at 0-based index `n`, or null if the iterator is
+    // shorter. Short-circuits once index `n` is reached.
+    nth: fn(it, n) {
+        i := 0;
+        r := it.next();
+        while !r.done {
+            if i == n { return r.value };
+            i = i + 1;
+            r = it.next()
+        };
+        null
+    },
+}

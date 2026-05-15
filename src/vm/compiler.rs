@@ -538,7 +538,8 @@ impl Compiler {
             | OpCode::Shl | OpCode::Shr
             | OpCode::IndexGet | OpCode::ArrayPush | OpCode::ArrayExtend
             | OpCode::ObjectMerge | OpCode::SliceFrom | OpCode::ObjRest
-            | OpCode::IterAppend | OpCode::CallSpread => -1,
+            | OpCode::IterAppend | OpCode::CallSpread
+            | OpCode::AddAssign => -1,
             // -2: IndexSet pops collection/key/value, pushes value back
             OpCode::IndexSet => -2,
             // Operand-dependent: caller adjusts.
@@ -936,7 +937,7 @@ impl Compiler {
                 if let Some(op) = op {
                     self.emit_load(r, line);
                     self.compile_expr(value)?;
-                    self.emit_op(binop_to_opcode(*op), line);
+                    self.emit_op(compound_to_opcode(*op), line);
                 } else {
                     self.compile_expr(value)?;
                 }
@@ -1095,7 +1096,7 @@ impl Compiler {
                     self.emit_op(OpCode::Dup2, line);
                     self.emit_op(OpCode::IndexGet, line);
                     self.compile_expr(value)?;
-                    self.emit_op(binop_to_opcode(*op), line);
+                    self.emit_op(compound_to_opcode(*op), line);
                 } else {
                     self.compile_expr(value)?;
                 }
@@ -2380,6 +2381,16 @@ fn literal_pat_value(lit: &LiteralPat) -> Value {
         LiteralPat::Str(s) => Value::Str(s.as_str().into()),
         LiteralPat::Bool(b) => Value::Bool(*b),
         LiteralPat::Null => Value::Null,
+    }
+}
+
+/// Opcode for a compound-assignment operator (`+=`, `-=`, ...). `+=`
+/// gets the in-place `AddAssign` so an Array target is mutated rather
+/// than rebound; every other operator reuses its plain binary opcode.
+fn compound_to_opcode(op: BinOp) -> OpCode {
+    match op {
+        BinOp::Add => OpCode::AddAssign,
+        other => binop_to_opcode(other),
     }
 }
 

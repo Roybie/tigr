@@ -221,6 +221,14 @@ pub enum OpCode {
     /// Peek top; if it is NOT `null`, jump forward by operand. Does NOT
     /// pop. Operand: u16 BE. Used to fill in default parameter values.
     JumpIfNotNull,
+
+    // -- v0.7 — in-place compound add --
+    /// Pop `rhs`, pop `target`. If `target` is an Array, mutate it in
+    /// place — extend with `rhs`'s elements when `rhs` is an Array,
+    /// else push `rhs` as a single element — and push the (same)
+    /// Array. Otherwise behaves like `Add`. Emitted only for `+=`, so
+    /// plain `a + b` stays non-mutating.
+    AddAssign,
 }
 
 impl OpCode {
@@ -290,6 +298,7 @@ impl OpCode {
             60 => Shr,
             61 => TypeTest,
             62 => JumpIfNotNull,
+            63 => AddAssign,
             _ => return None,
         })
     }

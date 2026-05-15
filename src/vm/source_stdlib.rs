@@ -1,5 +1,5 @@
-//! Embedded tigr-source stdlib modules (`Array`, `Math`, `Object`,
-//! `String`).
+//! Embedded tigr-source stdlib modules (`Array`, `Iter`, `Math`,
+//! `Object`, `String`).
 //!
 //! These are `.tg` files at the repo's `stdlib/` directory, embedded
 //! at compile time via `include_str!`. Bare-name imports check this
@@ -15,6 +15,7 @@
 pub fn source(name: &str) -> Option<&'static str> {
     match name {
         "Array"  => Some(include_str!("../../stdlib/Array.tg")),
+        "Iter"   => Some(include_str!("../../stdlib/Iter.tg")),
         "Math"   => Some(include_str!("../../stdlib/Math.tg")),
         "Object" => Some(include_str!("../../stdlib/Object.tg")),
         "String" => Some(include_str!("../../stdlib/String.tg")),

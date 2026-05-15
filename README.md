@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.6**: the v0.5 release plus a `continue` keyword, default parameter values, and a wider standard library (`Path`, `Object`, `DateTime`, subprocess execution, and filesystem operations). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.7**: the v0.6 release plus lazy iteration via the new `Iter` module and in-place array growth (`Array.push` / `Array.extend`, and a `+=` that now mutates rather than rebinds). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -23,7 +23,7 @@ cargo build --release
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), and v0.5 demos in [`examples/v05/`](examples/v05/).
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), and v0.7 demos in [`examples/v07/`](examples/v07/).
 
 ---
 
@@ -187,13 +187,24 @@ arr := [1, 2, 3];
 arr[0];                              // 1
 arr[-1];                             // 3   (negative indices count from the end)
 #arr;                                // 3
-arr + 4;                             // [1, 2, 3, 4]    (append element)
-arr + [4, 5, 6];                     // [1, 2, 3, 4, 5, 6]   (concatenate arrays)
-arr += 7;                            // arr is now [1, 2, 3, 7]
 arr[0] = 99;                         // mutates in place
+
+arr + 4;                             // a NEW array [99, 2, 3, 4]   (append element)
+arr + [4, 5];                        // a NEW array, the two concatenated
 ```
 
-`Array + Array` concatenates, `Array + value` appends. To append an array as a single element, write `arr + [[1,2]]`.
+`Array + Array` concatenates, `Array + value` appends a single element — and `+` always builds a **fresh** array, leaving its operands untouched.
+
+`+=` instead grows the array **in place**. It mirrors `+` (an array right-hand side extends; anything else appends one element), but mutates rather than rebinds — so every alias of the array sees the change, consistent with how `arr[i] = v` already works:
+
+```
+a := [1, 2, 3];
+b := a;
+a += 4;                              // a AND b are now [1, 2, 3, 4]
+a += [5, 6];                         // extends in place → [1, 2, 3, 4, 5, 6]
+```
+
+To append an array as a *single* element rather than extend, use `Array.push(arr, [1, 2])`. The `Array` module also has `extend` for in-place bulk append; both are O(1)-amortized, where building an array with repeated `arr = arr + x` is O(n²).
 
 Spread `...` unpacks into a literal:
 
@@ -556,7 +567,7 @@ local := import './lib/util';  // path → user file
 
 There are two flavors:
 
-- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `String`, `Math` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
+- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `Iter`, `String`, `Math` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
 - **Path-shaped**: resolved relative to the importing file. The `.tg` extension is added automatically if absent.
 
 A user module is typically just an object literal:
@@ -608,16 +619,18 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `String`, `Math`, and `Object` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, and `Object` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
-A tigr-source module. Several functions take a **callback** — a function value you supply, which the module calls for you. These are the parameters named `func`, `pred`, and `key` in the table below. Unless a row's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`; since tigr drops extra arguments, declare it with only the parameters you need — `fn(x)`, `fn(x, i)`, or `fn(x, i, arr)` all work. (`reduce`, `create`, and `sort_by` use different callback signatures — see their rows.) Pure tigr: these raise only when an operation they perform does (e.g. `sum` on non-numbers).
+A tigr-source module. Several functions take a **callback** — a function value you supply, which the module calls for you. These are the parameters named `func`, `pred`, and `key` in the table below. Unless a row's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`; since tigr drops extra arguments, declare it with only the parameters you need — `fn(x)`, `fn(x, i)`, or `fn(x, i, arr)` all work. (`reduce`, `create`, and `sort_by` use different callback signatures — see their rows.) Most of these are pure tigr and raise only when an operation they perform does (e.g. `sum` on non-numbers); `push` / `extend` are native-backed and raise on a non-array argument.
 
 | Function | Returns | Behavior |
 |---|---|---|
+| `push(arr, value)` | `Array` | Append `value` to `arr` **in place** (O(1) amortized); returns `arr` |
+| `extend(arr, other)` | `Array` | Append every element of `other` to `arr` **in place**; returns `arr` |
 | `create(len, func)` | `Array` | Length-`len` array; element `i` is `func(i)` |
-| `concat(a, b)` | `Array` | Concatenate arrays `a` and `b` |
+| `concat(a, b)` | `Array` | A fresh array — `a` and `b` concatenated, neither mutated |
 | `map(arr, func)` | `Array` | Apply `func` to each element |
 | `filter(arr, pred)` | `Array` | Keep elements where `pred` is truthy |
 | `reduce(arr, func, seed)` | value | Left fold; `func(acc, elem, index, arr)` starting from `seed` |
@@ -653,6 +666,51 @@ Array.sort_by(people, fn(p) { p.age })
 
 // sort a list of words by length
 Array.sort_by(['ccc', 'a', 'bb'], fn(w) { #w })       // ['a', 'bb', 'ccc']
+```
+
+### `Iter` (v0.7)
+
+A tigr-source module of **lazy, pull-based iterators**. Where `Array.map` followed by `Array.filter` builds a complete intermediate array at every step, an `Iter` pipeline carries one element through the whole chain at a time and never materializes the in-between arrays — which also makes infinite sequences and short-circuiting possible.
+
+An iterator is an object `${next: fn()}`; each `next()` call returns `${done: true}` or `${done: false, value: v}`. The **adapters** create an iterator, the **combinators** wrap one lazily (no work runs until the result is pulled), and the **consumers** drive the pulling and force evaluation. Callback parameters (`func`, `pred`) are invoked as `callback(value)`.
+
+`count` and `repeat` are infinite — only pair them with a bounding combinator (`take`) or a short-circuiting consumer (`find` / `nth`).
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `from(iterable)` | `Iterator` | Wrap an Array / Range / String as an iterator |
+| `count(start)` | `Iterator` | Infinite — `start, start+1, start+2, ...` |
+| `repeat(value)` | `Iterator` | Infinite — `value` forever |
+| `map(it, func)` | `Iterator` | Lazily apply `func` to each element |
+| `filter(it, pred)` | `Iterator` | Lazily keep elements where `pred` is truthy |
+| `take(it, n)` | `Iterator` | Yield at most the first `n` elements, then stop |
+| `drop(it, n)` | `Iterator` | Skip the first `n` elements, yield the rest |
+| `enumerate(it)` | `Iterator` | Yield `[index, value]` pairs, index from `0` |
+| `zip(a, b)` | `Iterator` | Yield `[a_elem, b_elem]` pairs; done when either side is |
+| `chain(a, b)` | `Iterator` | Yield every element of `a`, then every element of `b` |
+| `collect(it)` | `Array` | Drain the iterator into a fresh array |
+| `reduce(it, func, seed)` | value | Left fold — `func(acc, elem)` over each element, from `seed` |
+| `for_each(it, func)` | `null` | Call `func(elem)` on each element, for side effects |
+| `count_of(it)` | `Int` | Number of elements the iterator yields |
+| `find(it, pred)` | value `\| null` | First element where `pred` is truthy, or `null` |
+| `nth(it, n)` | value `\| null` | The 0-indexed `n`th element, or `null` if shorter |
+
+```
+Iter := import 'Iter';
+
+// A lazy pipeline — no intermediate array is ever built:
+[1, 2, 3, 4, 5]
+  |> Iter.from()
+  |> Iter.map(fn(n) { n * n })
+  |> Iter.filter(fn(n) { n > 4 })
+  |> Iter.collect()                  // [9, 16, 25]
+
+// An infinite sequence, bounded by take:
+0 |> Iter.count() |> Iter.map(fn(n) { n * n }) |> Iter.take(5) |> Iter.collect()
+// [0, 1, 4, 9, 16]
+
+// Short-circuits — stops pulling at the first match:
+0 |> Iter.count() |> Iter.find(fn(n) { n > 100 })   // 101
 ```
 
 ### `String`
@@ -965,14 +1023,14 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.6 is feature-complete.** 351 tests pass. On top of v0.5, v0.6 adds:
+**v0.7 is in progress.** 388 tests pass. Phase 1 — lazy iteration and fast array growth — is complete; Phase 2 (structured, non-string errors) is planned. On top of v0.6, Phase 1 adds:
 
-1. **`continue`** — skip the rest of a loop iteration; the iteration contributes `null`. Now a reserved keyword.
-2. **Default parameter values** — `fn(a, b = 10)`; the default fills in when the argument slot is `null`.
-3. **Wider standard library** — filesystem operations on `IO` (`list_dir`, `mkdir`, `remove`, `is_dir`, `is_file`, `stat`); a new `Path` module; subprocess execution via `Os.run`; an `Object` source-stdlib module; and a `DateTime` module (UTC calendar date/time).
+1. **`Iter` module** — lazy, pull-based iterators: pipelines that never materialize intermediate arrays, plus infinite sequences and short-circuiting consumers.
+2. **In-place array growth** — `Array.push` / `Array.extend`, and a `+=` operator that now mutates an array in place instead of rebinding it. A deliberate breaking change: aliases of the array see the mutation, consistent with `arr[i] = v`.
 
 Earlier releases:
 
+- **v0.6**: `continue` keyword, default parameter values (`fn(a, b = 10)`), and a wider standard library — `IO` filesystem ops, a `Path` module, `Os.run` subprocesses, an `Object` module, and a UTC `DateTime` module.
 - **v0.5**: `type()` built-in, bitwise operators (`& | ^ ~ << >>`; `^` became XOR, `^^` is power), `match` expression with refutable patterns.
 - **v0.4**: rendered errors with source snippets, extended number literals (`0xFF`/`1e6`/`.5`/`_`), patterns on `=` + mid-expression decls, `JSON` module.
 - **v0.3**: `try`/`catch`/`raise`, module caching + bare-name dispatch, native modules (`IO`/`Os`/`Time`), source-stdlib (`Array`/`String`/`Math`), interactive REPL.

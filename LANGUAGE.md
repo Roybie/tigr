@@ -143,7 +143,8 @@ bar = 5          // ERROR: 'bar' is not declared
 - `=` assigns to the nearest enclosing binding of that name. It is an error
   if no such binding exists.
 - Compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`) require an existing
-  binding (same rule as `=`).
+  binding (same rule as `=`). `+=` on an array target mutates the array
+  in place rather than rebinding the name — see §7.1.
 
 Both `:=` and `=` are expressions and evaluate to the assigned value.
 
@@ -338,17 +339,34 @@ In a binding pattern, `...` is the **rest** form; see §11.
 arr := [1, 2, 3];
 arr[0];                     // 1
 #arr;                       // 3
-arr + 4;                    // [1, 2, 3, 4]   (append element)
-arr + [5, 6];               // [1, 2, 3, 4, 5, 6]   (concatenate)
-arr += 7;                   // arr is now [1, 2, 3, 4, 5, 6, 7]
-arr[0] = 99;                // arr is now [99, ...]
+arr + 4;                    // a fresh [1, 2, 3, 4]   (append element)
+arr + [5, 6];               // a fresh [1, 2, 3, 4, 5, 6]   (concatenate)
+arr[0] = 99;                // arr is now [99, 2, 3]   (in place)
 ```
 
 `Array + Array` concatenates. `Array + value` appends. `Array + Array` does
-*not* nest; to append an array as a single element, write `arr + [[...]]`.
-(Change from 0.1, where `arr += [5,6]` produced `[..., [5, 6]]`.)
+*not* nest; to append an array as a single element, write `arr + [[...]]`
+or `Array.push(arr, [...])`. `+` always produces a fresh array — its
+operands are never mutated.
+
+`+=` grows an array **in place** (v0.7). It applies the same
+array-vs-value rule as `+` — an array right-hand side extends, any other
+value appends one element — but mutates the existing array rather than
+rebinding the name, so every alias observes the change. This matches the
+reference semantics of indexed assignment.
+
+```
+a := [1, 2, 3];
+b := a;
+a += 4;                     // a and b are both [1, 2, 3, 4]
+a += [5, 6];                // a and b are both [1, 2, 3, 4, 5, 6]
+```
 
 Indexed assignment mutates the array in place (reference semantics).
+
+(Change from 0.1, where `arr += [5, 6]` produced `[..., [5, 6]]`. Change
+from v0.2–v0.6, where `+=` rebuilt a fresh array instead of mutating in
+place.)
 
 ### 7.2 Objects
 
@@ -919,11 +937,27 @@ user-defined module.
 
 #### `Array`
 
-`create`, `concat`, `map`, `filter`, `reduce`, `flatten`, `reverse`,
-`index`, `find`, `find_index`, `any`, `all`, `head`, `tail`, `take`,
-`drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`, `join`,
-`sort`, `sort_by`. Callbacks receive `(elem, index, whole_array)`;
-unused trailing args are dropped per spec §10.3.
+`push`, `extend`, `create`, `concat`, `map`, `filter`, `reduce`,
+`flatten`, `reverse`, `index`, `find`, `find_index`, `any`, `all`,
+`head`, `tail`, `take`, `drop`, `slice`, `sum`, `max_of`, `min_of`,
+`uniq`, `zip`, `join`, `sort`, `sort_by`. Callbacks receive
+`(elem, index, whole_array)`; unused trailing args are dropped per
+spec §10.3. `push(arr, v)` and `extend(arr, other)` mutate `arr` in
+place (O(1) amortized / O(#other)) and return it — unlike `concat`,
+which builds a fresh array. They are backed by the native
+`_NativeArray` module.
+
+#### `Iter` (v0.7)
+
+Lazy, pull-based iterators. An iterator is an object `${next: fn()}`
+whose `next()` yields `${done: true}` or `${done: false, value}`.
+Adapters `from`, `count`, `repeat`; lazy combinators `map`, `filter`,
+`take`, `drop`, `enumerate`, `zip`, `chain`; consumers `collect`,
+`reduce`, `for_each`, `count_of`, `find`, `nth`. A combinator does no
+work until a consumer pulls from it, so a pipeline never materializes
+an intermediate array. `count` / `repeat` are infinite and must be
+bounded by `take` (or a short-circuiting `find` / `nth`). Pure tigr —
+closures capture the source iterator; no VM support is required.
 
 #### `Object` (v0.6)
 
@@ -1314,3 +1348,31 @@ All additions; no breaking changes.
     `now`, `from_ms`, `to_ms`, `format`, `parse`.
 31. **`Object` source-stdlib module** (§13.3) — `keys`, `values`,
     `entries`, `from_entries`, `has`, `merge`, `map`, `filter`.
+
+## Appendix F — Changes in v0.7
+
+User-visible breaking change:
+
+32. **`+=` on an array mutates in place** (§7.1, §4.1). Through v0.6,
+    `arr += x` rebuilt a fresh array and rebound the name; it now
+    mutates the existing array, so aliases observe the change. The
+    array-vs-value rule is unchanged — an array right-hand side
+    extends, any other value appends one element. Plain `arr + x` is
+    unaffected and still yields a fresh array.
+
+Additions (non-breaking):
+
+33. **`Iter` source-stdlib module** (§13.3) — lazy, pull-based
+    iterators. Adapters `from`/`count`/`repeat`, lazy combinators
+    `map`/`filter`/`take`/`drop`/`enumerate`/`zip`/`chain`, consumers
+    `collect`/`reduce`/`for_each`/`count_of`/`find`/`nth`. A pipeline
+    carries one element through the whole chain at a time, never
+    materializing an intermediate array; `count` / `repeat` are
+    infinite sequences.
+34. **`Array.push` / `Array.extend`** (§13.3) — in-place array append
+    (O(1) amortized) and bulk append, each returning the array.
+    Backed by the native `_NativeArray` module.
+
+The structured-error work (`catch` binding the raised value; built-in
+errors as `${kind, message, line}` objects) is deferred to a later
+v0.7b release.

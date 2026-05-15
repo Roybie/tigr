@@ -306,6 +306,31 @@ impl Vm {
                 }
 
                 OpCode::Add => self.binop_arith(line, arith_add)?,
+                OpCode::AddAssign => {
+                    // In-place `+=`: an Array target is mutated, not
+                    // rebound; scalars fall back to ordinary `+`.
+                    let rhs = self.pop(line)?;
+                    let target = self.pop(line)?;
+                    match target {
+                        Value::Array(a) => {
+                            match rhs {
+                                // Snapshot `rhs` first so `a += a`
+                                // doesn't double-borrow the cell.
+                                Value::Array(b) => {
+                                    let items: Vec<Value> =
+                                        b.borrow().clone();
+                                    a.borrow_mut().extend(items);
+                                }
+                                other => a.borrow_mut().push(other),
+                            }
+                            self.stack.push(Value::Array(a));
+                        }
+                        other => {
+                            let sum = arith_add(other, rhs, line)?;
+                            self.stack.push(sum);
+                        }
+                    }
+                }
                 OpCode::Sub => self.binop_arith(line, arith_sub)?,
                 OpCode::Mul => self.binop_arith(line, arith_mul)?,
                 OpCode::Div => self.binop_arith(line, arith_div)?,

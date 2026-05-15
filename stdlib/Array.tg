@@ -1,10 +1,26 @@
 // Tigr stdlib — `import 'Array'`.
 //
-// Pure-tigr array utilities. Callbacks generally receive
+// Mostly pure-tigr array utilities. Callbacks generally receive
 // `(element, index, whole_array)` so callers can use any of them;
 // tigr drops extra args, so a 1-arg `fn(x) { ... }` still works.
+//
+// `push` / `extend` come from `_NativeArray` (Rust): they mutate the
+// array in place, so building an array element-by-element is O(n)
+// total instead of the O(n^2) of repeated `arr += x` / `concat`,
+// each of which copies the whole array.
+
+_na := import '_NativeArray';
 
 ${
+    // -------- in-place append --------
+
+    // Append `value` to `arr` in place; returns `arr`. O(1) amortized.
+    push: _na.push,
+
+    // Append every element of `other` to `arr` in place; returns
+    // `arr`. O(#other).
+    extend: _na.extend,
+
     // -------- builders --------
 
     // Build an array of length `len` from `func(i)`.
@@ -37,13 +53,19 @@ ${
 
     flatten: fn(arr) {
         out := [];
-        for (x, arr) { out = out + x };
+        // `+=` extends in place for an array element, appends a
+        // non-array one — same result as the old `out + x`, no copy.
+        for (x, arr) { out += x };
         out
     },
 
     reverse: fn(arr) {
         out := [];
-        for (x, arr) { out = [x] + out };
+        i := #arr - 1;
+        while i >= 0 {
+            _na.push(out, arr[i]);
+            i = i - 1
+        };
         out
     },
 
@@ -148,13 +170,14 @@ ${
     },
 
     // First-seen unique elements, preserving order. O(n^2) — fine for
-    // hobby-scale data.
+    // hobby-scale data. `_na.push` appends one element regardless of
+    // its type (a bare `+=` would *extend* an array-valued element).
     uniq: fn(arr) {
         out := [];
         for (x, arr) {
             seen := false;
             for (y, out) { if x == y { seen = true } };
-            if !seen { out = out + x }
+            if !seen { _na.push(out, x) }
         };
         out
     },
@@ -176,7 +199,9 @@ ${
     },
 
     // -------- sorting --------
-    // Insertion sort: O(n^2). Fine for small arrays.
+    // Insertion sort: O(n^2). Each insert rebuilds `out` once, with
+    // O(1) `_na.push` appends — the old `new_out + x + y` form copied
+    // the whole partial array per step, an extra O(n) factor.
 
     sort: fn(arr) {
         out := [];
@@ -185,13 +210,14 @@ ${
             new_out := [];
             for (y, out) {
                 if !inserted && x < y {
-                    new_out = new_out + x + y;
+                    _na.push(new_out, x);
+                    _na.push(new_out, y);
                     inserted = true
                 } else {
-                    new_out = new_out + y
+                    _na.push(new_out, y)
                 }
             };
-            if !inserted { new_out = new_out + x };
+            if !inserted { _na.push(new_out, x) };
             out = new_out
         };
         out
@@ -205,13 +231,14 @@ ${
             new_out := [];
             for (y, out) {
                 if !inserted && kx < key(y) {
-                    new_out = new_out + x + y;
+                    _na.push(new_out, x);
+                    _na.push(new_out, y);
                     inserted = true
                 } else {
-                    new_out = new_out + y
+                    _na.push(new_out, y)
                 }
             };
-            if !inserted { new_out = new_out + x };
+            if !inserted { _na.push(new_out, x) };
             out = new_out
         };
         out

@@ -7,6 +7,7 @@
 //! `module_cache` ensures a given module is built at most once per
 //! `Vm` run.
 
+pub mod array;
 pub mod datetime;
 pub mod io;
 pub mod json;
@@ -38,6 +39,7 @@ pub fn resolve(name: &str) -> Option<Value> {
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
+        "_NativeArray" => Some(array::module()),
         "_NativeMath" => Some(math::module()),
         "_NativeString" => Some(string::module()),
         _ => None,

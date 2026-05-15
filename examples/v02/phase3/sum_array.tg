@@ -1,0 +1,11 @@
+// Sum elements of an array with while + index. (Higher-level
+// iteration over collections arrives in Phase 5.)
+nums := [4, 7, 11, 13, 17];
+i := 0;
+sum := 0;
+while i < #nums {
+    sum += nums[i];
+    i += 1
+};
+print('sum =', str(sum));
+sum

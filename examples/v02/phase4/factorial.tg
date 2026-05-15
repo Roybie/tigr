@@ -1,0 +1,11 @@
+// Recursion via name capture: the body references `fact` which
+// the compiler resolves as an upvalue (capturing the outer slot
+// that was declared just before this fn literal).
+
+fact := fn(n) {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+};
+
+print('5! =', fact(5));
+print('10! =', fact(10));
+fact(6)

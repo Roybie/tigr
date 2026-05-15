@@ -1,0 +1,22 @@
+// for/for[] over all four iterable types (spec §7.4 table).
+
+// Range
+squares := for[] (i, 1..=5) { i * i };
+print('squares     =', squares);     // [1, 4, 9, 16, 25]
+
+// Range, 2-var (counter + element)
+indexed := for[] (n, v, 100..=104) { [n, v] };
+print('indexed     =', indexed);
+
+// Array, 1-var
+total := 0;
+for (x, [10, 20, 30, 40]) { total = total + x };
+print('array sum   =', total);       // 100
+
+// Object, 2-var (key, value) — insertion order
+pairs := for[] (k, v, ${a: 1, b: 2, c: 3}) { [k, v] };
+print('obj pairs   =', pairs);
+
+// String, 1-var
+letters := for[] (ch, 'tigr') { ch };
+print('letters     =', letters);     // ['t', 'i', 'g', 'r']

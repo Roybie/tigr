@@ -1,0 +1,2 @@
+// `||` short-circuits and returns the operand value (spec §5)
+0 || 'fallback'

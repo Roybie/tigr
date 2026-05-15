@@ -1,0 +1,26 @@
+// String interpolation (spec §8.2).
+// `{expr}` inside any single-quoted string is replaced by `str(expr)`.
+
+name := 'tigr';
+print('hello, {name}!');                       // hello, tigr!
+
+a := 3; b := 4;
+print('sum: {a + b}');                         // sum: 7
+
+arr := [10, 20, 30];
+print('first: {arr[0]}, count: {#arr}');       // first: 10, count: 3
+
+// Literal brace via \{
+print('literal: \{x}');                        // literal: {x}
+
+// Nested string inside interpolation
+cond := true;
+print('{ if cond { 'yes' } else { 'no' } }');  // yes
+
+// Doubly nested — inner string interpolates too
+x := 7;
+print('{ 'inner={x}' }');                      // inner=7
+
+// Combine with phase-6 features
+nums := [1, 2, 3];
+print('hi {name}, len={#[0, ...nums, 4]}');    // hi tigr, len=5

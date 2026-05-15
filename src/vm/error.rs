@@ -53,6 +53,8 @@ pub enum ParseErrorKind {
     UnexpectedToken(Token),
     InvalidAssignTarget,
     ExpectedEof(Token),
+    InterpolationError(String),
+    InvalidPattern(String),
 }
 
 impl fmt::Display for ParseError {
@@ -64,6 +66,8 @@ impl fmt::Display for ParseError {
             ParseErrorKind::UnexpectedToken(t) => write!(f, "unexpected token `{}`", t),
             ParseErrorKind::InvalidAssignTarget => f.write_str("invalid assignment target"),
             ParseErrorKind::ExpectedEof(t) => write!(f, "expected end of input, found `{}`", t),
+            ParseErrorKind::InterpolationError(m) => write!(f, "in interpolation: {m}"),
+            ParseErrorKind::InvalidPattern(m) => write!(f, "invalid pattern: {m}"),
         }
     }
 }
@@ -87,8 +91,13 @@ pub enum CompileErrorKind {
     UndeclaredVariable(String),
     UndeclaredAssign(String),
     DuplicateDeclaration(String),
+    AssignToBuiltin(String),
     TooManyConstants,
     TooManyLocals,
+    TooManyUpvalues,
+    JumpTooFar,
+    BreakOutsideLoop,
+    SpreadInInvalidPosition,
 }
 
 impl fmt::Display for CompileError {
@@ -103,8 +112,17 @@ impl fmt::Display for CompileError {
             CompileErrorKind::DuplicateDeclaration(n) => {
                 write!(f, "`{}` is already declared in this scope", n)
             }
+            CompileErrorKind::AssignToBuiltin(n) => {
+                write!(f, "cannot assign to built-in `{}` (use `:=` to shadow)", n)
+            }
             CompileErrorKind::TooManyConstants => f.write_str("too many constants in chunk"),
             CompileErrorKind::TooManyLocals => f.write_str("too many local variables"),
+            CompileErrorKind::TooManyUpvalues => f.write_str("too many captured variables"),
+            CompileErrorKind::JumpTooFar => f.write_str("jump distance exceeds 64KiB"),
+            CompileErrorKind::BreakOutsideLoop => f.write_str("`break` outside of any loop"),
+            CompileErrorKind::SpreadInInvalidPosition => f.write_str(
+                "spread `...` is only allowed in array literals, call args, or object literals"
+            ),
         }
     }
 }
@@ -128,6 +146,12 @@ pub enum RuntimeErrorKind {
     TypeMismatch(String),
     DivisionByZero,
     StackUnderflow,
+    ArityMismatch { name: String, expected: String, got: usize },
+    NotCallable(String),
+    IndexOutOfBounds(i64),
+    InvalidIndexType(String),
+    ImmutableTarget(String),
+    ImportFailed(String, String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -136,6 +160,16 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::TypeMismatch(s) => write!(f, "type mismatch: {}", s),
             RuntimeErrorKind::DivisionByZero => f.write_str("division by zero"),
             RuntimeErrorKind::StackUnderflow => f.write_str("internal: stack underflow"),
+            RuntimeErrorKind::ArityMismatch { name, expected, got } => write!(
+                f, "{name} expects {expected} arguments; got {got}"
+            ),
+            RuntimeErrorKind::NotCallable(t) => write!(f, "value of type {t} is not callable"),
+            RuntimeErrorKind::IndexOutOfBounds(i) => write!(f, "index {i} out of bounds"),
+            RuntimeErrorKind::InvalidIndexType(t) => write!(f, "cannot index with {t}"),
+            RuntimeErrorKind::ImmutableTarget(t) => write!(f, "{t} is immutable"),
+            RuntimeErrorKind::ImportFailed(path, msg) => write!(
+                f, "import of {path:?} failed: {msg}"
+            ),
         }
     }
 }

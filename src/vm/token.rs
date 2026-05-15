@@ -33,7 +33,13 @@ pub enum Token {
     // Literals
     Int(i64),
     Float(f64),
+    /// Plain string literal — no `{...}` interpolations present.
     Str(String),
+    /// Interpolated string — captured by the lexer as a sequence of
+    /// literal segments and source slices for each `{expr}`. The
+    /// parser sub-parses each `Expr` slice via a nested
+    /// Lexer+Parser invocation.
+    StrTemplate(Vec<TemplatePart>),
     Ident(String),
 
     // Keywords
@@ -114,6 +120,7 @@ impl fmt::Display for Token {
             Int(n) => write!(f, "{n}"),
             Float(x) => write!(f, "{x}"),
             Str(s) => write!(f, "'{s}'"),
+            StrTemplate(_) => f.write_str("<interpolated string>"),
             Ident(s) => write!(f, "{s}"),
             Null => f.write_str("null"),
             True => f.write_str("true"),
@@ -167,6 +174,15 @@ impl fmt::Display for Token {
             Eof => f.write_str("<eof>"),
         }
     }
+}
+
+/// One piece of an interpolated string token. Either a literal
+/// segment, or the source text of an embedded expression (to be
+/// sub-parsed by the parser).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TemplatePart {
+    Lit(String),
+    Expr(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

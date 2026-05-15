@@ -1,0 +1,22 @@
+// The canonical Phase 4 closure test (spec §10.4).
+// Each call to make_counter creates a fresh `n` cell that the
+// returned closure captures. Calling the returned closure mutates
+// n through the shared upvalue.
+
+make_counter := fn() {
+    n := 0;
+    fn() { n = n + 1; n }
+};
+
+c := make_counter();
+print(c());   // 1
+print(c());   // 2
+print(c());   // 3
+
+// Two counters are independent (each capture its own n)
+a := make_counter();
+b := make_counter();
+a(); a();
+b();
+print('a is at:', a());   // 3
+print('b is at:', b())    // 2

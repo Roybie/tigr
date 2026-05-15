@@ -15,7 +15,8 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-#[allow(dead_code)] // collection / fn / range variants arrive Phase 3+
+use crate::vm::chunk::Chunk;
+
 #[derive(Clone)]
 pub enum Value {
     Null,
@@ -30,8 +31,14 @@ pub enum Value {
 
     // Phase 5+
     Range(Rc<RangeData>),
+    /// Internal iterator state for `for`. Wrapped in `RefCell` so the
+    /// position advances in place while the value lives on the stack.
+    /// Never observable from tigr code.
+    Iter(Rc<RefCell<IterState>>),
 
-    // Phase 4+
+    // Phase 4+ — runtime callable. Plain functions with no captured
+    // variables are still represented as a Closure with an empty
+    // upvalues vec.
     Function(Rc<Closure>),
 
     // Phase 6+
@@ -46,14 +53,197 @@ pub struct RangeData {
     pub inclusive: bool,
 }
 
-/// Placeholder for Phase 4. Real definition comes when functions land.
-pub struct Closure {
-    pub _phase: u8,
+impl RangeData {
+    /// Number of elements yielded by iteration / spread / `#`.
+    pub fn length(&self) -> i64 {
+        if self.step == 0 {
+            return 0;
+        }
+        let going_up = self.step > 0;
+        let direction_matches = if going_up {
+            self.from < self.to || (self.inclusive && self.from == self.to)
+        } else {
+            self.from > self.to || (self.inclusive && self.from == self.to)
+        };
+        if !direction_matches {
+            return 0;
+        }
+        let span = if going_up { self.to - self.from } else { self.from - self.to };
+        let abs_step = self.step.abs();
+        if self.inclusive {
+            span / abs_step + 1
+        } else if span == 0 {
+            0
+        } else {
+            (span - 1) / abs_step + 1
+        }
+    }
+
+    /// Element at index `i` (0-based). Caller is responsible for bounds.
+    pub fn nth(&self, i: i64) -> i64 {
+        self.from + i * self.step
+    }
 }
 
-/// Placeholder for Phase 6.
+/// Live iterator over one of the four iterable types. The compiler
+/// emits `OpCode::MakeIter` to wrap an iterable in an `Iter` value, and
+/// `OpCode::IterNext`/`IterNext2` to advance it inside a `for` loop.
+#[derive(Clone)]
+pub enum IterState {
+    Range {
+        current: i64,
+        to: i64,
+        step: i64,
+        inclusive: bool,
+        index: i64,
+    },
+    Array {
+        array: Rc<RefCell<Vec<Value>>>,
+        index: usize,
+    },
+    Object {
+        object: Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        index: usize,
+    },
+    String {
+        string: Rc<str>,
+        char_index: usize,
+        byte_index: usize,
+    },
+}
+
+impl IterState {
+    /// Advance and yield `(counter_or_key, value)`. Returns `None` when
+    /// exhausted. The compiler decides whether to use the counter via
+    /// `IterNext` (one-var) vs `IterNext2` (two-var).
+    pub fn next(&mut self) -> Option<(Value, Value)> {
+        match self {
+            IterState::Range { current, to, step, inclusive, index } => {
+                let has_more = if *step > 0 {
+                    if *inclusive { *current <= *to } else { *current < *to }
+                } else if *step < 0 {
+                    if *inclusive { *current >= *to } else { *current > *to }
+                } else {
+                    false
+                };
+                if !has_more {
+                    return None;
+                }
+                let value = Value::Int(*current);
+                let counter = Value::Int(*index);
+                *current += *step;
+                *index += 1;
+                Some((counter, value))
+            }
+            IterState::Array { array, index } => {
+                let arr = array.borrow();
+                if *index >= arr.len() {
+                    return None;
+                }
+                let v = arr[*index].clone();
+                let counter = Value::Int(*index as i64);
+                *index += 1;
+                Some((counter, v))
+            }
+            IterState::Object { object, index } => {
+                let obj = object.borrow();
+                if *index >= obj.len() {
+                    return None;
+                }
+                let (k, v) = obj.get_index(*index).unwrap();
+                let key = Value::Str(k.clone());
+                let value = v.clone();
+                *index += 1;
+                Some((key, value))
+            }
+            IterState::String { string, char_index, byte_index } => {
+                let rest = &string[*byte_index..];
+                let mut iter = rest.chars();
+                let Some(c) = iter.next() else { return None; };
+                let counter = Value::Int(*char_index as i64);
+                let value = Value::Str(c.to_string().into());
+                *byte_index += c.len_utf8();
+                *char_index += 1;
+                Some((counter, value))
+            }
+        }
+    }
+}
+
+/// Compile-time function template. Lives in the enclosing chunk's
+/// `functions` table; instances become runtime [`Closure`]s via the
+/// `OpCode::Closure` opcode.
+pub struct Function {
+    /// Number of fixed positional parameters (excluding rest).
+    pub arity: usize,
+    /// `true` if the function declared a `...rest` parameter.
+    /// Extra args land in an Array at slot `arity + 1`; if fewer than
+    /// `arity` args were passed, rest is an empty Array.
+    pub has_rest: bool,
+    pub chunk: Chunk,
+    /// Capture instructions: for each upvalue, where to source it from
+    /// when the enclosing function constructs a closure.
+    pub upvalues: Vec<UpvalueInfo>,
+    pub name: Option<String>,
+}
+
+/// One per upvalue in a [`Function`]. `is_local = true` means "capture
+/// the slot at `index` of the enclosing function's frame"; `false`
+/// means "reuse the upvalue at `index` of the enclosing function's
+/// closure".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UpvalueInfo {
+    pub is_local: bool,
+    pub index: u8,
+}
+
+/// Runtime callable: a function template + its captured upvalue cells.
+pub struct Closure {
+    pub function: Rc<Function>,
+    pub upvalues: Vec<Rc<RefCell<Upvalue>>>,
+}
+
+/// A captured variable. `Open` means "still on the value stack at this
+/// slot index"; `Closed` means "lifted to the heap" (the local has gone
+/// out of scope).
+#[derive(Clone)]
+pub enum Upvalue {
+    Open(usize),
+    Closed(Value),
+}
+
+/// A built-in function. Invoked via `Call n` once `n` args are on the
+/// stack with the `NativeFn` value just below them.
 pub struct NativeFn {
-    pub _phase: u8,
+    pub name: &'static str,
+    pub arity: Arity,
+    pub func: fn(&[Value]) -> Result<Value, crate::vm::error::RuntimeError>,
+}
+
+#[allow(dead_code)] // AtLeast not used until later phases (e.g. fold)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Arity {
+    Exact(usize),
+    Variadic,
+    AtLeast(usize),
+}
+
+impl Arity {
+    pub fn check(self, n: usize) -> bool {
+        match self {
+            Arity::Exact(k) => n == k,
+            Arity::Variadic => true,
+            Arity::AtLeast(k) => n >= k,
+        }
+    }
+
+    pub fn describe(self) -> String {
+        match self {
+            Arity::Exact(k) => format!("exactly {k}"),
+            Arity::Variadic => "any number of".to_string(),
+            Arity::AtLeast(k) => format!("at least {k}"),
+        }
+    }
 }
 
 #[allow(dead_code)] // is_truthy used Phase 2+
@@ -68,13 +258,13 @@ impl Value {
             Value::Array(_) => "array",
             Value::Object(_) => "object",
             Value::Range(_) => "range",
+            Value::Iter(_) => "iterator",
             Value::Function(_) => "function",
             Value::NativeFn(_) => "native function",
         }
     }
 
     /// Truthiness per spec §5.
-    /// (Empty array/object/string falsy. Phase 1 only sees primitives.)
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Null => false,
@@ -84,7 +274,9 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::Array(a) => !a.borrow().is_empty(),
             Value::Object(o) => !o.borrow().is_empty(),
-            Value::Range(_) => true, // ranges with empty extent are still truthy values
+            // §5: "all non-empty ranges" are truthy → empty range falsy.
+            Value::Range(r) => r.length() > 0,
+            Value::Iter(_) => true,
             Value::Function(_) => true,
             Value::NativeFn(_) => true,
         }
@@ -104,6 +296,7 @@ impl PartialEq for Value {
             (Array(a), Array(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
             (Object(a), Object(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
             (Range(a), Range(b)) => a == b,
+            (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
             (Function(a), Function(b)) => Rc::ptr_eq(a, b),
             (NativeFn(a), NativeFn(b)) => Rc::ptr_eq(a, b),
             _ => false,
@@ -167,8 +360,12 @@ impl fmt::Display for Value {
                     write!(f, "{}{}{}:{}", r.from, dots, r.to, r.step)
                 }
             }
-            Value::Function(_) => f.write_str("fn(...)"),
-            Value::NativeFn(_) => f.write_str("<native fn>"),
+            Value::Iter(_) => f.write_str("<iterator>"),
+            Value::Function(c) => match &c.function.name {
+                Some(n) => write!(f, "<fn {n}>"),
+                None => f.write_str("<fn>"),
+            },
+            Value::NativeFn(n) => write!(f, "<native fn {}>", n.name),
         }
     }
 }

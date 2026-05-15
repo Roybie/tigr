@@ -1,0 +1,55 @@
+// v0.2 port of examples/v01/Array.tg. Returned by `import 'Array'`.
+
+${
+    // Build an array of length `len` from the result of `func(i)`.
+    create: fn(len, func) {
+        for[] (i, 0..len) { func(i) }
+    },
+
+    // Concatenate two arrays — built-in via spread.
+    concat: fn(arr1, arr2) { [...arr1, ...arr2] },
+
+    // First index of element, or null if not found.
+    index: fn(array, element) {
+        for (i, 0..#array) {
+            if array[i] == element { return i }
+        };
+        null
+    },
+
+    // Reversed copy.
+    reverse: fn(array) {
+        for[] (i, (#array - 1)..-1:-1) { array[i] }
+    },
+
+    // Last n elements (n is clamped to length).
+    tail: fn(array, n) {
+        if n > #array { n = #array };
+        for[] (i, #array - n .. #array) { array[i] }
+    },
+
+    // First n elements.
+    head: fn(array, n) {
+        if n > #array { n = #array };
+        for[] (i, 0..n) { array[i] }
+    },
+
+    // map(arr, fn(elem, index, whole_array))
+    map: fn(array, func) {
+        for[] (i, 0..#array) { func(array[i], i, array) }
+    },
+
+    // filter(arr, predicate(elem, index, whole_array))
+    filter: fn(array, func) {
+        for[] (i, 0..#array) {
+            if func(array[i], i, array) { array[i] }
+        }
+    },
+
+    // reduce(arr, fn(acc, elem, index, whole_array), seed)
+    reduce: fn(array, func, seed) {
+        for (i, 0..#array) {
+            seed = func(seed, array[i], i, array)
+        }
+    },
+}

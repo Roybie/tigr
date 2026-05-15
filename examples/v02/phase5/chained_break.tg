@@ -1,0 +1,14 @@
+// The chained-break spec example (§9.4). `break (break v)` exits both
+// loops; the inner `break` propagates v as the outer loop's value.
+
+result := for (i, 0..10) {
+    for (j, 0..10) {
+        if i * j == 25 { break (break [i, j]) }
+    }
+};
+print('found       =', result);      // [5, 5]
+
+
+// Bonus — break with value in for[] *appends* the value, then exits.
+nums := for[] (i, 0..10) { if i == 5 { break 999 }; i };
+print('with break  =', nums);        // [0, 1, 2, 3, 4, 999]

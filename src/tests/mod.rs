@@ -128,3 +128,1416 @@ fn phase1_bool_and_null_literals() {
 fn phase1_modulo() {
     assert_eq!(run("17 % 5"), Value::Int(2));
 }
+
+// ---- Phase 2: control flow, scopes, comparison, logical ----
+
+#[test]
+fn phase2_while_sum() {
+    let src = "i := 0; sum := 0; while i < 10 { sum = sum + i; i = i + 1 }; sum";
+    assert_eq!(run(src), Value::Int(45));
+}
+
+#[test]
+fn phase2_while_zero_iter_returns_null() {
+    assert_eq!(run("while false { 42 }"), Value::Null);
+}
+
+#[test]
+fn phase2_while_returns_last_iter_value() {
+    let src = "i := 0; while i < 3 { i = i + 1 }";
+    // body's tail is `i = i + 1`, an assignment expr that evaluates to
+    // the assigned value. Last iteration writes 3.
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn phase2_if_takes_then() {
+    assert_eq!(run("if true { 10 }"), Value::Int(10));
+}
+
+#[test]
+fn phase2_if_no_else_falls_through_to_null() {
+    assert_eq!(run("if false { 10 }"), Value::Null);
+}
+
+#[test]
+fn phase2_if_else() {
+    assert_eq!(run("if 1 == 2 { 'yes' } else { 'no' }"), Value::Str("no".into()));
+}
+
+#[test]
+fn phase2_else_if_chain() {
+    let src = "x := 2; if x == 1 { 'one' } else if x == 2 { 'two' } else { 'many' }";
+    assert_eq!(run(src), Value::Str("two".into()));
+}
+
+#[test]
+fn phase2_short_circuit_or_returns_operand() {
+    // 0 is falsy → `||` returns the right operand
+    assert_eq!(run("0 || 'fallback'"), Value::Str("fallback".into()));
+}
+
+#[test]
+fn phase2_short_circuit_and_returns_operand() {
+    assert_eq!(run("'a' && 'b'"), Value::Str("b".into()));
+    assert_eq!(run("null && 'b'"), Value::Null);
+}
+
+#[test]
+fn phase2_short_circuit_or_returns_left_when_truthy() {
+    assert_eq!(run("'first' || 'second'"), Value::Str("first".into()));
+}
+
+#[test]
+fn phase2_not_unary() {
+    assert_eq!(run("!false"), Value::Bool(true));
+    assert_eq!(run("!0"), Value::Bool(true));
+    assert_eq!(run("!''"), Value::Bool(true));
+    assert_eq!(run("!1"), Value::Bool(false));
+    assert_eq!(run("!'x'"), Value::Bool(false));
+}
+
+#[test]
+fn phase2_comparison_int_float() {
+    assert_eq!(run("1 < 2"), Value::Bool(true));
+    assert_eq!(run("2 == 2.0"), Value::Bool(true));
+    assert_eq!(run("3 > 2.5"), Value::Bool(true));
+    assert_eq!(run("3 != 'three'"), Value::Bool(true));
+}
+
+#[test]
+fn phase2_scope_value() {
+    // spec §4.3 example: a=9, b={c:=20; c * (a += 1)} where a goes to 10, b to 200
+    // We don't have += yet, so use `a = a + 1` which evaluates to 10.
+    let src = "a := 9; b := { c := 20; c * (a = a + 1) }; b";
+    assert_eq!(run(src), Value::Int(200));
+}
+
+#[test]
+fn phase2_scope_outer_mutated() {
+    let src = "a := 9; { c := 20; a = a + 1 }; a";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase2_scope_inner_var_not_visible() {
+    // `c` declared inside the scope is gone afterwards
+    let msg = run_err("{ c := 20 }; c");
+    assert!(msg.contains("undeclared"), "got {msg}");
+}
+
+#[test]
+fn phase2_scope_shadows_outer() {
+    let src = "x := 1; y := { x := 99; x + 1 }; (y == 100) && (x == 1)";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn phase2_nested_if_in_while() {
+    let src = "i := 0; out := 0; while i < 5 {\
+                if i == 3 { out = 999 } else { out = i };\
+                i = i + 1\
+              }; out";
+    // last iteration: i=4, out=4
+    assert_eq!(run(src), Value::Int(4));
+}
+
+#[test]
+fn phase2_truthy_int_in_if() {
+    assert_eq!(run("if 7 { 'yes' } else { 'no' }"), Value::Str("yes".into()));
+    assert_eq!(run("if 0 { 'yes' } else { 'no' }"), Value::Str("no".into()));
+}
+
+#[test]
+fn phase2_truthy_string_in_if() {
+    assert_eq!(run("if 'x' { 1 } else { 2 }"), Value::Int(1));
+    assert_eq!(run("if '' { 1 } else { 2 }"), Value::Int(2));
+}
+
+// ---- Phase 3: collections, indexing, references, built-ins ----
+
+#[test]
+fn phase3_array_literal_and_index() {
+    assert_eq!(run("[10, 20, 30][1]"), Value::Int(20));
+}
+
+#[test]
+fn phase3_array_negative_index() {
+    assert_eq!(run("[1, 2, 3][-1]"), Value::Int(3));
+    assert_eq!(run("[1, 2, 3][-2]"), Value::Int(2));
+}
+
+#[test]
+fn phase3_array_oob_is_null() {
+    assert_eq!(run("[1, 2][99]"), Value::Null);
+    assert_eq!(run("[1, 2][-5]"), Value::Null);
+}
+
+#[test]
+fn phase3_reference_semantics_alias_mutation() {
+    // The canonical reference-semantics test from the plan.
+    let src = "arr := [1, 2, 3]; copy := arr; copy[0] = 99; arr[0]";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+#[test]
+fn phase3_object_literal_and_member() {
+    let src = "o := ${ name: 'tigr', version: 2 }; o.name";
+    assert_eq!(run(src), Value::Str("tigr".into()));
+}
+
+#[test]
+fn phase3_object_index_with_string_key() {
+    let src = "o := ${ 'with space': 99 }; o['with space']";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+#[test]
+fn phase3_object_missing_key_is_null() {
+    assert_eq!(run("${}['missing']"), Value::Null);
+}
+
+#[test]
+fn phase3_object_member_set() {
+    let src = "o := ${}; o.color = 'red'; o.color";
+    assert_eq!(run(src), Value::Str("red".into()));
+}
+
+#[test]
+fn phase3_object_reference_semantics() {
+    let src = "o := ${ x: 1 }; alias := o; alias.x = 99; o.x";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+#[test]
+fn phase3_empty_collections_are_falsy() {
+    assert_eq!(run("if [] { 'no' } else { 'yes' }"), Value::Str("yes".into()));
+    assert_eq!(run("if ${} { 'no' } else { 'yes' }"), Value::Str("yes".into()));
+    assert_eq!(run("if [1] { 'yes' } else { 'no' }"), Value::Str("yes".into()));
+    assert_eq!(run("if ${a:1} { 'yes' } else { 'no' }"), Value::Str("yes".into()));
+}
+
+#[test]
+fn phase3_string_concat() {
+    assert_eq!(run("'hello' + ', ' + 'world'"), Value::Str("hello, world".into()));
+}
+
+#[test]
+fn phase3_string_index() {
+    assert_eq!(run("'hello'[0]"), Value::Str("h".into()));
+    assert_eq!(run("'hello'[-1]"), Value::Str("o".into()));
+}
+
+#[test]
+fn phase3_string_immutable() {
+    let msg = run_err("s := 'abc'; s[0] = 'x'");
+    assert!(msg.contains("immutable"), "got {msg}");
+}
+
+#[test]
+fn phase3_length_of_each() {
+    assert_eq!(run("#[1, 2, 3, 4]"), Value::Int(4));
+    assert_eq!(run("#${a: 1, b: 2}"), Value::Int(2));
+    assert_eq!(run("#'hello'"), Value::Int(5));
+}
+
+#[test]
+fn phase3_array_plus_value_appends_new() {
+    // spec §7.1: arr + v appends; arr itself unchanged
+    let src = "arr := [1, 2, 3]; arr + 4";
+    let v = run(src);
+    match v {
+        Value::Array(a) => {
+            let a = a.borrow();
+            assert_eq!(a.len(), 4);
+            assert_eq!(a[3], Value::Int(4));
+        }
+        _ => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase3_array_plus_array_concats() {
+    let src = "[1, 2] + [3, 4]";
+    let v = run(src);
+    match v {
+        Value::Array(a) => {
+            let a = a.borrow();
+            assert_eq!(a.len(), 4);
+            assert_eq!(a[0], Value::Int(1));
+            assert_eq!(a[3], Value::Int(4));
+        }
+        _ => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase3_array_plus_does_not_mutate_lhs() {
+    let src = "arr := [1, 2, 3]; arr + 4; #arr";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn phase3_compound_assign_array_append() {
+    // arr += v: rebinds arr to a new array containing v
+    let src = "arr := [1, 2]; arr += 3; arr + 0";
+    let v = run(src);
+    match v {
+        Value::Array(a) => {
+            let a = a.borrow();
+            assert_eq!(a.len(), 4);
+            assert_eq!(a[2], Value::Int(3));
+        }
+        _ => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase3_compound_assign_index() {
+    // arr[i] += v: evaluates arr/i once; mutates in place
+    let src = "arr := [10, 20, 30]; arr[1] += 5; arr[1]";
+    assert_eq!(run(src), Value::Int(25));
+}
+
+#[test]
+fn phase3_compound_assign_object_member() {
+    let src = "o := ${ n: 10 }; o.n *= 3; o.n";
+    assert_eq!(run(src), Value::Int(30));
+}
+
+#[test]
+fn phase3_native_str() {
+    assert_eq!(run("str(42)"), Value::Str("42".into()));
+    assert_eq!(run("str(null)"), Value::Str("null".into()));
+    assert_eq!(run("str(true)"), Value::Str("true".into()));
+    assert_eq!(run("str([1, 2])"), Value::Str("[1, 2]".into()));
+}
+
+#[test]
+fn phase3_native_print_is_value() {
+    // print can be stored/passed
+    assert_eq!(run("f := print; null"), Value::Null);
+}
+
+#[test]
+fn phase3_print_returns_last_arg() {
+    // mirrors block-tail semantics
+    assert_eq!(run("print()"), Value::Null);
+    assert_eq!(run("print(42)"), Value::Int(42));
+    assert_eq!(run("print('label:', 7)"), Value::Int(7));
+    // wrap-and-debug pattern: log a value and pass it through
+    assert_eq!(run("x := print('val:', 10); x * 2"), Value::Int(20));
+}
+
+#[test]
+fn phase3_native_str_arity_error() {
+    let msg = run_err("str()");
+    assert!(msg.contains("arguments"), "got {msg}");
+}
+
+#[test]
+fn phase3_print_is_shadowable() {
+    // user binding shadows the built-in
+    let src = "print := fn_placeholder := 5; print";
+    // (Phase 3 doesn't have `fn` value beyond NativeFn; rebinding to an int suffices.)
+    assert_eq!(run(src), Value::Int(5));
+}
+
+#[test]
+fn phase3_object_iteration_order_preserved_in_str() {
+    // IndexMap preserves insertion order; str() displays accordingly
+    let src = "str(${ first: 1, second: 2, third: 3 })";
+    assert_eq!(run(src), Value::Str("${first: 1, second: 2, third: 3}".into()));
+}
+
+#[test]
+fn phase3_nested_object_member() {
+    let src = "o := ${ inner: ${ x: 7 } }; o.inner.x";
+    assert_eq!(run(src), Value::Int(7));
+}
+
+#[test]
+fn phase3_chained_indexing() {
+    let src = "matrix := [[1, 2], [3, 4]]; matrix[1][0]";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn phase3_call_chained() {
+    // returns value of str(str(42)) which is the string "42" (str is idempotent)
+    assert_eq!(run("str(str(42))"), Value::Str("42".into()));
+}
+
+#[test]
+fn phase3_array_eq_structural() {
+    assert_eq!(run("[1, 2, 3] == [1, 2, 3]"), Value::Bool(true));
+    assert_eq!(run("[1, 2, 3] == [1, 2, 4]"), Value::Bool(false));
+}
+
+#[test]
+fn phase3_object_eq_structural() {
+    assert_eq!(run("${a:1, b:2} == ${a:1, b:2}"), Value::Bool(true));
+    assert_eq!(run("${a:1} == ${a:2}"), Value::Bool(false));
+}
+
+// ---- Phase 4: functions, closures, return ----
+
+#[test]
+fn phase4_simple_call() {
+    assert_eq!(run("f := fn() { 42 }; f()"), Value::Int(42));
+}
+
+#[test]
+fn phase4_call_with_args() {
+    assert_eq!(run("add := fn(a, b) { a + b }; add(2, 3)"), Value::Int(5));
+}
+
+#[test]
+fn phase4_missing_args_become_null() {
+    let src = "f := fn(a, b) { if b == null { 'b is null' } else { 'both given' } }; f(1)";
+    assert_eq!(run(src), Value::Str("b is null".into()));
+}
+
+#[test]
+fn phase4_extra_args_dropped() {
+    // f expects 1 arg; we pass 3. Extras silently dropped.
+    let src = "f := fn(a) { a }; f(99, 'x', 'y')";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+#[test]
+fn phase4_explicit_return() {
+    let src = "f := fn(n) { if n < 0 { return 'neg' }; 'pos' }; f(-5)";
+    assert_eq!(run(src), Value::Str("neg".into()));
+}
+
+#[test]
+fn phase4_return_no_value() {
+    let src = "f := fn() { return }; f()";
+    assert_eq!(run(src), Value::Null);
+}
+
+#[test]
+fn phase4_recursion_factorial() {
+    // f := fn(n) { if n <= 1 { 1 } else { n * f(n-1) } }
+    let src = "fact := fn(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }; fact(6)";
+    assert_eq!(run(src), Value::Int(720));
+}
+
+#[test]
+fn phase4_closure_captures_outer() {
+    let src = "x := 10; f := fn() { x }; f()";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase4_closure_captures_after_outer_changes() {
+    let src = "x := 1; f := fn() { x }; x = 99; f()";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+#[test]
+fn phase4_counter_closure() {
+    // The canonical Phase 4 test: closure over a mutable cell
+    let src = "make_counter := fn() { n := 0; fn() { n = n + 1; n } };
+               c := make_counter();
+               c(); c(); c()";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn phase4_two_counters_independent() {
+    // each call to make_counter creates a fresh `n` cell
+    let src = "make_counter := fn() { n := 0; fn() { n = n + 1; n } };
+               a := make_counter();
+               b := make_counter();
+               a(); a(); a();
+               b()";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn phase4_nested_closures() {
+    // innermost captures from grandparent (`x`) AND parent (`y`)
+    let src = "outer := fn(x) { fn(y) { fn(z) { x + y + z } } };
+               outer(100)(20)(3)";
+    assert_eq!(run(src), Value::Int(123));
+}
+
+#[test]
+fn phase4_function_as_value_in_array() {
+    let src = "fns := [fn(x) { x * 2 }, fn(x) { x + 1 }, fn(x) { x * x }];
+               fns[2](5)";
+    assert_eq!(run(src), Value::Int(25));
+}
+
+#[test]
+fn phase4_function_as_value_in_object() {
+    let src = "ops := ${ double: fn(x) { x * 2 }, square: fn(x) { x * x } };
+               ops.square(7)";
+    assert_eq!(run(src), Value::Int(49));
+}
+
+#[test]
+fn phase4_pass_function_as_arg() {
+    let src = "apply := fn(f, x) { f(x) };
+               double := fn(n) { n * 2 };
+               apply(double, 21)";
+    assert_eq!(run(src), Value::Int(42));
+}
+
+#[test]
+fn phase4_return_function() {
+    let src = "adder := fn(n) { fn(x) { x + n } };
+               add5 := adder(5);
+               add5(10)";
+    assert_eq!(run(src), Value::Int(15));
+}
+
+#[test]
+fn phase4_closure_modifies_captured_after_outer_returned() {
+    // The classic "captured local outlives its frame" test.
+    // After make_counter() returns, n is no longer on the stack;
+    // it must have been heap-promoted via close_upvalues.
+    let src = "make_counter := fn() { n := 0; fn() { n = n + 1; n } };
+               c := make_counter();
+               c() + c() + c() + c()";
+    // 1 + 2 + 3 + 4 = 10
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase4_assign_to_builtin_errors() {
+    let msg = run_err("print = 5");
+    assert!(msg.contains("built-in"), "got {msg}");
+}
+
+#[test]
+fn phase4_shadow_then_call_outer() {
+    // shadow `print` inside a scope; outer scope still has the built-in
+    let src = "x := { print := 5; print };
+               (x == 5)";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn phase4_recursive_closure_captures_self() {
+    // recursion through an upvalue: outer fn refers to itself, inner
+    // closure also captures it
+    let src = "fib := fn(n) { if n < 2 { n } else { fib(n-1) + fib(n-2) } };
+               fib(10)";
+    assert_eq!(run(src), Value::Int(55));
+}
+
+#[test]
+fn phase4_immediately_invoked() {
+    // `fn() { 42 }()` — call a function literal directly
+    assert_eq!(run("fn() { 42 }()"), Value::Int(42));
+}
+
+#[test]
+fn phase4_higher_order_with_closure_arg() {
+    // map-like: apply a closure over a small array and sum
+    let src = "apply_all := fn(arr, f) {
+                 i := 0;
+                 sum := 0;
+                 while i < #arr { sum += f(arr[i]); i += 1 };
+                 sum
+               };
+               apply_all([1, 2, 3, 4], fn(x) { x * x })";
+    // 1 + 4 + 9 + 16 = 30
+    assert_eq!(run(src), Value::Int(30));
+}
+
+// ---- Phase 5: ranges, for, for[], while[], break-with-value ----
+
+#[test]
+fn phase5_range_length_exclusive() {
+    assert_eq!(run("#(0..10)"), Value::Int(10));
+}
+
+#[test]
+fn phase5_range_length_inclusive() {
+    assert_eq!(run("#(0..=10)"), Value::Int(11));
+}
+
+#[test]
+fn phase5_range_length_with_step() {
+    assert_eq!(run("#(0..10:2)"), Value::Int(5));
+    assert_eq!(run("#(0..10:3)"), Value::Int(4));
+    assert_eq!(run("#(0..=10:2)"), Value::Int(6));
+}
+
+#[test]
+fn phase5_range_length_descending() {
+    assert_eq!(run("#(10..0)"), Value::Int(10));    // auto step = -1
+    assert_eq!(run("#(10..=0)"), Value::Int(11));
+    assert_eq!(run("#(10..0:-2)"), Value::Int(5));
+}
+
+#[test]
+fn phase5_range_length_empty_when_step_wrong_way() {
+    assert_eq!(run("#(0..10:-1)"), Value::Int(0));
+    assert_eq!(run("#(0..0)"), Value::Int(0));
+}
+
+#[test]
+fn phase5_range_index() {
+    assert_eq!(run("(0..10:2)[1]"), Value::Int(2));
+    assert_eq!(run("(0..10)[5]"), Value::Int(5));
+    assert_eq!(run("(0..10)[-1]"), Value::Int(9));
+}
+
+#[test]
+fn phase5_range_truthiness() {
+    assert_eq!(run("if 0..0 { 1 } else { 2 }"), Value::Int(2)); // empty → falsy
+    assert_eq!(run("if 0..1 { 1 } else { 2 }"), Value::Int(1));
+}
+
+#[test]
+fn phase5_for_range_sum() {
+    let src = "sum := 0; for (i, 0..=10) { sum = sum + i }; sum";
+    assert_eq!(run(src), Value::Int(55));
+}
+
+#[test]
+fn phase5_for_returns_last_iter_value() {
+    let src = "for (i, 0..5) { i * i }";
+    assert_eq!(run(src), Value::Int(16));
+}
+
+#[test]
+fn phase5_for_zero_iterations_is_null() {
+    assert_eq!(run("for (i, 0..0) { i }"), Value::Null);
+}
+
+#[test]
+fn phase5_for_array_collect() {
+    let src = "for[] (i, 0..5) { i * i }";
+    match run(src) {
+        Value::Array(a) => {
+            let v: Vec<i64> = a.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n,
+                _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![0, 1, 4, 9, 16]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_array_collect_filters_null() {
+    // for[] drops null values (spec §9.2/§9.4)
+    let src = "for[] (i, 0..5) { if i % 2 == 0 { i } }";
+    match run(src) {
+        Value::Array(a) => {
+            let v: Vec<i64> = a.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n,
+                _ => panic!("got non-int in collected array: {x:?}"),
+            }).collect();
+            assert_eq!(v, vec![0, 2, 4]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_two_var_range_counter() {
+    let src = "out := for[] (n, i, 10..15) { [n, i] }; out[2]";
+    match run(src) {
+        Value::Array(a) => {
+            let inner = a.borrow();
+            assert_eq!(inner.len(), 2);
+            assert_eq!(inner[0], Value::Int(2));   // counter
+            assert_eq!(inner[1], Value::Int(12));  // element
+        }
+        v => panic!("expected inner array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_over_array() {
+    let src = "sum := 0; for (x, [10, 20, 30]) { sum = sum + x }; sum";
+    assert_eq!(run(src), Value::Int(60));
+}
+
+#[test]
+fn phase5_for_over_array_two_var() {
+    let src = "for[] (i, x, [10, 20, 30]) { [i, x] }";
+    match run(src) {
+        Value::Array(a) => {
+            assert_eq!(a.borrow().len(), 3);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_over_object_one_var_gives_values() {
+    let src = "sum := 0; for (v, ${a:1, b:2, c:3}) { sum = sum + v }; sum";
+    assert_eq!(run(src), Value::Int(6));
+}
+
+#[test]
+fn phase5_for_over_object_two_var_gives_key_value() {
+    // Insertion-order: a/b/c. Collect keys.
+    let src = "keys := for[] (k, v, ${a:1, b:2, c:3}) { k }; keys";
+    match run(src) {
+        Value::Array(a) => {
+            let arr = a.borrow();
+            let k = |i: usize| match &arr[i] {
+                Value::Str(s) => s.to_string(),
+                _ => panic!(),
+            };
+            assert_eq!(k(0), "a");
+            assert_eq!(k(1), "b");
+            assert_eq!(k(2), "c");
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_over_string() {
+    let src = "out := for[] (ch, 'abc') { ch }; out";
+    match run(src) {
+        Value::Array(a) => {
+            let arr = a.borrow();
+            assert_eq!(arr.len(), 3);
+            let s = |i: usize| match &arr[i] {
+                Value::Str(s) => s.to_string(),
+                _ => panic!(),
+            };
+            assert_eq!(s(0), "a");
+            assert_eq!(s(1), "b");
+            assert_eq!(s(2), "c");
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_iter_var_scoped_to_body() {
+    // Spec §7.4: "Iteration variables are scoped to the loop body and
+    // not visible after."
+    let msg = run_err("for (i, 0..3) { i }; i");
+    assert!(msg.contains("undeclared"), "got {msg}");
+}
+
+#[test]
+fn phase5_for_of_closures_fresh_slot() {
+    // The §10.4 worked example. Each iteration's `i` must be captured
+    // in its own cell.
+    let src = "adders := for[] (i, 0..3) { fn(x) { x + i } };
+               [adders[0](10), adders[1](10), adders[2](10)]";
+    match run(src) {
+        Value::Array(a) => {
+            let arr = a.borrow();
+            assert_eq!(arr.len(), 3);
+            assert_eq!(arr[0], Value::Int(10));
+            assert_eq!(arr[1], Value::Int(11));
+            assert_eq!(arr[2], Value::Int(12));
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_while_array_collects_iteration_values() {
+    let src = "i := 0; while[] i < 5 { v := i; i = i + 1; v }";
+    match run(src) {
+        Value::Array(a) => {
+            let v: Vec<i64> = a.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n,
+                _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![0, 1, 2, 3, 4]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_break_exits_loop() {
+    let src = "i := 0; while i < 100 { if i == 7 { break }; i = i + 1 }; i";
+    assert_eq!(run(src), Value::Int(7));
+}
+
+#[test]
+fn phase5_break_with_value_for() {
+    let src = "for (i, 0..100) { if i == 5 { break i * 2 } }";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase5_break_with_value_while() {
+    let src = "i := 0; while true { i = i + 1; if i == 4 { break i + 100 } }";
+    assert_eq!(run(src), Value::Int(104));
+}
+
+#[test]
+fn phase5_chained_break_breaks_two_loops() {
+    // Spec §9.4 worked example: chained break with value.
+    let src = "for (i, 0..10) {
+                   for (j, 0..10) {
+                       if i * j == 25 { break (break [i, j]) }
+                   }
+               }";
+    match run(src) {
+        Value::Array(a) => {
+            let arr = a.borrow();
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], Value::Int(5));
+            assert_eq!(arr[1], Value::Int(5));
+        }
+        v => panic!("expected [5,5], got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_break_in_for_array_appends_value() {
+    // §9.4: break v in for[] / while[] appends v if non-null.
+    let src = "for[] (i, 0..10) { if i == 5 { break 99 }; i }";
+    match run(src) {
+        Value::Array(a) => {
+            let v: Vec<i64> = a.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n,
+                _ => panic!(),
+            }).collect();
+            // 0,1,2,3,4 collected, then break 99 appends 99, exits.
+            assert_eq!(v, vec![0, 1, 2, 3, 4, 99]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_break_no_value_in_for_array_appends_nothing() {
+    let src = "for[] (i, 0..10) { if i == 3 { break }; i }";
+    match run(src) {
+        Value::Array(a) => {
+            let v: Vec<i64> = a.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n,
+                _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![0, 1, 2]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_break_outside_loop_errors() {
+    let msg = run_err("break 5");
+    assert!(msg.contains("`break` outside"), "got {msg}");
+}
+
+#[test]
+fn phase5_return_inside_for_closes_upvalues() {
+    // Return from a function while inside a for loop. The captured
+    // closure should still see the right `i`.
+    let src = "f := fn() {
+                   captured := null;
+                   for (i, 0..5) {
+                       if i == 2 { captured = fn() { i } }
+                   };
+                   captured()
+               };
+               f()";
+    assert_eq!(run(src), Value::Int(2));
+}
+
+#[test]
+fn phase5_nested_for_returns_inner_array() {
+    let src = "for[] (i, 0..3) { for[] (j, 0..3) { i * 10 + j } }";
+    match run(src) {
+        Value::Array(a) => {
+            let outer = a.borrow();
+            assert_eq!(outer.len(), 3);
+            // first row [0, 1, 2]
+            match &outer[0] {
+                Value::Array(inner) => {
+                    let v: Vec<i64> = inner.borrow().iter().map(|x| match x {
+                        Value::Int(n) => *n, _ => panic!(),
+                    }).collect();
+                    assert_eq!(v, vec![0, 1, 2]);
+                }
+                _ => panic!(),
+            }
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_range_in_array_via_index() {
+    // Ranges don't materialize; indexing yields the right element
+    let src = "r := 100..200:10; r[3]";
+    assert_eq!(run(src), Value::Int(130));
+}
+
+// ---- Phase 6: built-ins, pipe, spread, string interpolation ----
+
+#[test]
+fn phase6_int_truncates() {
+    assert_eq!(run("int(3.7)"), Value::Int(3));
+    assert_eq!(run("int(-3.7)"), Value::Int(-3));
+    assert_eq!(run("int('42')"), Value::Int(42));
+    assert_eq!(run("int(true)"), Value::Int(1));
+}
+
+#[test]
+fn phase6_float_coerces() {
+    assert_eq!(run("float(3)"), Value::Float(3.0));
+    assert_eq!(run("float('3.14')"), Value::Float(3.14));
+}
+
+#[test]
+fn phase6_num_parses_or_passes_through() {
+    assert_eq!(run("num(42)"), Value::Int(42));
+    assert_eq!(run("num('3.5')"), Value::Float(3.5));
+    assert_eq!(run("num('-10')"), Value::Int(-10));
+    assert_eq!(run("num('not a number')"), Value::Null);
+}
+
+#[test]
+fn phase6_bool_uses_truthiness() {
+    assert_eq!(run("bool(0)"), Value::Bool(false));
+    assert_eq!(run("bool('hi')"), Value::Bool(true));
+    assert_eq!(run("bool([])"), Value::Bool(false));
+    assert_eq!(run("bool(${a:1})"), Value::Bool(true));
+}
+
+#[test]
+fn phase6_floor_ceil() {
+    assert_eq!(run("floor(3.7)"), Value::Int(3));
+    assert_eq!(run("floor(-3.2)"), Value::Int(-4));
+    assert_eq!(run("ceil(3.2)"), Value::Int(4));
+    assert_eq!(run("ceil(-3.7)"), Value::Int(-3));
+}
+
+#[test]
+fn phase6_rand_in_range() {
+    // `rand()` returns Float in [0, 1). Sample twice and verify the
+    // range; we don't pin a seed so we just sanity-check.
+    for _ in 0..20 {
+        match run("rand()") {
+            Value::Float(x) => assert!(x >= 0.0 && x < 1.0, "got {x}"),
+            v => panic!("expected float, got {v:?}"),
+        }
+    }
+}
+
+#[test]
+fn phase6_builtins_are_first_class() {
+    // Spec §13: built-ins are bindings. Can be stored, passed, etc.
+    let src = "f := floor; f(7.9)";
+    assert_eq!(run(src), Value::Int(7));
+}
+
+#[test]
+fn phase6_builtins_shadowable_via_decl() {
+    let src = "print := fn(x) { x + 1 }; print(5)";
+    assert_eq!(run(src), Value::Int(6));
+}
+
+#[test]
+fn phase6_pipe_one_arg() {
+    let src = "double := fn(x) { x * 2 }; 5 |> double";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase6_pipe_with_extra_args() {
+    let src = "scale := fn(x, k) { x * k }; 5 |> scale(3)";
+    assert_eq!(run(src), Value::Int(15));
+}
+
+#[test]
+fn phase6_pipe_chain() {
+    let src = "double := fn(x) { x * 2 };
+               plus  := fn(x, k) { x + k };
+               1 |> double |> plus(3) |> double";
+    // 1 → 2 → 5 → 10
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase6_pipe_into_builtin() {
+    assert_eq!(run("3.7 |> floor"), Value::Int(3));
+    assert_eq!(run("3.7 |> floor()"), Value::Int(3));
+}
+
+#[test]
+fn phase6_array_spread_concat() {
+    let src = "a := [1, 2]; b := [3, 4]; [...a, ...b]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 2, 3, 4]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_array_spread_mixed() {
+    let src = "rest := [2, 3, 4]; [1, ...rest, 5]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 2, 3, 4, 5]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_array_spread_range() {
+    let src = "[...0..5]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![0, 1, 2, 3, 4]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_array_spread_string() {
+    let src = "[...'abc']";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<String> = arr.borrow().iter().map(|x| match x {
+                Value::Str(s) => s.to_string(), _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec!["a", "b", "c"]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_object_spread_later_wins() {
+    // `${...defaults, color: 'red'}` — explicit key overrides spread.
+    let src = "defaults := ${color: 'blue', size: 10};
+               style := ${...defaults, color: 'red'};
+               style.color";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "red"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_object_spread_keeps_other_keys() {
+    let src = "defaults := ${color: 'blue', size: 10};
+               style := ${...defaults, color: 'red'};
+               style.size";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn phase6_object_spread_preserves_order() {
+    let src = "a := ${x:1, y:2};
+               merged := ${...a, z:3};
+               keys := for[] (k, v, merged) { k };
+               keys";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<String> = arr.borrow().iter().map(|x| match x {
+                Value::Str(s) => s.to_string(), _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec!["x", "y", "z"]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_call_spread() {
+    let src = "add3 := fn(a, b, c) { a + b + c };
+               args := [10, 20, 30];
+               add3(...args)";
+    assert_eq!(run(src), Value::Int(60));
+}
+
+#[test]
+fn phase6_call_spread_mixed() {
+    let src = "f := fn(a, b, c, d) { [a, b, c, d] };
+               mid := [2, 3];
+               f(1, ...mid, 4)";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 2, 3, 4]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_simple() {
+    let src = "name := 'world'; 'hello, {name}!'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "hello, world!"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_expression() {
+    let src = "a := 3; b := 4; 'sum: {a + b}'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "sum: 7"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_index_access() {
+    let src = "arr := [10, 20, 30]; 'first: {arr[0]}'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "first: 10"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_escape_brace() {
+    // \{ is a literal brace
+    let src = "'literal: \\{x}'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "literal: {x}"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_nested_string() {
+    // Per spec §8.2: nested strings inside interpolation are allowed.
+    let src = "cond := true; '{ if cond { 'yes' } else { 'no' } }'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "yes"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_doubly_nested() {
+    // A nested string with its own interpolation
+    let src = "x := 7; '{ 'inner={x}' }'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "inner=7"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_string_interp_with_call_and_pipe() {
+    // Combine multiple phase-6 features
+    let src = "name := 'tigr'; nums := [1, 2, 3]; 'hi {name}, len={#[0, ...nums, 4]}'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "hi tigr, len=5"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase6_str_of_number_no_trailing_dot_on_int() {
+    let src = "'{42} vs {3.5}'";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "42 vs 3.5"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_pe004() {
+    // Largest palindrome product of two 3-digit numbers — Project
+    // Euler 4. Same answer as v0.1.
+    let src = r#"
+        is_palindrome := fn(n) {
+            s := str(n);
+            i := 0;
+            j := #s - 1;
+            result := true;
+            while i < j {
+                if s[i] != s[j] { result = false; i = j } else { i = i + 1; j = j - 1 }
+            };
+            result
+        };
+        best := 0;
+        for (a, 100..=999) {
+            for (b, a..=999) {
+                p := a * b;
+                if p > best {
+                    if is_palindrome(p) { best = p }
+                }
+            }
+        };
+        best
+    "#;
+    assert_eq!(run(src), Value::Int(906609));
+}
+
+// ---- Phase 7: destructuring patterns, rest params, imports ----
+
+#[test]
+fn phase7_array_pattern_basic() {
+    let src = "[a, b, c] := [1, 2, 3]; [a, b, c]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 2, 3]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_array_pattern_rest() {
+    let src = "[head, ...rest] := [1, 2, 3, 4]; [head, #rest, rest[0], rest[2]]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 3, 2, 4]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_array_pattern_wildcard() {
+    let src = "[a, _, c] := [1, 2, 3]; [a, c]";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 3]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_array_pattern_missing_is_null() {
+    let src = "[a, b, c] := [1]; [a, b == null, c == null]";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            assert_eq!(inner[0], Value::Int(1));
+            assert_eq!(inner[1], Value::Bool(true));
+            assert_eq!(inner[2], Value::Bool(true));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_object_pattern_shorthand() {
+    let src = "${name, age} := ${name: 'tigr', age: 0, extra: true};
+               [name, age]";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            match &inner[0] {
+                Value::Str(s) => assert_eq!(&**s, "tigr"),
+                _ => panic!(),
+            }
+            assert_eq!(inner[1], Value::Int(0));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_object_pattern_rename() {
+    let src = "${name: n, age: a} := ${name: 'tigr', age: 99};
+               [n, a]";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            match &inner[0] {
+                Value::Str(s) => assert_eq!(&**s, "tigr"),
+                _ => panic!(),
+            }
+            assert_eq!(inner[1], Value::Int(99));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_object_pattern_rest() {
+    let src = "${name, ...rest} := ${name: 'tigr', a: 1, b: 2};
+               keys := for[] (k, v, rest) { k };
+               keys";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<String> = arr.borrow().iter().map(|x| match x {
+                Value::Str(s) => s.to_string(), _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec!["a", "b"]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_nested_patterns_array_of_objects() {
+    let src = "[${name: n1}, ${name: n2}] := [${name: 'a'}, ${name: 'b'}];
+               [n1, n2]";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            match (&inner[0], &inner[1]) {
+                (Value::Str(a), Value::Str(b)) => {
+                    assert_eq!(&**a, "a");
+                    assert_eq!(&**b, "b");
+                }
+                _ => panic!(),
+            }
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_nested_object_of_object() {
+    let src = "${user: ${id, name}} := ${user: ${id: 7, name: 'tigr'}};
+               [id, name]";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            assert_eq!(inner[0], Value::Int(7));
+            match &inner[1] {
+                Value::Str(s) => assert_eq!(&**s, "tigr"),
+                _ => panic!(),
+            }
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_pattern_in_fn_params_array() {
+    let src = "f := fn([a, b]) { a + b };
+               f([10, 20])";
+    assert_eq!(run(src), Value::Int(30));
+}
+
+#[test]
+fn phase7_pattern_in_fn_params_object() {
+    let src = "f := fn(${name}) { name };
+               f(${name: 'tigr', extra: 1})";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "tigr"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_fn_rest_collects_extras() {
+    let src = "f := fn(a, ...rest) { [a, #rest, rest[0], rest[1]] };
+               f(1, 2, 3, 4)";
+    match run(src) {
+        Value::Array(arr) => {
+            let v: Vec<i64> = arr.borrow().iter().map(|x| match x {
+                Value::Int(n) => *n, _ => panic!(),
+            }).collect();
+            assert_eq!(v, vec![1, 3, 2, 3]);
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_fn_rest_zero_extras() {
+    let src = "f := fn(a, ...rest) { [a, #rest] };
+               f(1)";
+    match run(src) {
+        Value::Array(arr) => {
+            let inner = arr.borrow();
+            assert_eq!(inner[0], Value::Int(1));
+            assert_eq!(inner[1], Value::Int(0));
+        }
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_fn_rest_with_spread_call() {
+    let src = "f := fn(...args) { #args };
+               args := [1, 2, 3, 4, 5];
+               f(...args)";
+    assert_eq!(run(src), Value::Int(5));
+}
+
+#[test]
+fn phase7_combined_sample() {
+    // Plan's worked sample.
+    let src = "
+        [a, b, ...rest] := [1, 2, 3, 4, 5];
+        ${name, age} := ${name: 'tigr', age: 0, extra: true};
+        'name={name} a={a} rest_len={#rest}'
+    ";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "name=tigr a=1 rest_len=3"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn phase7_invalid_pattern_errors() {
+    // [1, a] := [...] — 1 isn't a valid pattern element
+    let msg = run_err("[1, a] := [1, 2]");
+    assert!(msg.contains("pattern") || msg.contains("invalid"), "got {msg}");
+}
+
+#[test]
+fn phase7_rest_not_last_errors() {
+    let msg = run_err("[a, ...rest, b] := [1, 2, 3]");
+    assert!(msg.contains("last") || msg.contains("rest"), "got {msg}");
+}
+
+#[test]
+fn phase7_import_file() {
+    // Write a temp module and import it.
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!(
+        "tigr_phase7_{}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mod_path = dir.join("test_mod.tg");
+    {
+        let mut f = std::fs::File::create(&mod_path).unwrap();
+        writeln!(f, "${{double: fn(x) {{ x * 2 }}, name: 'mod'}}").unwrap();
+    }
+
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f, "m := import './test_mod'; m.double(21)").unwrap();
+    }
+
+    let value = crate::vm::run_file(&main_path).unwrap();
+    assert_eq!(value, Value::Int(42));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

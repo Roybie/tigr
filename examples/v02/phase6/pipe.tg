@@ -1,0 +1,16 @@
+// Pipe `|>` — left-to-right function application (spec §6.4).
+// `x |> f(args)` desugars to `f(x, args)`; `x |> f` to `f(x)`.
+
+double := fn(x) { x * 2 };
+plus   := fn(x, k) { x + k };
+
+print('5 |> double             =', 5 |> double);          // 10
+print('5 |> double()           =', 5 |> double());        // 10
+print('5 |> plus(3)            =', 5 |> plus(3));         // 8
+
+// Chain
+result := 1 |> double |> plus(3) |> double;
+print('1 |> double |> +3 |> *2 =', result);                // 10
+
+// With built-ins
+print('3.7 |> floor            =', 3.7 |> floor);          // 3

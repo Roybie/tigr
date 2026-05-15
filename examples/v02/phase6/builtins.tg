@@ -1,0 +1,26 @@
+// Phase 6 built-in suite (spec §13.1).
+// All built-ins are ordinary bindings — first-class, shadowable.
+
+print('int(3.7)       =', int(3.7));        // 3
+print('int(-3.7)      =', int(-3.7));       // -3
+print('int(\'42\')      =', int('42'));      // 42
+
+print('float(3)       =', float(3));        // 3.0
+print('num(\'3.14\')    =', num('3.14'));    // 3.14
+print('num(\'oops\')    =', num('oops'));    // null
+
+print('bool(0)        =', bool(0));         // false
+print('bool([])       =', bool([]));        // false
+print('bool(\'hi\')     =', bool('hi'));     // true
+
+print('floor(3.7)     =', floor(3.7));      // 3
+print('ceil(3.2)      =', ceil(3.2));       // 4
+
+// First-class: store + pass around
+ops := [floor, ceil];
+print('ops[0](2.7)    =', ops[0](2.7));     // 2
+print('ops[1](2.3)    =', ops[1](2.3));     // 3
+
+// Shadowable
+floor := fn(x) { 'shadowed' };
+print('shadowed floor =', floor(99));       // 'shadowed'

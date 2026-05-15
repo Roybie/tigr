@@ -1,0 +1,31 @@
+// Functions as first-class values: storage in arrays/objects,
+// passing as arguments, returning from functions.
+
+// Closure-returning function
+adder := fn(n) { fn(x) { x + n } };
+add5 := adder(5);
+add10 := adder(10);
+print('5 + 7 =', add5(7));    // 12
+print('10 + 7 =', add10(7));  // 17
+
+// Function table
+ops := ${
+    double: fn(x) { x * 2 },
+    square: fn(x) { x * x },
+    inc:    fn(x) { x + 1 },
+};
+print('double(6) =', ops.double(6));
+print('square(7) =', ops.square(7));
+
+// Pass a function as an argument
+apply := fn(f, x) { f(x) };
+print('apply(square, 9) =', apply(ops.square, 9));
+
+// A tiny "map and sum" using a closure body
+sum_of_squares := fn(arr) {
+    i := 0;
+    s := 0;
+    while i < #arr { s += arr[i] * arr[i]; i += 1 };
+    s
+};
+print('sum of squares 1..5:', sum_of_squares([1, 2, 3, 4, 5]))

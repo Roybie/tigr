@@ -1,0 +1,6 @@
+// The canonical reference-semantics test.
+// arr and copy point to the same array; mutating one is visible via the other.
+arr := [1, 2, 3];
+copy := arr;
+copy[0] = 99;
+arr[0]

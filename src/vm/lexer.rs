@@ -17,7 +17,7 @@
 use std::str::Chars;
 
 use crate::vm::error::{LexError, LexErrorKind};
-use crate::vm::token::{Span, SpannedToken, Token};
+use crate::vm::token::{Span, SpannedToken, TemplatePart, Token};
 
 pub struct Lexer<'src> {
     source: &'src str,
@@ -321,9 +321,23 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// Scan a `'…'` string literal, capturing `{expr}` interpolation
+    /// segments along the way (spec §8.2). The opening `'` has been
+    /// peeked but not consumed.
+    ///
+    /// - `\{` escapes a literal `{`; all other backslash escapes work
+    ///   as before.
+    /// - When at least one `{…}` appears, the result is a
+    ///   `Token::StrTemplate` with alternating `Lit`/`Expr` parts.
+    ///   Otherwise the result is the existing `Token::Str`, so plain
+    ///   strings cost nothing extra.
+    /// - Brace-counting inside `{…}` is local to this scanner and
+    ///   ignores braces that occur inside nested string literals — so
+    ///   `'{ if x { 'yes' } else { 'no' } }'` parses correctly.
     fn scan_string(&mut self, start: usize, line: u32) -> Result<Token, LexError> {
         self.advance(); // opening '
-        let mut buf = String::new();
+        let mut current_lit = String::new();
+        let mut parts: Vec<TemplatePart> = Vec::new();
         loop {
             match self.advance() {
                 None => {
@@ -332,15 +346,30 @@ impl<'src> Lexer<'src> {
                         Span::new(start, self.pos, line),
                     ));
                 }
-                Some('\'') => return Ok(Token::Str(buf)),
+                Some('\'') => {
+                    if parts.is_empty() {
+                        return Ok(Token::Str(current_lit));
+                    }
+                    if !current_lit.is_empty() {
+                        parts.push(TemplatePart::Lit(current_lit));
+                    }
+                    return Ok(Token::StrTemplate(parts));
+                }
+                Some('{') => {
+                    if !current_lit.is_empty() {
+                        parts.push(TemplatePart::Lit(std::mem::take(&mut current_lit)));
+                    }
+                    let expr_src = self.scan_interp_expr(start, line)?;
+                    parts.push(TemplatePart::Expr(expr_src));
+                }
                 Some('\\') => match self.advance() {
-                    Some('n') => buf.push('\n'),
-                    Some('t') => buf.push('\t'),
-                    Some('r') => buf.push('\r'),
-                    Some('\\') => buf.push('\\'),
-                    Some('\'') => buf.push('\''),
-                    Some('{') => buf.push('{'),
-                    Some(other) => buf.push(other),
+                    Some('n') => current_lit.push('\n'),
+                    Some('t') => current_lit.push('\t'),
+                    Some('r') => current_lit.push('\r'),
+                    Some('\\') => current_lit.push('\\'),
+                    Some('\'') => current_lit.push('\''),
+                    Some('{') => current_lit.push('{'),
+                    Some(other) => current_lit.push(other),
                     None => {
                         return Err(LexError::new(
                             LexErrorKind::UnterminatedString,
@@ -348,7 +377,58 @@ impl<'src> Lexer<'src> {
                         ));
                     }
                 },
-                Some(c) => buf.push(c),
+                Some(c) => current_lit.push(c),
+            }
+        }
+    }
+
+    /// Scan from just after a `{` to its matching `}`. Returns the
+    /// source slice between them. Tracks brace depth, skipping braces
+    /// inside nested string literals so the depth counter doesn't
+    /// confuse a nested `'a {x}'` with a real interpolation level.
+    fn scan_interp_expr(
+        &mut self,
+        str_start: usize,
+        line: u32,
+    ) -> Result<String, LexError> {
+        let expr_start = self.pos;
+        let mut depth: i32 = 1;
+        let mut in_str = false;
+        let mut escape = false;
+        loop {
+            let c = match self.advance() {
+                Some(c) => c,
+                None => {
+                    return Err(LexError::new(
+                        LexErrorKind::UnterminatedString,
+                        Span::new(str_start, self.pos, line),
+                    ));
+                }
+            };
+            if in_str {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                match c {
+                    '\\' => escape = true,
+                    '\'' => in_str = false,
+                    _ => {}
+                }
+            } else {
+                match c {
+                    '\'' => in_str = true,
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            // `self.pos` now points just past the `}`.
+                            let expr_end = self.pos - 1;
+                            return Ok(self.source[expr_start..expr_end].to_string());
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }

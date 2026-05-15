@@ -1,259 +1,528 @@
 # tigr
-Basic language where everything is an expression
 
-#Currently implemented:
+A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break` and `return` — produces a value. There are no statements.
 
-##Types:
-
-Int/Float : `6 | 9.8`
-
-Strings (single quotes) : `'i am a string!'`
-
-Bool : `true | false`
-
-Arrays : `[1, 'string', true]`
-
-Objects : `${ index: 'value', 'index2': 2 }`
-
-Functions : `fn(argument) { argument * 2 }`
-
-Null : `null`
-
-##Arithmetic
-The usual `+`, `-`, `/`, `*` and `%`
-
-##Variable Assignment
-
-`variable = 0;`
-
-Also `+=`, `-=`, `/=`, `*=` and `%=`
-
-##Comparisons
-
-`==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`
-
-##Arrays
-Arrays can be a mix of all types. Expressions can also be used.
-
-Declaring:
+This README documents the **v0.2** bytecode VM implementation. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
-foo = [1,2,3,4]
-bar = [true, 8, 5 * 10, (a = 10; b = a; b * a)]  // becomes bar = [true, 8, 50, 100]
+double := fn(x) { x * 2 };
+squares := for[] (i, 1..=10) { i * i };
+print('first square doubled:', double(squares[0]));   // 'first square doubled: 2'
 ```
 
-Accessing:
+---
 
-`foo[0]`
+## Running tigr
 
-Array overloads the `+` operator,
-
-Array + Expression will add the other evaluated expression to the end of the array.
-
-`+=` can also be used on array variables
-
-```
-foo = [1,2,3];
-foo += 4; //equivalent to foo = foo + 4 => foo == [1,2,3,4]
-foo += [5,6]; // results in foo == [1,2,3,4,[5,6]]
+```bash
+cargo build --release
+./target/release/tigr path/to/program.tg
 ```
 
-##Objects
-Objects are like arrays but with string indices instead of ints.
+When the program finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`.
 
-Declaring:
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus a few Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/).
+
+---
+
+## Core idea: everything is an expression
+
+Every line of tigr produces a value. The value of a block is its last expression. The value of `if` is the value of the chosen branch. The value of a function is whatever the body ends with. There's no `return` needed for the common case.
 
 ```
-foo = ${};
-foo2 = ${
-    bar: 'string'
+x := if 5 > 3 { 'big' } else { 'small' };   // x == 'big'
+
+total := for (n, 1..=10) { n };              // total == 10 (last n)
+all   := for[] (n, 1..=10) { n };            // all   == [1,2,3,4,5,6,7,8,9,10]
+
+sum := fn(a, b) { a + b };                   // body's last expression IS the return value
+sum(2, 3);                                   // 5
+```
+
+Because everything is an expression, you can compose freely:
+
+```
+greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
+```
+
+---
+
+## Types
+
+| Type     | Examples                                      | Notes                                    |
+|----------|-----------------------------------------------|------------------------------------------|
+| `Int`    | `42`, `-7`, `0`                               | 64-bit signed                            |
+| `Float`  | `3.14`, `0.0`                                 | 64-bit IEEE-754                          |
+| `String` | `'hello'`, `'name = {n}'`                     | Single-quoted, UTF-8, interpolated       |
+| `Bool`   | `true`, `false`                               |                                          |
+| `Null`   | `null`                                        |                                          |
+| `Array`  | `[1, 'two', true]`                            | Heterogeneous, reference type            |
+| `Object` | `${name: 'a', age: 1}`                        | String keys, reference type              |
+| `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
+| `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
+
+`Array` and `Object` are **reference types** — passing them around shares the same underlying value.
+
+### Truthiness
+
+The following are **falsy**: `false`, `null`, `0`, `0.0`, `''`, `[]`, `${}`. Everything else (including non-empty ranges and all functions) is truthy.
+
+`&&` and `||` short-circuit and return **the value that decided the result** (not coerced to bool):
+
+```
+0 || 'fallback'      // 'fallback'
+'a' && 'b'           // 'b'
+null || []           // []
+```
+
+---
+
+## Bindings: `:=` vs `=`
+
+There are two distinct operators:
+
+- `:=` **declares** a new binding in the current scope.
+- `=` **assigns** to the nearest enclosing binding of that name (error if it doesn't exist).
+
+```
+foo := 10;           // declare
+foo = 20;            // assign
+bar = 5;             // ERROR — bar isn't declared
+```
+
+Compound forms `+=`, `-=`, `*=`, `/=`, `%=` require an existing binding (like `=`).
+
+Both `:=` and `=` are expressions and evaluate to the assigned value:
+
+```
+result := (x := 5) + (y := 7);   // x=5, y=7, result=12
+```
+
+Mid-expression `:=` declarations work as you'd expect — the local is hoisted to a stable slot at scope entry so the surrounding op can't clobber it.
+
+---
+
+## Blocks and scopes
+
+A **block** is a `;`-separated sequence of expressions. The block's value is the last expression's value (or `null` if the block ends in `;`).
+
+```
+(a := 1; b := a + 1; b * 2)        // 4
+(a := 1; b := 2;)                  // null  (trailing ;)
+```
+
+A **scope** is a block in `{ }` — same rules, plus it opens a fresh lexical scope. Bindings declared with `:=` inside a scope are not visible after the closing `}`. Mutations to outer bindings persist:
+
+```
+a := 9;
+b := { c := 20; c * (a = a + 1) };
+// a == 10, b == 200, c is out of scope here
+```
+
+---
+
+## Strings
+
+Single-quoted, with `{expr}` interpolation. Use `\{` for a literal brace.
+
+```
+name := 'tigr';
+greet := 'hello, {name}!';                // 'hello, tigr!'
+math  := 'sum: {2 + 3}';                  // 'sum: 5'
+arr   := [10, 20, 30];
+desc  := 'first: {arr[0]}, count: {#arr}';
+```
+
+Interpolations can nest:
+
+```
+'{ if ok { 'yes' } else { 'no' } }'
+```
+
+String operators:
+
+```
+'abc' + 'def'        // 'abcdef'    concatenation
+#'hello'             // 5           character count
+'hello'[1]           // 'e'         indexing — out-of-range returns null
+```
+
+Strings are immutable.
+
+---
+
+## Arithmetic and comparison
+
+`+ - * / % ^` (`^` is power, always returns `Float`).
+
+Integer division stays `Int` when it divides evenly, otherwise becomes `Float`: `6 / 2 == 3` but `7 / 2 == 3.5`.
+
+Mixed `Int`/`Float` arithmetic returns `Float`. `%` follows the sign of the dividend.
+
+Comparison: `== != < > <= >=`. Equality across types is always false except `Int`/`Float` compare numerically. Arrays and objects compare structurally (element-/key-wise).
+
+---
+
+## Arrays
+
+```
+arr := [1, 2, 3];
+arr[0];                              // 1
+arr[-1];                             // 3   (negative indices count from the end)
+#arr;                                // 3
+arr + 4;                             // [1, 2, 3, 4]    (append element)
+arr + [5, 6];                        // [1, 2, 3, 4, 5, 6]   (concatenate arrays)
+arr += 7;                            // arr is now [1, 2, 3, 4, 5, 6, 7]
+arr[0] = 99;                         // mutates in place
+```
+
+`Array + Array` concatenates, `Array + value` appends. To append an array as a single element, write `arr + [[1,2]]`.
+
+Spread `...` unpacks into a literal:
+
+```
+[1, ...other, 9]                     // expanded
+```
+
+Out-of-range index returns `null`.
+
+---
+
+## Objects
+
+```
+obj := ${
+    name: 'tigr',
+    'with space': 1,
+    nested: ${ inner: true },
 };
-foo3 = ${
-    bar: 'string',
-    bar2: 34,
-};
+
+obj.name;                            // 'tigr'  — `.key` is sugar for ['key']
+obj['with space'];                   // 1
+obj.color = 'red';                   // add a new key
+#obj;                                // number of keys
 ```
 
-Then set or access:
+Identifier keys (`name:`) are sugar for the quoted form (`'name':`). Object spread:
 
 ```
-foo.some_index = 10;
-foo['some_index'] == 10 //true
+${...defaults, color: 'red'}         // later keys win
 ```
 
-##Functions
-A function is defined with the keyword `fn` and has the form:
+Object shorthand: `${name}` is equivalent to `${name: name}`.
 
-`fn (arguments) scope`
+Missing keys return `null`. Indexed assignment mutates in place.
 
-Where arguments are an optional comma separated list of variable names.
+---
 
-The function is then called in the usual way.
+## Ranges
 
-```
-my_func = fn(a,b) { a + b }; //function returns the sum of the two arguments
-
-my_func(1,2) //equals 3
-```
-
-Functions can return early using the `return` keyword, passing an optional value or expression.
-
-Function run in the environment closure of when they are declared.
-
-There is also currently no tail call optimisation, so recursive functions will VERY quickly overflow the stack.
-
-Functions call be called by passing the `(arguments)` to any expression that equates to a function.
-
-eg
+Ranges are first-class lazy values, not loops:
 
 ```
-a = fn() { 0 };
-a(); //Can call it on ariable names
-
-fn() { 0 }(); //can call it directly on the function definition
-
-if false {
-    fn() {
-        return false //explicit return
-    }
-} else {
-    fn() {
-        true
-    }
-}(); //can call on if/for/while
+r := 0..10;                          // [0, 10) — exclusive
+r := 0..=10;                         // [0, 10] — inclusive
+r := 0..10:2;                        // step 2 — 0, 2, 4, 6, 8
+r := 10..0:-1;                       // descending — 10, 9, ..., 1
+r := 10..0;                          // descending; step auto-flips to -1
 ```
 
-##Blocks
-Block of code are `;` seperated expressions.
-
-A block resolves to the last expression in the block (or null if the last expression is ended in `;`
-
-eg:
-
-`(a=1;true;8)` is equal to `8`
-
-`(b=3*4;false;)` is to `null`
-
-Blocks are expressions too:
-
-`a = (10 * (b = 8))` will set b to 8 and a to 80
-
-##Scope
-Scopes are just blocks surrounded in `{}`. They are also expressions.
-
-Any new variables defined in the scope will not be visible outside the scope.
-
-Changes to previously defined variables persist outside.
-
-eg:
+Operations:
 
 ```
-a = 9;
-b = { (c = 20) * (a += 1) };
+#r;                                  // length
+r[2];                                // element at index
+[...0..5];                           // materialize: [0, 1, 2, 3, 4]
+for (i, r) { ... };                  // iterate
 ```
 
-results, at the end of execution, in `a` being 10, `b` being 200 and c being undeclared.
+A range whose `step` doesn't move `from` toward `to` is empty.
 
-##if
-If takes the form:
+---
 
-`if expression scope else if scope else scope`
+## Control flow
 
-Where the else if and else branches are optional.
-If resolves to the value of whichever branch's scope is excecuted (or null if there is no matching branch)
-
-eg:
+### `if` / `else`
 
 ```
-if true { 10 } // = 10
-if false { 10 } // = null
-if (a=10;b=100;a>b) { false } else if b == 99 { false } else { true } // = true
-```
-##for
-For takes the form:
-
-`for (enum?, iter?, range) scope`
-
-where
-- enum is a count of interations increasing by one each time, starting at 0
-- iter is the value as specified by the range
-
-both are optional.
-
-range takes the form:
-
-`from..to:step?`
-
-step is optional and defaults to 1
-
-so to count from 0 to 9 (inclusive) the range would be `0..10`
-
-two count in 2s `0..10:2`
-
-These can also be expressions, 
-
-eg. 
-```
-a = 10; 
-for (0..a:2) { ... } // = 0..10:2
-for (5-2..(200;false;30):if true { 1 } else { 2 }) { ... } // = 3..30:1
+if cond { ... }
+if cond { ... } else { ... }
+if cond1 { ... } else if cond2 { ... } else { ... }
 ```
 
-There are two types of for loop:
-
-`for` returning a single value corresponding to the value of the scope at the last iteration
-
-`for[]` returning an array containing the value of the scope at each iteration.
-
-eg.
+`if` evaluates to the chosen branch's value, or `null` if no branch matches.
 
 ```
-a = for (i,0..10) { i };
-b = for[] (e,i,0..10:2) { e };
+label := if score > 90 { 'A' } else if score > 80 { 'B' } else { 'C' };
 ```
 
-results in `a == 9` and `b = [0,1,2,3,4]`
-
-##while
-While loop takes the form:
-
-`while expression scope`
-
-repeats scope until expression is false.
-
-There are two types of while loop:
-
-`while` returning a single value corresponding to the value of the scope at the last iteration
-
-`while[]` returning an array containing the value of the scope at each iteration.
-
-###break
-Loops can be broken out early using the keyword ``break``
-
-`break` can also take a value to return (default null)
-
-This value can either be a literal type, or an expression in parenthesis.
-
-eg:
+### `while` and `while[]`
 
 ```
-for (i,0..10) {
-    if i == 5 { break }
-} // == null
+while cond { body }                  // evaluates to last iteration's value (or null)
+while[] cond { body }                // collects each body value into an array (nulls filtered)
+```
 
-for (i,0..10) {
-    if i == 5 { break i }
-} // == 5
+```
+i := 0;
+last := while i < 5 { i = i + 1; i * 10 };   // last == 50
+```
 
-while true {
-    if true { break 6 * 7 } // error, expressions returned from break must be contained in ()
-}
+### `for` and `for[]`
 
-for (i,0..10) {
-    for (j,0..10) {
+Iterates a Range, Array, Object, or String. One-variable or two-variable form:
+
+| Iterable | One-var          | Two-var                              |
+|----------|------------------|--------------------------------------|
+| Range    | `for (i, 0..10)` | `for (n, i, 0..10)`   (`n` = 0,1,2…) |
+| Array    | `for (x, arr)`   | `for (i, x, arr)`                    |
+| Object   | `for (v, obj)`   | `for (k, v, obj)`                    |
+| String   | `for (ch, str)`  | `for (i, ch, str)`                   |
+
+```
+last := for (x, [10, 20, 30]) { x };       // 30
+all  := for[] (i, 1..=5) { i * i };        // [1, 4, 9, 16, 25]
+```
+
+Each iteration opens a **fresh scope** for the loop variables — closures capture each iteration's `i` independently:
+
+```
+adders := for[] (i, 0..3) { fn(x) { x + i } };
+adders[0](10);                              // 10
+adders[1](10);                              // 11
+adders[2](10);                              // 12
+```
+
+### `break`
+
+Exits the innermost loop, optionally with a value:
+
+```
+break                                // null
+break 5                              // 5
+break (x + y)                        // expression form needs parens
+```
+
+In a `for[]` / `while[]`, the break value is appended to the result array (unless `null`, which is filtered).
+
+`break` is itself an expression — pass it to another `break` to propagate out:
+
+```
+for (i, 0..10) {
+    for (j, 0..10) {
         if i * j == 25 {
-            break (break [i,j]) //breaks can be chained to break from outer loops!
+            break (break [i, j])     // bail out of both loops with [5, 5]
         }
     }
-} // == [5,5]
+}
 ```
+
+### `return`
+
+Exits the innermost function. Like `break`, it's an expression and can be chained.
+
+```
+find := fn(arr, target) {
+    for (i, 0..#arr) {
+        if arr[i] == target { return i }
+    };
+    null
+};
+```
+
+---
+
+## Functions
+
+```
+add := fn(a, b) { a + b };
+add(2, 3);                           // 5
+
+fn() { 0 }();                        // anonymous, immediately invoked
+```
+
+Functions capture their enclosing environment as a closure. Captured variables are by reference:
+
+```
+make_counter := fn() {
+    n := 0;
+    fn() { n = n + 1; n }            // captures n by reference
+};
+c := make_counter();
+c();                                 // 1
+c();                                 // 2
+```
+
+### Parameters
+
+- **Positional**: missing args become `null`, extra args are dropped.
+- **Rest**: a final `...name` collects the remaining args as an array.
+- **Patterns**: any parameter can be a destructuring pattern.
+
+```
+length := fn(...args) { #args };
+length();                            // 0
+length(1, 2, 3);                     // 3
+
+greet := fn(${name, age}) { 'hi {name}, {age}!' };
+greet(${name: 'tigr', age: 0});      // 'hi tigr, 0!'
+```
+
+### Method-style calls
+
+`obj.method(args)` is `(obj.method)(args)` — plain index then call. Tigr doesn't pass `this`. For receiver-as-first-arg style, use pipe (below).
+
+---
+
+## Pipe `|>`
+
+`x |> f(args)` rewrites to `f(x, args)`. If the right side isn't a call, `|>` calls it with `x` as the sole argument.
+
+```
+arr |> Array.map(double) |> Array.reverse()
+// equivalent to: Array.reverse(Array.map(arr, double))
+
+5 |> double                          // double(5)
+5 |> double()                        // double(5)
+0..10 |> Array.from()                // Array.from(0..10)
+```
+
+Pipe is left-associative; evaluation is strictly left-to-right.
+
+---
+
+## Destructuring
+
+Patterns appear on the LHS of `:=`, on the LHS of `=`, and as function parameters. Missing values bind to `null`.
+
+### Array patterns
+
+```
+[a, b, c] := [1, 2, 3];              // a=1, b=2, c=3
+[head, ...rest] := [10, 20, 30, 40]; // head=10, rest=[20,30,40]
+[x, _, z] := [1, 2, 3];              // _ skips a position
+[m, n] := [99];                      // m=99, n=null
+```
+
+### Object patterns
+
+```
+${name, age} := person;              // shorthand: name := person.name etc.
+${name: n} := person;                // rename
+${name, ...others} := person;        // rest collects remaining keys
+```
+
+### Nested patterns
+
+```
+${user: ${id, name}} := response;
+[${name}, ${name: second}] := pair_of_people;
+```
+
+---
+
+## Modules / imports
+
+```
+Array := import 'Array';
+util  := import './lib/util';
+```
+
+`import` evaluates the named file as a complete program in a fresh root environment and returns its final value. Paths are resolved relative to the importing file. The `.tg` extension is added automatically if absent.
+
+A module is typically just an object literal:
+
+```
+// Array.tg
+${
+    map: fn(arr, f) { for[] (x, arr) { f(x) } },
+    filter: fn(arr, f) { for[] (x, arr) { if f(x) { x } } },
+    // ...
+}
+```
+
+Each `import` re-evaluates the file — there's no caching in v0.2.
+
+---
+
+## Built-ins
+
+These are ordinary bindings in the root environment. They can be shadowed, passed around, or stored.
+
+| Name    | Signature                  | Behavior                                   |
+|---------|----------------------------|--------------------------------------------|
+| `print` | `print(...args)`           | Write each arg via `str`, space-separated, plus newline. Returns last arg. |
+| `str`   | `str(x) -> String`         | Canonical string form of any value         |
+| `num`   | `num(x) -> Number\|null`   | Parse string or pass through a number      |
+| `int`   | `int(x) -> Int`            | Truncate toward zero                       |
+| `float` | `float(x) -> Float`        | Coerce/parse to Float                      |
+| `bool`  | `bool(x) -> Bool`          | Apply the truthiness rule                  |
+| `floor` | `floor(x) -> Int`          | Round down                                 |
+| `ceil`  | `ceil(x) -> Int`           | Round up                                   |
+| `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`                        |
+
+`str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
+
+---
+
+## A worked example
+
+Project Euler #4 — largest palindrome made from the product of two 3-digit numbers:
+
+```
+is_palindrome := fn(n) {
+    s := str(n);
+    i := 0;
+    j := #s - 1;
+    result := true;
+    while i < j {
+        if s[i] != s[j] { result = false; i = j } else { i = i + 1; j = j - 1 }
+    };
+    result
+};
+
+best := 0;
+for (a, 100..=999) {
+    for (b, a..=999) {
+        p := a * b;
+        if p > best {
+            if is_palindrome(p) { best = p }
+        }
+    }
+};
+print('largest palindrome =', best)   // 906609
+```
+
+See [`examples/v02/`](examples/v02/) for many more — destructuring, closures, pipes, imports, the array library, and a handful of Project Euler solutions.
+
+---
+
+## Operator precedence
+
+Low to high, with associativity:
+
+| Level | Operators                                       | Assoc |
+|-------|-------------------------------------------------|-------|
+| 1     | `=` `:=` `+=` `-=` `*=` `/=` `%=`               | right |
+| 2     | `\|\|`                                          | left  |
+| 3     | `&&`                                            | left  |
+| 4     | `==` `!=` `<` `>` `<=` `>=`                     | left  |
+| 5     | `\|>`                                           | left  |
+| 6     | `..` `..=` (with optional `:step`)              | n/a   |
+| 7     | `+` `-`                                         | left  |
+| 8     | `*` `/` `%`                                     | left  |
+| 9     | `^`                                             | right |
+| 10    | unary `-` `!` `#`                               | n/a   |
+| 11    | call `f(...)`, index `a[i]`, member `a.b`       | left  |
+
+---
+
+## Status
+
+v0.2 is feature-complete: the seven build phases of the bytecode VM are shipped and the test suite passes (169 tests). The full spec is in [`LANGUAGE.md`](LANGUAGE.md). The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
+
+Known limitations / v0.3 candidates:
+
+- No module caching — every `import` re-evaluates the file.
+- No tracing GC — collections use `Rc<RefCell<...>>`, so cycles leak.
+- Array and object destructuring patterns work fine at the top of a statement but aren't yet hoisted when nested mid-expression (Ident destructures are). Workaround: lift the destructure into a statement of its own.

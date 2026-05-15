@@ -1,0 +1,25 @@
+// Spread `...` unpacks iterables in three contexts (spec §6.6).
+
+// Array literal — concat / interleave
+a := [1, 2];
+b := [3, 4];
+print('[...a, ...b]    =', [...a, ...b]);          // [1, 2, 3, 4]
+print('[0, ...a, 9]    =', [0, ...a, 9]);          // [0, 1, 2, 9]
+print('[...0..5]       =', [...0..5]);             // [0, 1, 2, 3, 4]
+print('[...\'abc\']      =', [...'abc']);           // [a, b, c]
+
+// Object literal — later keys win
+defaults := ${color: 'blue', size: 10};
+style    := ${...defaults, color: 'red'};
+print('style.color     =', style.color);           // red
+print('style.size      =', style.size);            // 10
+
+// Function call — args expanded
+add3 := fn(a, b, c) { a + b + c };
+args := [10, 20, 30];
+print('add3(...args)   =', add3(...args));         // 60
+
+// Mixed in calls
+labels := fn(a, b, c, d) { [a, b, c, d] };
+mid    := [2, 3];
+print('mixed call      =', labels(1, ...mid, 4));  // [1, 2, 3, 4]

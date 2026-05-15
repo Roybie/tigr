@@ -1,0 +1,13 @@
+// `print` is an ordinary binding — it can be passed and shadowed.
+say := print;
+say('via alias');
+
+// shadow within a scope; outer remains untouched
+result := {
+    print := 'now a string';
+    print
+};
+print('inside scope, print became:', result);
+
+// outer `print` still works
+print('outer print is fine')

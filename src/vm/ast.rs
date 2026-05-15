@@ -19,12 +19,150 @@ impl SpannedExpr {
     }
 }
 
+/// Convert an expression to a binding pattern, if possible.
+///
+/// The spec's "literal-vs-pattern" rule for `${...}` works by parsing
+/// the LHS of `:=` as an ordinary expression first, then converting on
+/// demand. This means a malformed pattern (e.g. `[1, 2] := …`)
+/// produces a clear error rather than a parse-time mystery.
+///
+/// Mapping rules (spec §11):
+/// - `Ident("_")` → `Wildcard`
+/// - `Ident(name)` → `Ident(name)`
+/// - `Array([items])` → `Array` pattern; a trailing `Spread(Ident(r))`
+///   becomes the rest.
+/// - `Object([members])` → `Object` pattern. `Pair(k, v)` becomes a
+///   field with `v` recursively converted. A trailing
+///   `Spread(Ident(r))` becomes the rest.
+pub fn expr_to_pattern(e: &SpannedExpr) -> Result<Pattern, PatternError> {
+    match &e.expr {
+        Expr::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
+        Expr::Ident(name) => Ok(Pattern::Ident(name.clone())),
+        Expr::Array(items) => {
+            let mut out_items = Vec::with_capacity(items.len());
+            let mut rest = None;
+            for (i, item) in items.iter().enumerate() {
+                if let Expr::Spread(inner) = &item.expr {
+                    if i != items.len() - 1 {
+                        return Err(PatternError::RestNotLast(item.span));
+                    }
+                    match &inner.expr {
+                        Expr::Ident(n) => rest = Some(n.clone()),
+                        _ => return Err(PatternError::RestNotIdent(inner.span)),
+                    }
+                } else {
+                    out_items.push(expr_to_pattern(item)?);
+                }
+            }
+            Ok(Pattern::Array { items: out_items, rest })
+        }
+        Expr::Object(members) => {
+            let mut fields = Vec::with_capacity(members.len());
+            let mut rest = None;
+            for (i, m) in members.iter().enumerate() {
+                match m {
+                    ObjectMember::Pair(key, value) => {
+                        fields.push(ObjectField {
+                            key: key.clone(),
+                            pattern: expr_to_pattern(value)?,
+                        });
+                    }
+                    ObjectMember::Spread(inner) => {
+                        if i != members.len() - 1 {
+                            return Err(PatternError::RestNotLast(inner.span));
+                        }
+                        match &inner.expr {
+                            Expr::Ident(n) => rest = Some(n.clone()),
+                            _ => return Err(PatternError::RestNotIdent(inner.span)),
+                        }
+                    }
+                }
+            }
+            Ok(Pattern::Object { fields, rest })
+        }
+        _ => Err(PatternError::NotPatternable(e.span)),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PatternError {
+    NotPatternable(Span),
+    RestNotLast(Span),
+    RestNotIdent(Span),
+}
+
+impl PatternError {
+    pub fn span(&self) -> Span {
+        match *self {
+            PatternError::NotPatternable(s)
+            | PatternError::RestNotLast(s)
+            | PatternError::RestNotIdent(s) => s,
+        }
+    }
+    pub fn message(&self) -> &'static str {
+        match self {
+            PatternError::NotPatternable(_) => "expression cannot be used as a binding pattern",
+            PatternError::RestNotLast(_) => "rest element `...` must be last",
+            PatternError::RestNotIdent(_) => "rest element must name a binding (`...name`)",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub stmts: Vec<SpannedExpr>,
     /// `None` if the block ends with `;` (or is empty); the block's
     /// value is `null` in that case.
     pub tail: Option<Box<SpannedExpr>>,
+}
+
+/// Parsed form of one piece of an interpolated string. Mirrors the
+/// lexer's `TemplatePart` but with a fully-parsed expression instead
+/// of raw source.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TemplatePart {
+    Lit(String),
+    Expr(SpannedExpr),
+}
+
+/// Binding pattern (spec §11). Used on LHS of `:=` / `=` and at
+/// function parameter positions.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pattern {
+    /// `_` — discard the value at this slot.
+    Wildcard,
+    /// A bare name. Binds the value to `name`.
+    Ident(String),
+    /// `[p1, p2, ..., ...rest?]` — array destructuring. Missing
+    /// elements bind to `null`.
+    Array { items: Vec<Pattern>, rest: Option<String> },
+    /// `${k1, k2: alias, ..., ...rest?}` — object destructuring.
+    /// Missing keys bind to `null`. `rest` collects all unconsumed
+    /// keys into a new object (insertion order preserved).
+    Object { fields: Vec<ObjectField>, rest: Option<String> },
+}
+
+/// One field of an object pattern.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectField {
+    /// Key in the source object to extract.
+    pub key: String,
+    /// Sub-pattern to bind the value to. For shorthand `${name}` this
+    /// is `Pattern::Ident("name")`. For rename `${name: alias}` this
+    /// is `Pattern::Ident("alias")`. For nested `${k: [a, b]}` it's
+    /// the inner array pattern.
+    pub pattern: Pattern,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectMember {
+    /// `key: value` in an object literal. Keys are statically known
+    /// strings (identifier or quoted-string syntax handled by parser).
+    Pair(String, SpannedExpr),
+    /// `...expr` — must evaluate to an Object at runtime; its entries
+    /// are merged into the literal in insertion order (later keys
+    /// win, per spec §6.6).
+    Spread(SpannedExpr),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,11 +185,103 @@ pub enum Expr {
     // program and for parenthesised blocks `(a; b; c)`.
     Block(Block),
 
-    // `x := expr` — declares a new binding in the current scope.
-    Decl(String, Box<SpannedExpr>),
+    // `pattern := expr` — declares binding(s) in the current scope.
+    // For the common bare-identifier case the pattern is just
+    // `Pattern::Ident(name)`; structural patterns destructure the
+    // initialiser per spec §11.
+    Decl(Pattern, Box<SpannedExpr>),
 
-    // `x = expr` — assigns to an existing binding (error if absent).
-    Assign(String, Box<SpannedExpr>),
+    // `x = expr` (op = None) or `x op= expr` (op = Some(BinOp)).
+    // Assigns to an existing binding (error if absent).
+    Assign(String, Option<BinOp>, Box<SpannedExpr>),
+
+    // `{ a; b; c }` — opens a new lexical scope.
+    Scope(Block),
+
+    // `if cond then else` — `else` defaults to a `Null` literal when
+    // the source has no `else` branch.
+    If(Box<SpannedExpr>, Box<SpannedExpr>, Box<SpannedExpr>),
+
+    // `while cond body` (is_array = false) or `while[] cond body`
+    // (is_array = true). The array form collects each iteration's
+    // body value (nulls filtered) per spec §9.2.
+    While {
+        is_array: bool,
+        cond: Box<SpannedExpr>,
+        body: Box<SpannedExpr>,
+    },
+
+    // `for (var, iter) body` / `for (var1, var2, iter) body`, plus the
+    // `for[]` array-collecting form per spec §7.4 / §9.3.
+    For {
+        is_array: bool,
+        vars: Vec<String>,
+        iter: Box<SpannedExpr>,
+        body: Box<SpannedExpr>,
+    },
+
+    // `from..to` / `from..=to` / `from..to:step`. Per spec §7.3 — first
+    // class. `step` defaults to ±1 at runtime depending on from/to.
+    Range {
+        from: Box<SpannedExpr>,
+        to: Box<SpannedExpr>,
+        step: Option<Box<SpannedExpr>>,
+        inclusive: bool,
+    },
+
+    // `break` (None) or `break value` / `break (expr)` (Some). Per
+    // spec §9.4, break is an expression whose "value" can be chained
+    // into another break.
+    Break(Option<Box<SpannedExpr>>),
+
+    // `[a, b, c]` — array literal. Items may be `Expr::Spread(...)`.
+    Array(Vec<SpannedExpr>),
+
+    // `${ k: v, k2: v2, ...other }` — object literal. Members are
+    // pairs or spreads (later keys win, spec §6.6).
+    Object(Vec<ObjectMember>),
+
+    // `...inner` — only legal as a direct child of array literals,
+    // call arguments, or as an object member. Parser rejects it
+    // elsewhere; compiler only handles it in those contexts.
+    Spread(Box<SpannedExpr>),
+
+    // Interpolated string literal (spec §8.2). Compiles to a sequence
+    // of `LoadConst`s and expr emissions joined by `ConcatN`. Each
+    // expression part is `str`-coerced before joining.
+    Template(Vec<TemplatePart>),
+
+    // `obj[key]` — also produced by `obj.key` (with key = Str literal).
+    Index(Box<SpannedExpr>, Box<SpannedExpr>),
+
+    // `obj[key] = value` (op = None) or `obj[key] op= value`.
+    IndexAssign(
+        Box<SpannedExpr>,
+        Box<SpannedExpr>,
+        Option<BinOp>,
+        Box<SpannedExpr>,
+    ),
+
+    // `callee(arg, arg, ...)`.
+    Call(Box<SpannedExpr>, Vec<SpannedExpr>),
+
+    // `fn(p1, p2, ...rest) { body }`. Each param is a `Pattern` so
+    // call sites can pass `fn([a, b], ${name}) { ... }`. `rest` is
+    // the optional final `...name` parameter (spec §10.3).
+    Fn {
+        params: Vec<Pattern>,
+        rest: Option<String>,
+        body: Box<SpannedExpr>,
+    },
+
+    // `return` (None) or `return value` / `return (expr)` (Some).
+    Return(Option<Box<SpannedExpr>>),
+
+    // `import 'path'` (spec §12). Path is a string literal; compile
+    // resolves it relative to the importing file. Disabled inside
+    // top-level expressions other than the immediate decl initialiser,
+    // though we don't strictly enforce that.
+    Import(String),
 }
 
 #[allow(dead_code)] // Eq..Or land in Phase 2
@@ -76,7 +306,7 @@ pub enum BinOp {
     Or,
 }
 
-#[allow(dead_code)] // Not/Len land in Phase 2/3
+#[allow(dead_code)] // Len lands in Phase 3
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UnOp {
     Neg,

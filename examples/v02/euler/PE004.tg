@@ -1,0 +1,23 @@
+/*
+ * Project Euler Problem 4
+ *
+ * A palindromic number reads the same both ways. The largest palindrome made from the product of two 2-digit numbers is 9009 = 91 × 99.
+ *
+ * Find the largest palindrome made from the product of two 3-digit numbers.
+ */
+
+for (i, 999..=900) {
+  for (j, 999..=900) {
+    n := num := i * j;
+    r := 0;
+
+    if n == while num > 0 {
+              dig := num % 10;
+              num = (num - dig) / 10;
+              r = r * 10 + dig
+            }
+    {
+      break (break n)
+    }
+  }
+}

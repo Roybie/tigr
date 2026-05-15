@@ -129,7 +129,7 @@ impl<'src> Lexer<'src> {
         let start = self.pos;
         let line = self.line;
         match c {
-            '0'..='9' => Ok(self.scan_number(start)),
+            '0'..='9' => self.scan_number(start, line),
             'a'..='z' | 'A'..='Z' | '_' => Ok(self.scan_ident(start)),
             '\'' => self.scan_string(start, line),
 
@@ -200,6 +200,13 @@ impl<'src> Lexer<'src> {
             }
 
             '.' => {
+                // Leading-dot float (`.5` ≡ `0.5`). Detect before
+                // consuming the dot; if the next char is a digit, hand
+                // off to the number scanner so it sees the literal
+                // starting at `start`.
+                if matches!(self.peek_two(), Some('0'..='9')) {
+                    return self.scan_number(start, line);
+                }
                 self.advance();
                 if self.matches('.') {
                     if self.matches('.') {
@@ -269,30 +276,165 @@ impl<'src> Lexer<'src> {
 
     // -- specific scanners ---------------------------------------------
 
-    fn scan_number(&mut self, start: usize) -> Token {
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                self.advance();
-            } else {
-                break;
+    fn scan_number(&mut self, start: usize, line: u32) -> Result<Token, LexError> {
+        let first = self.peek().expect("scan_number called with no input");
+
+        // ---- Leading-dot float (.5 ≡ 0.5) ----
+        if first == '.' {
+            self.advance(); // consume '.'
+            // First char of the digit run must be a digit (the
+            // dispatch in `scan_one` already verified peek_two).
+            self.advance(); // consume first fractional digit
+            self.scan_digit_run(line, 10)?;
+            self.maybe_scan_exponent(line)?;
+            return self.parse_decimal_token(start, line, true);
+        }
+
+        // ---- 0x / 0b / 0o radix int ----
+        if first == '0' {
+            let radix = match self.peek_two() {
+                Some('x') | Some('X') => Some(16u32),
+                Some('b') | Some('B') => Some(2),
+                Some('o') | Some('O') => Some(8),
+                _ => None,
+            };
+            if let Some(radix) = radix {
+                self.advance(); // '0'
+                self.advance(); // x/b/o
+                // Need at least one valid digit; reject `0x_FF`,
+                // `0xZZZ`, bare `0x`.
+                match self.peek() {
+                    Some(c) if c.is_digit(radix) => {
+                        self.advance();
+                        self.scan_digit_run(line, radix)?;
+                    }
+                    _ => {
+                        return Err(LexError::new(
+                            LexErrorKind::MalformedNumber(
+                                self.source[start..self.pos].to_string(),
+                            ),
+                            Span::new(start, self.pos.max(start + 1), line),
+                        ));
+                    }
+                }
+                let lexeme = &self.source[start..self.pos];
+                let body = &lexeme[2..]; // strip prefix
+                let cleaned: String = body.chars().filter(|c| *c != '_').collect();
+                return match i64::from_str_radix(&cleaned, radix) {
+                    Ok(n) => Ok(Token::Int(n)),
+                    Err(_) => Err(LexError::new(
+                        LexErrorKind::NumberOutOfRange(lexeme.to_string()),
+                        Span::new(start, self.pos, line),
+                    )),
+                };
             }
         }
-        // Float? Need a '.' followed by a digit (so we don't swallow
-        // the `..` range operator, or a trailing `.method`).
+
+        // ---- Plain decimal int / float ----
+        self.advance(); // consume the first digit (already validated)
+        self.scan_digit_run(line, 10)?;
+
+        let mut is_float = false;
+
+        // Fractional part: `.` followed by a digit. A bare `5.` (no
+        // digit after) leaves the `.` for the next token (`Dot`),
+        // matching how `5.method` works.
         if self.peek() == Some('.') && matches!(self.peek_two(), Some('0'..='9')) {
-            self.advance(); // consume '.'
-            while let Some(c) = self.peek() {
-                if c.is_ascii_digit() {
+            self.advance(); // '.'
+            self.advance(); // first fractional digit
+            self.scan_digit_run(line, 10)?;
+            is_float = true;
+        }
+
+        // Exponent — turns the literal into a Float regardless of
+        // whether a fractional part was present.
+        if self.maybe_scan_exponent(line)? {
+            is_float = true;
+        }
+
+        self.parse_decimal_token(start, line, is_float)
+    }
+
+    /// Scan zero or more digit-or-underscore characters AFTER the
+    /// caller has already consumed a leading digit. Underscores must
+    /// be sandwiched between digits — leading, trailing, or doubled
+    /// underscores raise a `LexError`.
+    fn scan_digit_run(&mut self, line: u32, radix: u32) -> Result<(), LexError> {
+        loop {
+            match self.peek() {
+                Some(c) if c.is_digit(radix) => {
                     self.advance();
-                } else {
-                    break;
                 }
+                Some('_') => {
+                    let pos = self.pos;
+                    let next_ok = matches!(self.peek_two(), Some(c) if c.is_digit(radix));
+                    if !next_ok {
+                        return Err(LexError::new(
+                            LexErrorKind::MalformedNumber(
+                                "underscore must be between digits".into(),
+                            ),
+                            Span::new(pos, pos + 1, line),
+                        ));
+                    }
+                    self.advance();
+                }
+                _ => return Ok(()),
             }
-            let lexeme = &self.source[start..self.pos];
-            Token::Float(lexeme.parse().unwrap())
+        }
+    }
+
+    /// Try to consume an `[eE][+-]?digits` exponent. Returns `Ok(true)`
+    /// if one was consumed, `Ok(false)` if the next char isn't `e`/`E`
+    /// or the lookahead doesn't form a valid exponent (in which case
+    /// the `e` is left for the next token — usually an identifier).
+    fn maybe_scan_exponent(&mut self, line: u32) -> Result<bool, LexError> {
+        if !matches!(self.peek(), Some('e') | Some('E')) {
+            return Ok(false);
+        }
+        // Look ahead WITHOUT committing.
+        let mut iter = self.chars.clone();
+        iter.next(); // e/E
+        let after = iter.next();
+        let valid = match after {
+            Some(c) if c.is_ascii_digit() => true,
+            Some('+') | Some('-') => matches!(iter.next(), Some(c) if c.is_ascii_digit()),
+            _ => false,
+        };
+        if !valid {
+            return Ok(false);
+        }
+        self.advance(); // e/E
+        if matches!(self.peek(), Some('+') | Some('-')) {
+            self.advance();
+        }
+        // We just verified the next char is a digit.
+        self.advance();
+        self.scan_digit_run(line, 10)?;
+        Ok(true)
+    }
+
+    fn parse_decimal_token(
+        &self,
+        start: usize,
+        line: u32,
+        is_float: bool,
+    ) -> Result<Token, LexError> {
+        let lexeme = &self.source[start..self.pos];
+        let cleaned: String = lexeme.chars().filter(|c| *c != '_').collect();
+        if is_float {
+            cleaned.parse::<f64>().map(Token::Float).map_err(|_| {
+                LexError::new(
+                    LexErrorKind::NumberOutOfRange(lexeme.to_string()),
+                    Span::new(start, self.pos, line),
+                )
+            })
         } else {
-            let lexeme = &self.source[start..self.pos];
-            Token::Int(lexeme.parse().unwrap())
+            cleaned.parse::<i64>().map(Token::Int).map_err(|_| {
+                LexError::new(
+                    LexErrorKind::NumberOutOfRange(lexeme.to_string()),
+                    Span::new(start, self.pos, line),
+                )
+            })
         }
     }
 

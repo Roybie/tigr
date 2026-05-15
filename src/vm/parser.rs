@@ -185,6 +185,20 @@ impl Parser {
                     Expr::IndexAssign(obj, key, op, Box::new(right)),
                     span,
                 )),
+                // Pattern-shaped LHS — only valid for plain `=`.
+                // `[a, b] += ...` falls through to the catchall.
+                Expr::Array(_) | Expr::Object(_) if op.is_none() => {
+                    let pat = expr_to_pattern(&left).map_err(|pe| {
+                        ParseError::new(
+                            ParseErrorKind::InvalidPattern(pe.message().to_string()),
+                            pe.span(),
+                        )
+                    })?;
+                    Ok(SpannedExpr::new(
+                        Expr::AssignPattern(pat, Box::new(right)),
+                        span,
+                    ))
+                }
                 _ => Err(ParseError::new(
                     ParseErrorKind::InvalidAssignTarget,
                     left.span,

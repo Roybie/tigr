@@ -63,13 +63,31 @@ Other:      `( ) { } [ ] , ; : $`
 ### 2.5 Number literals
 
 ```
-42        // Int
+42        // Int (decimal)
 3.14      // Float
 0         // Int
 0.0       // Float
+
+0xFF      // Int (hex; case-insensitive prefix)
+0b1010    // Int (binary)
+0o755     // Int (octal)
+
+1_000_000 // Underscore separators between digits
+3.141_592 // Allowed in fractional part too
+0xFF_FF   // …and inside hex/bin/oct
+
+1e6       // Scientific — always Float
+2.5e-3    // …with optional sign and fractional mantissa
+.5        // Leading-dot float (≡ 0.5)
 ```
 
-No hex/binary/scientific literals in 0.2 (add later if useful).
+Underscores are allowed only **between** digits — `_5`, `5_`, `5__5`,
+and `0x_FF` are all rejected. A trailing dot like `5.` is **not** a
+float literal; it lexes as `Int(5)` followed by `Dot`, which is what
+makes `5.method()` style member access work.
+
+Numeric literals that don't fit in `i64` (e.g. `0xFFFFFFFFFFFFFFFF`)
+are a lex error.
 
 ### 2.6 String literals
 
@@ -596,6 +614,11 @@ ${user: ${id, name}} := response;
 ### 11.4 Rules
 
 - Patterns may not appear on the LHS of compound assignments (`+=` etc.).
+- Pattern `:=` works in mid-expression position too:
+  `arr := ([a, b] := [1, 2])`. The expression's value is the source
+  rhs (here, `[1, 2]`); the names `a` and `b` are bound in the
+  enclosing scope. Spec-equivalent to declaring them at the start of
+  the scope and assigning at the source position.
 - A pattern with `...rest` may have at most one rest element, in last
   position.
 - Missing values bind to `null`.
@@ -730,6 +753,43 @@ The trig/log/exp functions are backed by the native `_NativeMath`
 module (also importable directly). Source `Math.tg` re-exports them
 alongside pure-tigr helpers — this gives users a single point to
 shadow / extend without touching the interpreter.
+
+### 13.4 `JSON` (v0.4)
+
+```
+JSON := import 'JSON';
+
+JSON.parse(str) -> value
+JSON.stringify(value) -> str            // compact
+JSON.stringify(value, indent) -> str    // pretty; indent is Int (spaces) or Str
+```
+
+Type mapping:
+
+| JSON              | tigr                                       |
+|-------------------|--------------------------------------------|
+| `null`            | `null`                                     |
+| `true` / `false`  | `Bool`                                     |
+| number            | `Float` (always — see below)               |
+| string            | `Str`                                      |
+| array             | `Array`                                    |
+| object            | `Object` (insertion order preserved)       |
+
+`JSON.parse` always parses numbers as `Float` (matching JSON's
+"numbers are IEEE 754 doubles" convention; JS, Python's stdlib `json`
+both behave this way). So `JSON.parse(JSON.stringify(123))` returns
+`Float(123.0)`, not `Int(123)`. `JSON.stringify` writes `Int` values
+without a decimal point and `Float` values with a `.0` suffix when
+they're integer-valued.
+
+Both calls raise on the failure cases — catchable via `try`:
+- `JSON.parse`: malformed syntax, trailing content after the value,
+  invalid escape sequences, unmatched surrogate pairs.
+- `JSON.stringify`: non-serializable types (`Function`, `Range`,
+  `Iter`, `NativeFn`), `NaN`/`Infinity`.
+
+Cycles in arrays/objects are not detected and will overflow the call
+stack — same posture as the wider Rc-cycle story (§15.1).
 
 `str` rules:
 
@@ -978,3 +1038,24 @@ Additions (non-breaking):
     raise prints the error and the session continues. Multi-line
     input is supported when the parser indicates incompleteness.
     `:quit` / `:q` exits.
+
+## Appendix C — Changes in v0.4
+
+17. **Source-snippet error rendering.** Lex / parse / compile /
+    runtime errors now print with a filename, source line, and a
+    caret/underline that matches the offending span (lex/parse/
+    compile) or just points at the source line (runtime). REPL lines
+    register as `<repl:N>` sources; imports register their file
+    paths so errors inside an imported file render against THAT
+    file's source.
+18. **Number-literal extensions** (§2.5): hex `0xFF`, binary `0b1010`,
+    octal `0o755`; underscore digit separators `1_000_000` /
+    `0xFF_FF`; scientific `1e6` / `2.5e-3` (always Float); leading-
+    dot floats `.5`. Trailing-dot like `5.` continues to lex as
+    `Int(5) Dot` so `5.method` member access still works.
+19. **Pattern destructuring on `=`** (§11.4) and **mid-expression
+    pattern decls.** `[a, b] = [3, 4]` reassigns to existing
+    bindings. `arr := ([a, b] := [3, 4])` introduces `a` and `b` in
+    the enclosing scope and evaluates to the source rhs.
+20. **`JSON` native module** (§13.4) — `parse` and `stringify` with
+    an optional `indent` argument. Numbers always parse as `Float`.

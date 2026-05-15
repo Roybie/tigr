@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.3**: the v0.2 bytecode VM plus recoverable errors, a bundled stdlib, native I/O modules, and an interactive REPL. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.4**: the v0.3 release plus rendered errors with source snippets, extended number literals, fuller destructuring, and a `JSON` module. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -23,7 +23,7 @@ cargo build --release
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/).
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/) and v0.4 demos in [`examples/v04/`](examples/v04/).
 
 ---
 
@@ -53,8 +53,8 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 
 | Type     | Examples                                      | Notes                                    |
 |----------|-----------------------------------------------|------------------------------------------|
-| `Int`    | `42`, `-7`, `0`                               | 64-bit signed                            |
-| `Float`  | `3.14`, `0.0`                                 | 64-bit IEEE-754                          |
+| `Int`    | `42`, `0xFF`, `0b1010`, `0o755`, `1_000_000`  | 64-bit signed; hex/bin/oct + `_` separators |
+| `Float`  | `3.14`, `.5`, `1e6`, `2.5e-3`                 | 64-bit IEEE-754; scientific is always `Float` |
 | `String` | `'hello'`, `'name = {n}'`                     | Single-quoted, UTF-8, interpolated       |
 | `Bool`   | `true`, `false`                               |                                          |
 | `Null`   | `null`                                        |                                          |
@@ -62,6 +62,8 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `Object` | `${name: 'a', age: 1}`                        | String keys, reference type              |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
+
+Underscores are allowed only between digits — `_5`, `5_`, `5__5`, and `0x_FF` are all rejected. A trailing `5.` lexes as `Int(5)` followed by `Dot` so `5.method` style member access still works.
 
 `Array` and `Object` are **reference types** — passing them around shares the same underlying value.
 
@@ -440,6 +442,29 @@ ${user: ${id, name}} := response;
 [${name}, ${name: second}] := pair_of_people;
 ```
 
+### Reassigning with `=`
+
+Patterns also work on the LHS of plain `=`. Every leaf must already be declared, otherwise it's a compile-time error.
+
+```
+a := 1; b := 2;
+[b, a] = [a, b];                     // swap
+${x, y} = ${x: 10, y: 20};           // bulk reassign
+```
+
+Compound forms like `+=` are not allowed with patterns.
+
+### Mid-expression decls
+
+A pattern `:=` inside a larger expression hoists each leaf to a stable slot at scope entry, so the surrounding op can't clobber it. The expression evaluates to the source rhs:
+
+```
+arr := ([a, b] := [3, 4]);           // arr=[3,4]; a=3; b=4
+n   := 5 + ([c, d] := [10, 20])[0];  // n=15; c=10; d=20
+```
+
+The same applies inside `for` iter expressions, function-call args, etc.
+
 ---
 
 ## Modules / imports
@@ -541,6 +566,51 @@ Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `co
 
 `now_ms()`, `now_ns()` (UNIX epoch), `sleep_ms(n)`.
 
+### `JSON` (v0.4)
+
+| Entry | Behavior |
+|---|---|
+| `parse(str)` | Parse a JSON string. Numbers always come back as `Float`. Raises on malformed input. |
+| `stringify(value)` | Compact JSON text. Raises on `Function`/`Range`/`Iter`/`NativeFn`/`NaN`/`Infinity`. |
+| `stringify(value, indent)` | Pretty-printed; `indent` is `Int` (n spaces) or `Str` (literal indent). |
+
+```
+JSON := import 'JSON';
+JSON.stringify(${name: 'tigr', v: 0.4}, 2)
+// '{\n  "name": "tigr",\n  "v": 0.4\n}'
+```
+
+JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and integer-valued `Float` keeps a `.0` suffix.
+
+Cycles in arrays/objects aren't detected and will overflow the call stack — same posture as the wider Rc-cycle story.
+
+---
+
+## Error rendering (v0.4)
+
+When an error escapes the program (or a REPL line), tigr prints a rustc-style block: filename, source line, and a caret/underline pointing at the offending span:
+
+```
+$ tigr examples/v04/errors.tg
+error[runtime]: division by zero
+ --> examples/v04/errors.tg:6
+  |
+6 | result := x / y;
+  |
+```
+
+Lex / parse / compile errors carry a span and get an underlined caret matching the span's width:
+
+```
+error[parse]: unexpected token `:=`
+ --> /tmp/p.tg:2:6
+  |
+2 | y := := 7;
+  |      ^^
+```
+
+Errors inside an imported file render against THAT file's source — the import dispatcher registers each imported source so the renderer can find it. REPL lines register as `<repl:N>` so the same machinery works at the prompt.
+
 ---
 
 ## REPL
@@ -560,7 +630,11 @@ tigr> c()
 tigr> c()
 2
 tigr> raise 'oops'
-runtime error (line 1): oops
+error[runtime]: oops
+ --> <repl:6>:1
+  |
+1 | raise 'oops'
+  |
 tigr> c()
 3
 tigr> :q
@@ -647,19 +721,23 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.3 is feature-complete.** 226 tests pass. On top of v0.2's bytecode VM, v0.3 adds:
+**v0.4 is feature-complete.** 265 tests pass. On top of v0.3, v0.4 adds:
 
-1. `try` / `catch` / `raise` expressions (recoverable errors).
-2. Module caching + bare-name dispatch.
-3. Native modules `IO`, `Os`, `Time` (file/stdio, process, clock).
-4. Source-stdlib modules `Array`, `String`, `Math` (shipped as embedded `.tg`).
-5. Interactive REPL.
+1. **Rendered errors** — filename, source line, and caret/underline for lex/parse/compile errors (or just the source line for runtime errors). Imports register each source so errors inside an imported file render against THAT file. Same machinery powers REPL error display.
+2. **Number-literal extensions** — `0xFF`, `0b1010`, `0o755`, `1_000_000`, `1e6`, `2.5e-3`, `.5`. Underscores allowed only between digits; trailing `5.` continues to lex as `Int(5) Dot` so `5.method` works.
+3. **Patterns on `=`** and **mid-expression decls** — `[a, b] = [3, 4]` reassigns existing bindings; `arr := ([a, b] := [3, 4])` introduces `a`/`b` in the enclosing scope and evaluates to the rhs.
+4. **`JSON` native module** — `parse` and `stringify` (compact or indented). Numbers always parse as `Float`.
+
+Earlier releases:
+
+- **v0.3**: `try`/`catch`/`raise`, module caching + bare-name dispatch, native modules (`IO`/`Os`/`Time`), source-stdlib (`Array`/`String`/`Math`), interactive REPL.
+- **v0.2**: bytecode VM, closures with Lox-style upvalues, first-class ranges, destructuring patterns, pipe `|>`, spread `...`, string interpolation.
 
 See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
 
-Known limitations / v0.4 candidates:
+Known limitations / candidates for later:
 
 - No tracing GC — collections use `Rc<RefCell<...>>`, so reference cycles leak. Acceptable for hobby-scale data.
-- Array and object destructuring patterns work at the top of a statement but aren't hoisted when nested mid-expression (Ident destructures are). Workaround: lift the destructure into its own statement.
-- `=` (non-`:=`) with patterns isn't wired in — spec §11 says it should be; nothing in practice needs it yet.
-- No JSON, regex, or number-literal extensions (hex, scientific, underscores).
+- `JSON.stringify` doesn't detect cyclic arrays/objects — they overflow the call stack.
+- Runtime error spans are line-only (no column information). Lex/parse/compile errors carry full spans.
+- No regex; `String.contains` / `split` / `replace` cover the 80%.

@@ -4,6 +4,7 @@
 use std::rc::Rc;
 
 use crate::vm::opcode::OpCode;
+use crate::vm::source_map::SourceId;
 use crate::vm::value::{Function, Value};
 
 #[derive(Default)]
@@ -16,6 +17,10 @@ pub struct Chunk {
     /// One entry per byte of `code`. Source line for that byte. Used
     /// when reporting runtime errors.
     pub lines: Vec<u32>,
+    /// Which registered source this chunk was compiled from. Stamped
+    /// post-compile by the entry function (and recursively for every
+    /// nested function chunk). `SourceId::UNKNOWN` until stamped.
+    pub source: SourceId,
 }
 
 impl Chunk {

@@ -8,6 +8,7 @@
 //! `Vm` run.
 
 pub mod io;
+pub mod json;
 pub mod math;
 pub mod os;
 pub mod string;
@@ -29,6 +30,7 @@ pub fn resolve(name: &str) -> Option<Value> {
         "IO" => Some(io::module()),
         "Os" => Some(os::module()),
         "Time" => Some(time::module()),
+        "JSON" => Some(json::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.

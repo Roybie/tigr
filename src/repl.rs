@@ -16,6 +16,7 @@
 //! the parser hits EOF mid-expression, we prompt for more lines and
 //! re-try the whole accumulated buffer.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -26,6 +27,7 @@ use crate::vm::compiler::Compiler;
 use crate::vm::error::{Error, LexErrorKind, ParseErrorKind};
 use crate::vm::lexer::Lexer;
 use crate::vm::parser;
+use crate::vm::source_map::SourceMap;
 use crate::vm::token::Token;
 use crate::vm::value::{Closure, Value};
 use crate::vm::vm::Vm;
@@ -36,21 +38,39 @@ pub struct Repl {
     /// The compiler pre-declares these for each new line so name
     /// resolution emits the right `LoadLocal` slot.
     locals: Vec<(String, u8)>,
+    /// Shared with the Vm so import-time source registration shows up
+    /// here too. Each REPL line is registered as `<repl line N>`.
+    sources: Rc<RefCell<SourceMap>>,
+    line_no: u32,
 }
 
 impl Repl {
     pub fn new() -> Self {
-        let mut vm = Vm::new();
+        let sources = Rc::new(RefCell::new(SourceMap::new()));
+        let mut vm = Vm::with_source_map(sources.clone());
         vm.start_repl();
-        Repl { vm, locals: Vec::new() }
+        Repl { vm, locals: Vec::new(), sources, line_no: 0 }
     }
 
     /// Evaluate one line of source. The caller is responsible for
     /// accumulating multi-line input.
     pub fn eval(&mut self, source: &str) -> Result<Value, Error> {
-        let tokens = Lexer::new(source).tokenize()?;
-        let program = parser::parse(tokens)?;
-        let (main, new_locals) = Compiler::compile_repl(&program, &self.locals)?;
+        self.line_no += 1;
+        let sid = self
+            .sources
+            .borrow_mut()
+            .add(format!("<repl:{}>", self.line_no), source);
+
+        let tokens = Lexer::new(source).tokenize().map_err(|mut e| {
+            e.source = sid;
+            Error::from(e)
+        })?;
+        let program = parser::parse(tokens).map_err(|mut e| {
+            e.source = sid;
+            Error::from(e)
+        })?;
+        let (main, new_locals) =
+            Compiler::compile_repl_with_source(&program, &self.locals, sid)?;
 
         let closure = Rc::new(Closure {
             function: Rc::new(main),
@@ -71,6 +91,13 @@ impl Repl {
             }
             Err(e) => Err(Error::Runtime(e)),
         }
+    }
+
+    /// Borrow the source map for rendering an error returned from
+    /// [`eval`].
+    #[allow(dead_code)]
+    pub fn sources(&self) -> std::cell::Ref<'_, SourceMap> {
+        self.sources.borrow()
     }
 
     /// Top-level loop. Reads via rustyline (arrow keys, history,
@@ -119,7 +146,7 @@ impl Repl {
                             // Stay in multi-line mode; loop reads more.
                         }
                         Err(e) => {
-                            eprintln!("{e}");
+                            eprintln!("{}", e.render(&self.sources.borrow()));
                             buf.clear();
                         }
                     }

@@ -23,6 +23,7 @@ use indexmap::IndexMap;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::opcode::OpCode;
+use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{Closure, Function, IterState, RangeData, Upvalue, Value};
 
@@ -75,10 +76,19 @@ pub struct Vm {
     /// Paths currently being evaluated. A second import of any of
     /// these is a circular-import error (catchable via `try`).
     in_flight: HashSet<PathBuf>,
+    /// Registry of source files this Vm has touched. Shared with the
+    /// driver (entry function, REPL) so error rendering can resolve
+    /// snippets after the run returns.
+    pub source_map: Rc<RefCell<SourceMap>>,
 }
 
 impl Vm {
+    #[allow(dead_code)]
     pub fn new() -> Self {
+        Self::with_source_map(Rc::new(RefCell::new(SourceMap::new())))
+    }
+
+    pub fn with_source_map(source_map: Rc<RefCell<SourceMap>>) -> Self {
         Vm {
             frames: Vec::with_capacity(64),
             stack: Vec::with_capacity(256),
@@ -86,6 +96,7 @@ impl Vm {
             open_upvalues: Vec::new(),
             module_cache: HashMap::new(),
             in_flight: HashSet::new(),
+            source_map,
         }
     }
 
@@ -113,7 +124,8 @@ impl Vm {
         loop {
             match self.exec() {
                 Ok(v) => return Ok(v),
-                Err(err) => {
+                Err(mut err) => {
+                    self.stamp_error_source(&mut err);
                     if !self.try_catch(&err) {
                         return Err(err);
                     }
@@ -122,6 +134,18 @@ impl Vm {
                     // exec to continue from there.
                 }
             }
+        }
+    }
+
+    /// Fill in `err.source` from the chunk on top of the call stack
+    /// when it isn't already set. Called at the `exec` boundary —
+    /// before `try_catch` may unwind frames.
+    fn stamp_error_source(&self, err: &mut RuntimeError) {
+        if !err.source.is_unknown() {
+            return;
+        }
+        if let Some(top) = self.frames.last() {
+            err.source = top.closure.function.chunk.source;
         }
     }
 
@@ -217,7 +241,8 @@ impl Vm {
         loop {
             match self.exec() {
                 Ok(v) => return Ok(v), // Halt exit
-                Err(err) => {
+                Err(mut err) => {
+                    self.stamp_error_source(&mut err);
                     if !self.try_catch(&err) {
                         // Wall hit — restore stack to pre-line state.
                         self.close_upvalues(snapshot_len);
@@ -901,7 +926,13 @@ impl Vm {
                             continue;
                         }
                         if let Some(source) = crate::vm::source_stdlib::source(&path_str) {
-                            let main = match crate::vm::compile_source(source, None) {
+                            let sid = self.source_map.borrow_mut().add(
+                                format!("<stdlib:{}>", path_str),
+                                source,
+                            );
+                            let main = match crate::vm::compile_source_with_id(
+                                source, None, sid,
+                            ) {
                                 Ok(m) => m,
                                 Err(e) => {
                                     return Err(RuntimeError::new(
@@ -964,7 +995,10 @@ impl Vm {
                             line,
                         ));
                     }
-                    let main = match crate::vm::compile_file(&path) {
+                    let main = match crate::vm::compile_file_into(
+                        &path,
+                        &mut self.source_map.borrow_mut(),
+                    ) {
                         Ok(m) => m,
                         Err(e) => {
                             return Err(RuntimeError::new(

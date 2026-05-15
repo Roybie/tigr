@@ -226,6 +226,9 @@ pub enum Arity {
     Exact(usize),
     Variadic,
     AtLeast(usize),
+    /// `Range(min, max)` — accepts `min..=max` arguments. Used by
+    /// `JSON.stringify(value [, indent])`.
+    Range(usize, usize),
 }
 
 impl Arity {
@@ -234,6 +237,7 @@ impl Arity {
             Arity::Exact(k) => n == k,
             Arity::Variadic => true,
             Arity::AtLeast(k) => n >= k,
+            Arity::Range(min, max) => n >= min && n <= max,
         }
     }
 
@@ -242,6 +246,7 @@ impl Arity {
             Arity::Exact(k) => format!("exactly {k}"),
             Arity::Variadic => "any number of".to_string(),
             Arity::AtLeast(k) => format!("at least {k}"),
+            Arity::Range(min, max) => format!("between {min} and {max}"),
         }
     }
 }

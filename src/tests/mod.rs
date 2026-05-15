@@ -5,6 +5,7 @@
 //! the program through the full pipeline and compare.
 
 use crate::vm::run_source;
+use crate::vm::run_source_with_map;
 use crate::vm::value::Value;
 
 fn run(src: &str) -> Value {
@@ -15,6 +16,17 @@ fn run_err(src: &str) -> String {
     match run_source(src) {
         Ok(v) => panic!("expected error, got value {v:?}"),
         Err(e) => format!("{e}"),
+    }
+}
+
+/// Render `src`'s error against its own SourceMap, panicking if the
+/// program succeeded. Returns the multi-line snippet output that the
+/// CLI/REPL would print.
+fn render_err(src: &str) -> String {
+    let (result, sources) = run_source_with_map(src);
+    match result {
+        Ok(v) => panic!("expected error, got value {v:?}"),
+        Err(e) => e.render(&sources.borrow()),
     }
 }
 
@@ -2244,4 +2256,447 @@ fn phase7_import_file() {
     assert_eq!(value, Value::Int(42));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- v0.4 Phase 1: rendered errors ----
+
+#[test]
+fn v04_render_runtime_division_by_zero() {
+    let out = render_err("x := 10;\ny := x / 0;\ny");
+    assert!(out.contains("error[runtime]: division by zero"), "got:\n{out}");
+    assert!(out.contains("<string>:2"), "no filename:line — got:\n{out}");
+    assert!(out.contains("y := x / 0"), "missing source line — got:\n{out}");
+}
+
+#[test]
+fn v04_render_parse_unexpected_token() {
+    // `x := := 5` — second `:=` is unexpected.
+    let out = render_err("x := := 5");
+    assert!(out.contains("error[parse]"), "got:\n{out}");
+    assert!(out.contains("<string>:1"), "missing filename:line — got:\n{out}");
+    // Caret line should contain at least one `^`.
+    assert!(out.lines().any(|l| l.trim_start_matches(' ').starts_with("| ") &&
+        l.contains('^')), "missing caret — got:\n{out}");
+}
+
+#[test]
+fn v04_render_error_in_imported_file() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("tigr_v04_render_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad_path = dir.join("bad.tg");
+    {
+        let mut f = std::fs::File::create(&bad_path).unwrap();
+        // line 1 a comment, line 2 the divide
+        writeln!(f, "// inner module").unwrap();
+        writeln!(f, "10 / 0").unwrap();
+    }
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f, "import './bad'").unwrap();
+    }
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::vm::source_map::SourceMap::new(),
+    ));
+    let result = crate::vm::run_file_with_map(&main_path, sources.clone());
+    let out = match result {
+        Ok((v, _)) => panic!("expected error, got {v:?}"),
+        Err(e) => e.render(&sources.borrow()),
+    };
+    assert!(
+        out.contains("bad.tg") && out.contains(":2"),
+        "expected snippet to point at bad.tg:2 — got:\n{out}",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- v0.4 Phase 4: JSON native module ----
+
+#[test]
+fn v04_json_parse_primitives() {
+    assert_eq!(run("JSON := import 'JSON'; JSON.parse('null')"), Value::Null);
+    assert_eq!(run("JSON := import 'JSON'; JSON.parse('true')"), Value::Bool(true));
+    assert_eq!(run("JSON := import 'JSON'; JSON.parse('false')"), Value::Bool(false));
+    match run("JSON := import 'JSON'; JSON.parse('0')") {
+        Value::Float(x) => assert_eq!(x, 0.0),
+        v => panic!("got {v:?}"),
+    }
+    match run("JSON := import 'JSON'; JSON.parse('-1.5e2')") {
+        Value::Float(x) => assert!((x + 150.0).abs() < 1e-9),
+        v => panic!("got {v:?}"),
+    }
+    assert_eq!(
+        run(r#"JSON := import 'JSON'; JSON.parse('"hi"')"#),
+        Value::Str("hi".into()),
+    );
+}
+
+#[test]
+fn v04_json_parse_array() {
+    let v = run("JSON := import 'JSON'; JSON.parse('[1, 2, 3]')");
+    let arr = match v {
+        Value::Array(a) => a,
+        v => panic!("got {v:?}"),
+    };
+    let arr = arr.borrow();
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0], Value::Float(1.0));
+    assert_eq!(arr[2], Value::Float(3.0));
+}
+
+#[test]
+fn v04_json_parse_object_preserves_key_order() {
+    // Build via JSON.parse, then walk via for(k, obj) which iterates
+    // in insertion order. Tigr `'..'` strings interpolate on `{`, so
+    // the literal JSON `{` is escaped as `\{`.
+    let v = run(
+        r#"JSON := import 'JSON';
+           obj := JSON.parse('\{"z": 1, "a": 2, "m": 3}');
+           ks := [];
+           for (k, _, obj) { ks = ks + [k] };
+           ks"#
+    );
+    let arr = match v {
+        Value::Array(a) => a,
+        v => panic!("got {v:?}"),
+    };
+    let arr = arr.borrow();
+    assert_eq!(*arr, vec![
+        Value::Str("z".into()),
+        Value::Str("a".into()),
+        Value::Str("m".into()),
+    ]);
+}
+
+#[test]
+fn v04_json_parse_string_escapes() {
+    // The `\\` in tigr source produces a literal `\`, which combines
+    // with the next char to form a JSON escape. So `\\n` here is
+    // tigr-escaped to `\n` (backslash + n), which JSON decodes to a
+    // real newline.
+    let v = run(
+        r#"JSON := import 'JSON';
+           JSON.parse('"a\\nb\\tc\\"d\\\\eé"')"#
+    );
+    assert_eq!(v, Value::Str("a\nb\tc\"d\\eé".into()));
+}
+
+#[test]
+fn v04_json_parse_malformed_raises_catchable() {
+    let v = run(
+        r#"JSON := import 'JSON';
+           try JSON.parse('\{') catch (e) { 'caught' }"#
+    );
+    assert_eq!(v, Value::Str("caught".into()));
+}
+
+#[test]
+fn v04_json_parse_trailing_content_raises() {
+    let v = run(
+        r#"JSON := import 'JSON';
+           try JSON.parse('1 2') catch (e) { 'caught' }"#
+    );
+    assert_eq!(v, Value::Str("caught".into()));
+}
+
+#[test]
+fn v04_json_stringify_primitives() {
+    assert_eq!(
+        run("JSON := import 'JSON'; JSON.stringify(null)"),
+        Value::Str("null".into()),
+    );
+    assert_eq!(
+        run("JSON := import 'JSON'; JSON.stringify(true)"),
+        Value::Str("true".into()),
+    );
+    assert_eq!(
+        run("JSON := import 'JSON'; JSON.stringify(42)"),
+        Value::Str("42".into()),
+    );
+    // Integer-valued Float keeps `.0` suffix.
+    assert_eq!(
+        run("JSON := import 'JSON'; JSON.stringify(42.0)"),
+        Value::Str("42.0".into()),
+    );
+    assert_eq!(
+        run("JSON := import 'JSON'; JSON.stringify('hi')"),
+        Value::Str("\"hi\"".into()),
+    );
+}
+
+#[test]
+fn v04_json_stringify_string_escapes() {
+    let v = run(
+        r#"JSON := import 'JSON';
+           JSON.stringify('a\nb"c\\d')"#
+    );
+    assert_eq!(v, Value::Str(r#""a\nb\"c\\d""#.into()));
+}
+
+#[test]
+fn v04_json_stringify_array_object() {
+    let v = run(
+        "JSON := import 'JSON'; \
+         JSON.stringify(${a: 1, b: [2, 3]})"
+    );
+    assert_eq!(v, Value::Str(r#"{"a":1,"b":[2,3]}"#.into()));
+}
+
+#[test]
+fn v04_json_stringify_indent_int() {
+    let v = run(
+        "JSON := import 'JSON'; \
+         JSON.stringify(${a: 1, b: 2}, 2)"
+    );
+    assert_eq!(v, Value::Str("{\n  \"a\": 1,\n  \"b\": 2\n}".into()));
+}
+
+#[test]
+fn v04_json_stringify_indent_str() {
+    let v = run(
+        "JSON := import 'JSON'; \
+         JSON.stringify([1, 2], '\t')"
+    );
+    assert_eq!(v, Value::Str("[\n\t1,\n\t2\n]".into()));
+}
+
+#[test]
+fn v04_json_stringify_function_raises() {
+    let v = run(
+        "JSON := import 'JSON'; \
+         f := fn() { 1 }; \
+         try JSON.stringify(f) catch (e) { 'caught' }"
+    );
+    assert_eq!(v, Value::Str("caught".into()));
+}
+
+#[test]
+fn v04_json_roundtrip_via_stringify() {
+    // Stringify a tigr value, then parse it back. Numbers come back
+    // as Float (always), other types preserved structurally.
+    let v = run(
+        "JSON := import 'JSON'; \
+         data := ${a: 1, b: [2, 3], c: 'x'}; \
+         s := JSON.stringify(data); \
+         back := JSON.parse(s); \
+         back.a + back.b[0] + back.b[1]"
+    );
+    match v {
+        Value::Float(x) => assert!((x - 6.0).abs() < 1e-9),
+        v => panic!("got {v:?}"),
+    }
+}
+
+// ---- v0.4 Phase 3: pattern destructuring on `=` and mid-expression ----
+
+#[test]
+fn v04_assign_pattern_array() {
+    // After `:=`, `[b, a] = [a, b]` swaps via the array-pattern.
+    let v = run("[a, b] := [1, 2]; [b, a] = [a, b]; [a, b]");
+    assert_eq!(v, Value::Array(std::rc::Rc::new(std::cell::RefCell::new(
+        vec![Value::Int(2), Value::Int(1)]
+    ))));
+}
+
+#[test]
+fn v04_assign_pattern_object() {
+    let v = run("${x, y} := ${x: 1, y: 2}; ${x, y} = ${x: 10, y: 20}; x + y");
+    assert_eq!(v, Value::Int(30));
+}
+
+#[test]
+fn v04_assign_pattern_returns_rhs() {
+    // `[a, b] = rhs` evaluates to rhs (just like `x = 5` does).
+    let v = run("a := 0; b := 0; r := ([a, b] = [3, 4]); r");
+    assert_eq!(v, Value::Array(std::rc::Rc::new(std::cell::RefCell::new(
+        vec![Value::Int(3), Value::Int(4)]
+    ))));
+}
+
+#[test]
+fn v04_assign_pattern_undeclared_errors() {
+    let msg = run_err("[a, b] = [1, 2]");
+    assert!(msg.contains("undeclared") || msg.contains("UndeclaredAssign"),
+        "got {msg}");
+}
+
+#[test]
+fn v04_assign_pattern_compound_op_errors() {
+    // `+=` with a pattern is a parse error per spec §11.4.
+    let msg = run_err("[a, b] := [1, 2]; [a, b] += [10, 20]");
+    assert!(msg.contains("invalid") || msg.contains("parse"),
+        "got {msg}");
+}
+
+#[test]
+fn v04_assign_pattern_nested() {
+    let v = run("a := 0; b := 0; c := 0; \
+                 [a, [b, c]] = [1, [2, 3]]; \
+                 a + b + c");
+    assert_eq!(v, Value::Int(6));
+}
+
+#[test]
+fn v04_assign_pattern_rest() {
+    let v = run("a := 0; rest := []; \
+                 [a, ...rest] = [1, 2, 3, 4]; \
+                 a + #rest");
+    assert_eq!(v, Value::Int(1 + 3));
+}
+
+#[test]
+fn v04_pattern_decl_in_expr_position() {
+    // Mid-expression `:=` with a pattern hoists the leaves and the
+    // expression evaluates to the source rhs (matches `x := 5`'s
+    // "returns the bound value" convention, generalized).
+    let v = run("arr := ([a, b] := [3, 4]); a + b + #arr");
+    assert_eq!(v, Value::Int(3 + 4 + 2));
+}
+
+#[test]
+fn v04_pattern_decl_mid_expr_used_in_arith() {
+    let v = run("base := 100; \
+                 sum := base + ([x, y] := [10, 20])[0] + x + y; \
+                 sum");
+    assert_eq!(v, Value::Int(100 + 10 + 10 + 20));
+}
+
+#[test]
+fn v04_pattern_decl_in_for_iter() {
+    // Mid-expression `:=` inside the for-iter expression — the new
+    // names live in the iter's scope (gone after the loop). What we
+    // CAN check: the iter expression's value was computed correctly
+    // from the destructured source.
+    let v = run("c := 0; \
+                 for (i, 0..([upper, _] := [3, 99])[0]) { c = c + 1 }; \
+                 c");
+    assert_eq!(v, Value::Int(3));
+}
+
+#[test]
+fn v04_pattern_decl_with_rest_mid_expr() {
+    let v = run("obj := (${head, ...rest} := ${head: 'h', a: 1, b: 2}); \
+                 (#rest * 10) + (if head == 'h' { 1 } else { 0 })");
+    assert_eq!(v, Value::Int(20 + 1));
+}
+
+// ---- v0.4 Phase 2: number-literal extensions ----
+
+#[test]
+fn v04_num_hex() {
+    assert_eq!(run("0xFF"), Value::Int(255));
+    assert_eq!(run("0xff"), Value::Int(255));
+    assert_eq!(run("0xCAFEBABE"), Value::Int(0xCAFEBABE));
+    assert_eq!(run("0x0"), Value::Int(0));
+}
+
+#[test]
+fn v04_num_binary() {
+    assert_eq!(run("0b1010"), Value::Int(10));
+    assert_eq!(run("0B1111_0000"), Value::Int(0xF0));
+    assert_eq!(run("0b0"), Value::Int(0));
+}
+
+#[test]
+fn v04_num_octal() {
+    assert_eq!(run("0o755"), Value::Int(0o755));
+    assert_eq!(run("0o10"), Value::Int(8));
+}
+
+#[test]
+fn v04_num_underscore_separator() {
+    assert_eq!(run("1_000_000"), Value::Int(1_000_000));
+    match run("3.141_592") {
+        Value::Float(x) => assert!((x - 3.141_592).abs() < 1e-9),
+        v => panic!("got {v:?}"),
+    }
+    assert_eq!(run("0xFF_FF"), Value::Int(0xFFFF));
+    assert_eq!(run("0b1010_1010"), Value::Int(0xAA));
+}
+
+#[test]
+fn v04_num_scientific() {
+    match run("1e6") {
+        Value::Float(x) => assert!((x - 1_000_000.0).abs() < 1e-9),
+        v => panic!("got {v:?}"),
+    }
+    match run("2.5e-3") {
+        Value::Float(x) => assert!((x - 0.0025).abs() < 1e-12),
+        v => panic!("got {v:?}"),
+    }
+    match run("1E+9") {
+        Value::Float(x) => assert!((x - 1e9).abs() < 1e-3),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v04_num_leading_dot() {
+    match run(".5") {
+        Value::Float(x) => assert!((x - 0.5).abs() < 1e-12),
+        v => panic!("got {v:?}"),
+    }
+    match run(".25e2") {
+        Value::Float(x) => assert!((x - 25.0).abs() < 1e-9),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v04_num_trailing_dot_lexes_as_int_dot() {
+    // `5.` is `Int(5) Dot` — `5.method` style member access. As an
+    // expression on its own this is a *parse* error, not a lex error.
+    let msg = run_err("5.");
+    assert!(msg.contains("parse error") || msg.contains("error[parse]"), "got {msg}");
+}
+
+#[test]
+fn v04_num_underscore_rejected_forms() {
+    for src in ["5_", "5__5", "0x_FF", "0b_10", "0o_7"] {
+        let msg = run_err(src);
+        assert!(
+            msg.contains("lex error") || msg.contains("error[lex]"),
+            "expected lex error for {src:?}, got {msg}",
+        );
+    }
+}
+
+#[test]
+fn v04_num_overflow_is_lex_error() {
+    let msg = run_err("0xFFFFFFFFFFFFFFFF");
+    assert!(msg.contains("out of range"), "got {msg}");
+
+    let msg = run_err("99999999999999999999");
+    assert!(msg.contains("out of range"), "got {msg}");
+}
+
+#[test]
+fn v04_num_range_with_new_literals() {
+    // Range from hex to hex.
+    let v = run("r := 0xFE..0x100; #r");
+    assert_eq!(v, Value::Int(2));
+
+    // Underscores inside range bounds.
+    let v = run("c := 0; for (i, 0..1_000) { c = c + 1 }; c");
+    assert_eq!(v, Value::Int(1000));
+}
+
+#[test]
+fn v04_num_range_op_still_works() {
+    // Make sure the new lexer didn't break `1..10` and `1..=5`.
+    assert_eq!(run("#(1..5)"), Value::Int(4));
+    assert_eq!(run("#(1..=5)"), Value::Int(5));
+}
+
+#[test]
+fn v04_render_repl_uses_repl_filename() {
+    let mut repl = crate::repl::Repl::new();
+    let err = match repl.eval("1 / 0") {
+        Ok(v) => panic!("expected error, got {v:?}"),
+        Err(e) => e,
+    };
+    let out = err.render(&repl.sources());
+    assert!(out.contains("<repl:"), "expected <repl:N> filename — got:\n{out}");
+    assert!(out.contains("error[runtime]: division by zero"), "got:\n{out}");
 }

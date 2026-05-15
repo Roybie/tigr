@@ -43,6 +43,7 @@ use std::path::PathBuf;
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{CompileError, CompileErrorKind};
 use crate::vm::opcode::OpCode;
+use crate::vm::source_map::SourceId;
 use crate::vm::stdlib;
 use crate::vm::token::Span;
 use crate::vm::value::{Function, UpvalueInfo, Value};
@@ -111,9 +112,11 @@ struct FuncCompiler {
 }
 
 impl FuncCompiler {
-    fn new(arity: usize, name: Option<String>) -> Self {
+    fn new(arity: usize, name: Option<String>, source: SourceId) -> Self {
+        let mut chunk = Chunk::new();
+        chunk.source = source;
         FuncCompiler {
-            chunk: Chunk::new(),
+            chunk,
             locals: Vec::new(),
             upvalues: Vec::new(),
             scope_depth: 0,
@@ -140,6 +143,9 @@ pub struct Compiler {
     /// resolve `import 'path'` paths at compile time (spec §12).
     /// `None` for source compiled from a string (no path context).
     base_dir: Option<PathBuf>,
+    /// Stamped on every chunk produced by this compiler so runtime and
+    /// compile-time errors can be rendered against the right source.
+    source: SourceId,
 }
 
 impl Compiler {
@@ -153,42 +159,61 @@ impl Compiler {
     }
 
     /// Compile with a base directory for relative-path import
-    /// resolution.
+    /// resolution. No source attribution — errors render bare.
     pub fn compile_with_dir(
         program: &Block,
         base_dir: Option<PathBuf>,
     ) -> Result<Function, CompileError> {
-        let mut c = Compiler {
-            funcs: Vec::new(),
-            globals: stdlib::names().to_vec(),
-            base_dir,
-        };
-        c.push_function(0, Some("<main>".to_string()));
-        // slot 0 = main closure placeholder. The frame is set up so
-        // that the VM has placed *something* at base_slot before we
-        // start running — bump the tracker by 1 to match.
-        c.current_mut().stack_height = 1;
-        c.declare_local("", Span::new(0, 0, 1))?;
+        Self::compile_with_source(program, base_dir, SourceId::UNKNOWN)
+    }
 
-        // Hoist nested `:=` declarations at the top-level scope (the
-        // implicit `<main>` body). Top-level Decls keep their existing
-        // declare-after-init semantics; only nested ones get a stable
-        // slot here.
-        let mut hoisted = Vec::new();
-        c.visit_block_for_hoist(program, &mut hoisted);
-        c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
+    /// Compile with a base directory AND a [`SourceId`]. Every chunk
+    /// produced (the top-level main + every nested function) is
+    /// stamped with `source` so runtime errors render against it.
+    /// The returned `CompileError`'s `source` is also stamped.
+    pub fn compile_with_source(
+        program: &Block,
+        base_dir: Option<PathBuf>,
+        source: SourceId,
+    ) -> Result<Function, CompileError> {
+        (|| {
+            let mut c = Compiler {
+                funcs: Vec::new(),
+                globals: stdlib::names().to_vec(),
+                base_dir,
+                source,
+            };
+            c.push_function(0, Some("<main>".to_string()));
+            // slot 0 = main closure placeholder. The frame is set up so
+            // that the VM has placed *something* at base_slot before we
+            // start running — bump the tracker by 1 to match.
+            c.current_mut().stack_height = 1;
+            c.declare_local("", Span::new(0, 0, 1))?;
 
-        c.compile_block_value(program)?;
-        let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
-        c.current_chunk_mut().write_op(OpCode::Return, last_line);
+            // Hoist nested `:=` declarations at the top-level scope (the
+            // implicit `<main>` body). Top-level Decls keep their existing
+            // declare-after-init semantics; only nested ones get a stable
+            // slot here.
+            let mut hoisted = Vec::new();
+            c.visit_block_for_hoist(program, &mut hoisted);
+            c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
 
-        let fc = c.funcs.pop().expect("main function compiler popped");
-        Ok(Function {
-            arity: 0,
-            has_rest: false,
-            chunk: fc.chunk,
-            upvalues: fc.upvalues,
-            name: fc.name,
+            c.compile_block_value(program)?;
+            let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
+            c.current_chunk_mut().write_op(OpCode::Return, last_line);
+
+            let fc = c.funcs.pop().expect("main function compiler popped");
+            Ok(Function {
+                arity: 0,
+                has_rest: false,
+                chunk: fc.chunk,
+                upvalues: fc.upvalues,
+                name: fc.name,
+            })
+        })()
+        .map_err(|mut e: CompileError| {
+            if e.source.is_unknown() { e.source = source; }
+            e
         })
     }
 
@@ -203,14 +228,27 @@ impl Compiler {
     /// Returns the compiled function and the list of NEW top-level
     /// locals the line declared. The driver appends those to its
     /// state for use on the next line.
+    #[allow(dead_code)]
     pub fn compile_repl(
         program: &Block,
         existing_locals: &[(String, u8)],
     ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
+        Self::compile_repl_with_source(program, existing_locals, SourceId::UNKNOWN)
+    }
+
+    /// REPL compile with a [`SourceId`] for the line's buffer so
+    /// errors render against it.
+    pub fn compile_repl_with_source(
+        program: &Block,
+        existing_locals: &[(String, u8)],
+        source: SourceId,
+    ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
+        (|| {
         let mut c = Compiler {
             funcs: Vec::new(),
             globals: stdlib::names().to_vec(),
             base_dir: None,
+            source,
         };
         c.push_function(0, Some("<repl>".to_string()));
         // Slot 0 = closure placeholder (the REPL frame holds the
@@ -264,6 +302,11 @@ impl Compiler {
             },
             new_locals,
         ))
+        })()
+        .map_err(|mut e: CompileError| {
+            if e.source.is_unknown() { e.source = source; }
+            e
+        })
     }
 
     // -- function compiler stack helpers ------------------------------
@@ -282,7 +325,7 @@ impl Compiler {
     }
 
     fn push_function(&mut self, arity: usize, name: Option<String>) {
-        self.funcs.push(FuncCompiler::new(arity, name));
+        self.funcs.push(FuncCompiler::new(arity, name, self.source));
     }
 
     // -- block / scope -----------------------------------------------
@@ -548,15 +591,16 @@ impl Compiler {
     /// hoisting at entry.
     fn visit_for_hoist(&self, e: &SpannedExpr, out: &mut Vec<String>) {
         match &e.expr {
-            Expr::Decl(Pattern::Ident(name), init) => {
-                out.push(name.clone());
+            Expr::Decl(pat, init) => {
+                // Hoist EVERY leaf name introduced by this Decl. For
+                // a bare `name :=`, that's just `name`. For an
+                // array/object pattern `[a, b] :=` or `${x, y} :=`
+                // we collect each leaf so the mid-expression slot
+                // accounting works out (v0.4 phase 3b — closes the
+                // limitation noted in v02-stack-tracking).
+                pat.leaf_names(out);
                 self.visit_for_hoist(init, out);
             }
-            // Non-Ident patterns are NOT hoisted (a separate, more
-            // intricate fix would be needed for nested array/object
-            // destructures in expression position). Their init is
-            // still visited for any nested Ident decls.
-            Expr::Decl(_, init) => self.visit_for_hoist(init, out),
 
             // Parenthesised blocks `(a; b; c)` don't introduce a scope —
             // they're transparent. Every Decl inside (including a tail
@@ -606,6 +650,7 @@ impl Compiler {
                 self.visit_for_hoist(body, out);
             }
             Expr::Assign(_, _, v) => self.visit_for_hoist(v, out),
+            Expr::AssignPattern(_, v) => self.visit_for_hoist(v, out),
             Expr::Array(items) => for i in items { self.visit_for_hoist(i, out); },
             Expr::Object(members) => {
                 for m in members {
@@ -651,13 +696,17 @@ impl Compiler {
     fn visit_block_for_hoist(&self, block: &Block, out: &mut Vec<String>) {
         for stmt in &block.stmts {
             match &stmt.expr {
-                Expr::Decl(Pattern::Ident(_), init) => self.visit_for_hoist(init, out),
+                // Top-level Decls of any pattern shape keep their
+                // declare-after-init semantics so the variable's scope
+                // starts at its source location. Only their inits are
+                // scanned for nested hoist candidates.
+                Expr::Decl(_, init) => self.visit_for_hoist(init, out),
                 _ => self.visit_for_hoist(stmt, out),
             }
         }
         if let Some(tail) = &block.tail {
             match &tail.expr {
-                Expr::Decl(Pattern::Ident(_), init) => self.visit_for_hoist(init, out),
+                Expr::Decl(_, init) => self.visit_for_hoist(init, out),
                 _ => self.visit_for_hoist(tail, out),
             }
         }
@@ -823,16 +872,33 @@ impl Compiler {
                         // on the stack as the expression's result.
                     }
                     Pattern::Array { .. } | Pattern::Object { .. } => {
-                        // Compile init: pushes the source value.
-                        self.compile_expr(init)?;
-                        // Destructure consumes the source from the
-                        // top of stack and declares names. We push a
-                        // Null afterwards because `pattern := expr`
-                        // as an expression should still produce a
-                        // value — we lose the structural source
-                        // (per spec it's "the names" anyway).
-                        self.compile_pattern(pat, e.span)?;
-                        self.emit_op(OpCode::PushNull, line);
+                        // Mid-expression patterns get their leaves
+                        // pre-allocated by the scope's hoist prologue.
+                        // Detect that and route through
+                        // `compile_assign_pattern` so we Store into
+                        // the reserved slots instead of declaring
+                        // fresh ones (which would clobber the
+                        // hoisted slots). Top-level pattern Decls
+                        // aren't hoisted (see `visit_block_for_hoist`)
+                        // and use the original declare-after-init
+                        // shape.
+                        let mut leaves = Vec::new();
+                        pat.leaf_names(&mut leaves);
+                        let hoisted = leaves
+                            .first()
+                            .map(|n| self.lookup_hoisted(n).is_some())
+                            .unwrap_or(false);
+                        if hoisted {
+                            self.compile_expr(init)?;
+                            // One copy survives as the Decl-expr's
+                            // value; the other gets destructured.
+                            self.emit_op(OpCode::Dup, line);
+                            self.compile_assign_pattern(pat, e.span)?;
+                        } else {
+                            self.compile_expr(init)?;
+                            self.compile_pattern(pat, e.span)?;
+                            self.emit_op(OpCode::PushNull, line);
+                        }
                     }
                 }
             }
@@ -858,6 +924,17 @@ impl Compiler {
                     self.compile_expr(value)?;
                 }
                 self.emit_store(r, line);
+            }
+
+            Expr::AssignPattern(pat, value) => {
+                // Compile rhs → source on top. Dup so one copy stays
+                // as the assign-expression's value while the other
+                // gets consumed by the destructure.
+                self.compile_expr(value)?;
+                self.emit_op(OpCode::Dup, line);
+                self.compile_assign_pattern(pat, e.span)?;
+                // After compile_assign_pattern, the duplicate has
+                // been consumed; the original rhs is on top.
             }
 
             Expr::Array(items) => {
@@ -1667,6 +1744,132 @@ impl Compiler {
     /// each element. Sub-patterns recurse. The anonymous slot
     /// "leaks" until the enclosing scope ends — same as if the user
     /// had written `tmp := rhs; a := tmp[0]; ...`.
+    /// Destructure the value on top of stack into EXISTING bindings
+    /// (mirror of [`compile_pattern`] which DECLARES them). Each leaf
+    /// `Ident` resolves to its slot and is `StoreLocal`'d; rest binds
+    /// the same way. Net stack effect: -1 (consumes the source).
+    fn compile_assign_pattern(
+        &mut self,
+        pat: &Pattern,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let line = span.line;
+        match pat {
+            Pattern::Wildcard => {
+                self.emit_op(OpCode::Pop, line);
+            }
+            Pattern::Ident(name) => {
+                let r = self.resolve(name, span)?.ok_or_else(|| {
+                    CompileError::new(
+                        CompileErrorKind::UndeclaredAssign(name.clone()),
+                        span,
+                    )
+                })?;
+                if let Resolved::Global(_) = r {
+                    return Err(CompileError::new(
+                        CompileErrorKind::AssignToBuiltin(name.clone()),
+                        span,
+                    ));
+                }
+                self.emit_store(r, line);
+                self.emit_op(OpCode::Pop, line);
+            }
+            Pattern::Array { items, rest } => {
+                // Stash source as anonymous local so we can index into
+                // it repeatedly. Reclaimed at the bottom of this arm.
+                self.declare_local("", span)?;
+                let src_slot = self.current().locals.last().unwrap().slot;
+                for (i, item) in items.iter().enumerate() {
+                    if matches!(item, Pattern::Wildcard) {
+                        continue;
+                    }
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(Value::Int(i as i64), line, span)?;
+                    self.emit_op(OpCode::IndexGet, line);
+                    self.compile_assign_pattern(item, span)?;
+                }
+                if let Some(rest_name) = rest {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(Value::Int(items.len() as i64), line, span)?;
+                    self.emit_op(OpCode::SliceFrom, line);
+                    self.assign_leaf_name(rest_name, line, span)?;
+                }
+                // Drop the anonymous source we stashed: pop the runtime
+                // value and un-declare the slot so the per-iteration
+                // accounting in any outer Array/Object loop stays
+                // balanced (caller expects net -1 from this call).
+                self.emit_op(OpCode::Pop, line);
+                let popped = self.current_mut().locals.pop()
+                    .expect("anonymous source slot");
+                debug_assert!(popped.name.is_empty());
+            }
+            Pattern::Object { fields, rest } => {
+                self.declare_local("", span)?;
+                let src_slot = self.current().locals.last().unwrap().slot;
+                for f in fields {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    self.emit_constant(
+                        Value::Str(f.key.as_str().into()),
+                        line,
+                        span,
+                    )?;
+                    self.emit_op(OpCode::IndexGet, line);
+                    self.compile_assign_pattern(&f.pattern, span)?;
+                }
+                if let Some(rest_name) = rest {
+                    self.emit_op(OpCode::LoadLocal, line);
+                    self.emit_byte(src_slot, line);
+                    for f in fields {
+                        self.emit_constant(
+                            Value::Str(f.key.as_str().into()),
+                            line,
+                            span,
+                        )?;
+                    }
+                    self.emit_op(OpCode::MakeArray, line);
+                    self.emit_byte(fields.len() as u8, line);
+                    self.adjust_stack(-(fields.len() as i32) + 1);
+                    self.emit_op(OpCode::ObjRest, line);
+                    self.assign_leaf_name(rest_name, line, span)?;
+                }
+                self.emit_op(OpCode::Pop, line);
+                let popped = self.current_mut().locals.pop()
+                    .expect("anonymous source slot");
+                debug_assert!(popped.name.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve a leaf identifier to a non-Global slot and emit the
+    /// store + pop that consumes the value on top. Used for both
+    /// regular leaves (in Pattern::Ident) and rest bindings.
+    fn assign_leaf_name(
+        &mut self,
+        name: &str,
+        line: u32,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let r = self.resolve(name, span)?.ok_or_else(|| {
+            CompileError::new(
+                CompileErrorKind::UndeclaredAssign(name.to_string()),
+                span,
+            )
+        })?;
+        if let Resolved::Global(_) = r {
+            return Err(CompileError::new(
+                CompileErrorKind::AssignToBuiltin(name.to_string()),
+                span,
+            ));
+        }
+        self.emit_store(r, line);
+        self.emit_op(OpCode::Pop, line);
+        Ok(())
+    }
+
     fn compile_pattern(
         &mut self,
         pat: &Pattern,

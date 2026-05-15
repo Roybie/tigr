@@ -6,8 +6,12 @@
 //! The `--legacy` flag is reserved for re-enabling the v0.1 tree-walking
 //! interpreter once `src/v01/` is wired back into the build.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
+use std::rc::Rc;
+
+use vm::source_map::SourceMap;
 
 mod repl;
 mod v01;
@@ -57,13 +61,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    match vm::run_file(Path::new(filename)) {
-        Ok(value) => {
+    let sources = Rc::new(RefCell::new(SourceMap::new()));
+    match vm::run_file_with_map(Path::new(filename), sources.clone()) {
+        Ok((value, _)) => {
             println!("{value:?}");
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("{err}");
+            eprintln!("{}", err.render(&sources.borrow()));
             ExitCode::FAILURE
         }
     }

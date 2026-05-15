@@ -142,6 +142,26 @@ pub enum Pattern {
     Object { fields: Vec<ObjectField>, rest: Option<String> },
 }
 
+impl Pattern {
+    /// Collect every binding name introduced by this pattern, in the
+    /// source-textual order. Used by the compiler's hoisting pre-walk
+    /// to pre-allocate slots for mid-expression `:=` decls.
+    pub fn leaf_names(&self, out: &mut Vec<String>) {
+        match self {
+            Pattern::Wildcard => {}
+            Pattern::Ident(name) => out.push(name.clone()),
+            Pattern::Array { items, rest } => {
+                for it in items { it.leaf_names(out); }
+                if let Some(r) = rest { out.push(r.clone()); }
+            }
+            Pattern::Object { fields, rest } => {
+                for f in fields { f.pattern.leaf_names(out); }
+                if let Some(r) = rest { out.push(r.clone()); }
+            }
+        }
+    }
+}
+
 /// One field of an object pattern.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectField {
@@ -194,6 +214,14 @@ pub enum Expr {
     // `x = expr` (op = None) or `x op= expr` (op = Some(BinOp)).
     // Assigns to an existing binding (error if absent).
     Assign(String, Option<BinOp>, Box<SpannedExpr>),
+
+    // `[a, b] = rhs` / `${k1, k2: alias} = rhs` — destructure rhs into
+    // EXISTING bindings. Spec §11 says patterns work on both `:=` and
+    // `=`; this variant covers the `=` form. Compound ops like `+=`
+    // are NOT permitted with patterns (per spec §11.4) so there's no
+    // op slot here. Each leaf must already be declared, otherwise it
+    // raises `UndeclaredAssign` at compile time.
+    AssignPattern(Pattern, Box<SpannedExpr>),
 
     // `{ a; b; c }` — opens a new lexical scope.
     Scope(Block),

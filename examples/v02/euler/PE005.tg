@@ -7,13 +7,13 @@
  */
 
 //keep track of accumulation
-answer = 1;
+answer := 1;
 
 //only need to loop through second half since all values in first half have a multiple in the second half.
-for (i,11..21) {
+for (i,11..20) {
 
     //set increment amount to current value since this will be amultiple of all numbers checked previously.
-    old_count = answer;
+    old_count := answer;
 
     //increment answer until it is a multiple of the current number being checked.
     while answer % i != 0 {

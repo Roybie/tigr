@@ -171,8 +171,8 @@ arr[0];                              // 1
 arr[-1];                             // 3   (negative indices count from the end)
 #arr;                                // 3
 arr + 4;                             // [1, 2, 3, 4]    (append element)
-arr + [5, 6];                        // [1, 2, 3, 4, 5, 6]   (concatenate arrays)
-arr += 7;                            // arr is now [1, 2, 3, 4, 5, 6, 7]
+arr + [4, 5, 6];                     // [1, 2, 3, 4, 5, 6]   (concatenate arrays)
+arr += 7;                            // arr is now [1, 2, 3, 7]
 arr[0] = 99;                         // mutates in place
 ```
 
@@ -346,7 +346,7 @@ Functions capture their enclosing environment as a closure. Captured variables a
 ```
 make_counter := fn() {
     n := 0;
-    fn() { n = n + 1; n }            // captures n by reference
+    fn() { n += 1 }                  // captures n by reference
 };
 c := make_counter();
 c();                                 // 1
@@ -470,27 +470,21 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 Project Euler #4 — largest palindrome made from the product of two 3-digit numbers:
 
 ```
-is_palindrome := fn(n) {
-    s := str(n);
-    i := 0;
-    j := #s - 1;
-    result := true;
-    while i < j {
-        if s[i] != s[j] { result = false; i = j } else { i = i + 1; j = j - 1 }
-    };
-    result
-};
+for (i, 999..=900) {
+  for (j, 999..=900) {
+    n := num := i * j;
+    r := 0;
 
-best := 0;
-for (a, 100..=999) {
-    for (b, a..=999) {
-        p := a * b;
-        if p > best {
-            if is_palindrome(p) { best = p }
-        }
+    if n == while num > 0 {
+              dig := num % 10;
+              num = (num - dig) / 10;
+              r = r * 10 + dig
+            }
+    {
+      break (break n)
     }
-};
-print('largest palindrome =', best)   // 906609
+  }
+}
 ```
 
 See [`examples/v02/`](examples/v02/) for many more — destructuring, closures, pipes, imports, the array library, and a handful of Project Euler solutions.

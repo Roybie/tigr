@@ -6,7 +6,7 @@
  * What is the 10 001st prime number?
  */
 
-isPrime = fn(n) {
+isPrime := fn(n) {
     if n == 2 {
         true
     } else if !(n % 2) {
@@ -21,8 +21,7 @@ isPrime = fn(n) {
     }
 };
 
-n = 1;
-test = 1;
+n := test := 1;
 while (n < 10001) {
     test += 2;
     if isPrime(test) {

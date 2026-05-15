@@ -5,8 +5,8 @@
  * Find the sum of all the multiples of 3 or 5 below 1000.
  */
 
-lim = 1000;
-ans = 0;
+lim := 1000;
+ans := 0;
 
 for (i,0..lim:3) { ans += i };
 for (i,0..lim:5) { if i % 3 != 0 { ans += i } else { ans } }

@@ -1543,13 +1543,10 @@ fn v03_try_catch_binds_error_message() {
 
 #[test]
 fn v03_try_catch_runtime_error() {
-    // Built-in TypeMismatch reaches the catch with the message
-    // produced by RuntimeError::Display ("type mismatch: ...").
-    let src = "try int([1]) catch (e) { e }";
-    match run(src) {
-        Value::Str(s) => assert!(s.contains("int()") || s.contains("type"), "got {s}"),
-        v => panic!("got {v:?}"),
-    }
+    // A built-in error is reified into a ${kind, message, line}
+    // object when caught (v0.7b).
+    let src = "try int([1]) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("type_mismatch".into()));
 }
 
 #[test]
@@ -1617,10 +1614,10 @@ fn v03_try_in_expression_position() {
 }
 
 #[test]
-fn v03_raise_non_string_coerces() {
-    // Non-string raises stringify via Display.
+fn v03_raise_non_string_binds_raw_value() {
+    // `raise` binds the exact value — no string coercion (v0.7b).
     let src = "try (raise 42) catch (e) { e }";
-    assert_eq!(run(src), Value::Str("42".into()));
+    assert_eq!(run(src), Value::Int(42));
 }
 
 #[test]
@@ -4042,4 +4039,124 @@ fn v07_array_sort_by() {
         Array.sort_by([3, 1, 2], fn(x){ -x })
     ";
     assert_eq!(int_vec(&run(src)), vec![3, 2, 1]);
+}
+
+// ----------------------------------------------------------------
+// v0.7b — structured (non-string) errors
+// ----------------------------------------------------------------
+
+#[test]
+fn v07b_err_raise_string_binds_string() {
+    // A raised string is still caught as a string.
+    let src = "try (raise 'oops') catch (e) { type(e) }";
+    assert_eq!(run(src), Value::Str("string".into()));
+}
+
+#[test]
+fn v07b_err_raise_object_binds_object() {
+    // `catch` binds the exact object that was raised.
+    let src = "try (raise ${code: 7, msg: 'bad'}) catch (e) { e.code }";
+    assert_eq!(run(src), Value::Int(7));
+}
+
+#[test]
+fn v07b_err_raise_array_binds_array() {
+    let src = "try (raise [10, 20, 30]) catch (e) { e[1] }";
+    assert_eq!(run(src), Value::Int(20));
+}
+
+#[test]
+fn v07b_err_builtin_kind() {
+    let src = "try (1 / 0) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("div_by_zero".into()));
+}
+
+#[test]
+fn v07b_err_builtin_message() {
+    let src = "try (1 / 0) catch (e) { e.message }";
+    assert_eq!(run(src), Value::Str("division by zero".into()));
+}
+
+#[test]
+fn v07b_err_builtin_line() {
+    // The reified object carries the line the error occurred on.
+    let src = "try (1 / 0) catch (e) { e.line }";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v07b_err_type_mismatch_kind() {
+    let src = "try (1 + 'a') catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("type_mismatch".into()));
+}
+
+#[test]
+fn v07b_err_not_callable_kind() {
+    let src = "try (5()) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("not_callable".into()));
+}
+
+#[test]
+fn v07b_err_match_on_kind() {
+    // The motivating use case — match on a built-in error's kind.
+    let src = "
+        classify := fn() {
+            try (1 / 0) catch (e) {
+                match e.kind {
+                    'div_by_zero' => 'math error',
+                    'type_mismatch' => 'type error',
+                    _ => 'other',
+                }
+            }
+        };
+        classify()
+    ";
+    assert_eq!(run(src), Value::Str("math error".into()));
+}
+
+#[test]
+fn v07b_err_reraise_preserves_value() {
+    // Re-raising a caught value passes it through unchanged.
+    let src = "
+        try {
+            try (raise ${id: 9}) catch (e) { raise e }
+        } catch (e2) { e2.id }
+    ";
+    assert_eq!(run(src), Value::Int(9));
+}
+
+#[test]
+fn v07b_err_reraise_builtin_object() {
+    // A caught built-in error is an ordinary object — re-raising it
+    // and catching it again still sees ${kind, ...}.
+    let src = "
+        try {
+            try (1 / 0) catch (e) { raise e }
+        } catch (e2) { e2.kind }
+    ";
+    assert_eq!(run(src), Value::Str("div_by_zero".into()));
+}
+
+#[test]
+fn v07b_err_native_raise_is_string() {
+    // Native-module errors raise a string message, caught verbatim.
+    let src = "
+        Math := import 'Math';
+        try (Math.sqrt('x')) catch (e) { type(e) }
+    ";
+    assert_eq!(run(src), Value::Str("string".into()));
+}
+
+#[test]
+fn v07b_err_uncaught_raised_object_renders() {
+    // An uncaught raised value renders via str().
+    let msg = run_err("raise ${kind: 'custom', code: 3}");
+    assert!(msg.contains("custom") && msg.contains("3"), "got {msg}");
+}
+
+#[test]
+fn v07b_err_uncaught_builtin_unchanged() {
+    // An uncaught built-in error still renders its plain message.
+    let msg = run_err("1 / 0");
+    assert!(msg.contains("division by zero"), "got {msg}");
 }

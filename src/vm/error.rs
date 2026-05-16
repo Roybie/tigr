@@ -4,6 +4,7 @@ use std::fmt;
 
 use crate::vm::source_map::{SourceId, SourceMap};
 use crate::vm::token::{Span, Token};
+use crate::vm::value::Value;
 
 // ---------------- Lex ----------------
 
@@ -173,12 +174,32 @@ pub enum RuntimeErrorKind {
     InvalidIndexType(String),
     ImmutableTarget(String),
     ImportFailed(String, String),
-    /// User-raised error (`raise expr`) or a builtin/runtime error that
-    /// has been caught and re-thrown as a string. The contained value
-    /// is what catch handlers will see and what `Display` prints for an
-    /// uncaught raise. Distinguished from other variants so we don't
-    /// add a `runtime error:` prefix when stringifying.
-    Raised(String),
+    /// A value raised by `raise expr`, stored verbatim — never coerced
+    /// to a string. `catch` binds exactly this value; an uncaught
+    /// raise renders it via `str()` (the `Value` `Display` form).
+    /// Built-in error variants are never `Raised`; when caught, those
+    /// are reified by the VM into a `${kind, message, line}` object.
+    Raised(Value),
+}
+
+impl RuntimeErrorKind {
+    /// Stable snake-case tag for the `kind` field of the
+    /// `${kind, message, line}` object a caught built-in error is
+    /// reified into. `Raised` is never reified, so its tag is unused.
+    pub fn kind_tag(&self) -> &'static str {
+        match self {
+            RuntimeErrorKind::TypeMismatch(_) => "type_mismatch",
+            RuntimeErrorKind::DivisionByZero => "div_by_zero",
+            RuntimeErrorKind::StackUnderflow => "stack_underflow",
+            RuntimeErrorKind::ArityMismatch { .. } => "arity_mismatch",
+            RuntimeErrorKind::NotCallable(_) => "not_callable",
+            RuntimeErrorKind::IndexOutOfBounds(_) => "index_out_of_bounds",
+            RuntimeErrorKind::InvalidIndexType(_) => "invalid_index_type",
+            RuntimeErrorKind::ImmutableTarget(_) => "immutable_target",
+            RuntimeErrorKind::ImportFailed(..) => "import_failed",
+            RuntimeErrorKind::Raised(_) => "raised",
+        }
+    }
 }
 
 impl fmt::Display for RuntimeError {
@@ -197,7 +218,7 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::ImportFailed(path, msg) => write!(
                 f, "import of {path:?} failed: {msg}"
             ),
-            RuntimeErrorKind::Raised(s) => f.write_str(s),
+            RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }
 }

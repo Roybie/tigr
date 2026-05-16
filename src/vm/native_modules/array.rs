@@ -29,10 +29,10 @@ fn expect_array(
     match v {
         Value::Array(a) => Ok(a.clone()),
         other => Err(RuntimeError::new(
-            RuntimeErrorKind::Raised(format!(
+            RuntimeErrorKind::Raised(Value::Str(format!(
                 "Array.{label}: expected Array, got {}",
                 other.type_name()
-            )),
+            ).into())),
             0,
         )),
     }

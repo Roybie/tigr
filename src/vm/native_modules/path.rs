@@ -21,7 +21,7 @@ pub fn module() -> Value {
 }
 
 fn raise(msg: String) -> RuntimeError {
-    RuntimeError::new(RuntimeErrorKind::Raised(msg), 0)
+    RuntimeError::new(RuntimeErrorKind::Raised(Value::Str(msg.into())), 0)
 }
 
 fn expect_string<'a>(v: &'a Value, label: &str) -> Result<&'a str, RuntimeError> {

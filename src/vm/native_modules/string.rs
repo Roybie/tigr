@@ -34,10 +34,10 @@ fn as_str<'a>(v: &'a Value, label: &str) -> Result<&'a str, RuntimeError> {
     match v {
         Value::Str(s) => Ok(s),
         other => Err(RuntimeError::new(
-            RuntimeErrorKind::Raised(format!(
+            RuntimeErrorKind::Raised(Value::Str(format!(
                 "String.{label}: expected String, got {}",
                 other.type_name()
-            )),
+            ).into())),
             0,
         )),
     }
@@ -127,13 +127,14 @@ fn s_repeat(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = match &args[1] {
         Value::Int(n) if *n >= 0 => *n as usize,
         Value::Int(_) => return Err(RuntimeError::new(
-            RuntimeErrorKind::Raised("String.repeat: negative count".into()),
+            RuntimeErrorKind::Raised(Value::Str(
+                "String.repeat: negative count".into())),
             0,
         )),
         other => return Err(RuntimeError::new(
-            RuntimeErrorKind::Raised(format!(
+            RuntimeErrorKind::Raised(Value::Str(format!(
                 "String.repeat: count must be Int, got {}", other.type_name()
-            )),
+            ).into())),
             0,
         )),
     };

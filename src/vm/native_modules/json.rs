@@ -28,7 +28,7 @@ pub fn module() -> Value {
 }
 
 fn raise(msg: String) -> RuntimeError {
-    RuntimeError::new(RuntimeErrorKind::Raised(msg), 0)
+    RuntimeError::new(RuntimeErrorKind::Raised(Value::Str(msg.into())), 0)
 }
 
 // ---------------- parse ----------------

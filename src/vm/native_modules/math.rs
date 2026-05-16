@@ -27,10 +27,10 @@ fn as_float(v: &Value, label: &str) -> Result<f64, RuntimeError> {
         Value::Int(n) => Ok(*n as f64),
         Value::Float(x) => Ok(*x),
         other => Err(RuntimeError::new(
-            RuntimeErrorKind::Raised(format!(
+            RuntimeErrorKind::Raised(Value::Str(format!(
                 "Math.{label}: expected Number, got {}",
                 other.type_name()
-            )),
+            ).into())),
             0,
         )),
     }

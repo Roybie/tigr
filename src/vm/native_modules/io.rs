@@ -1,7 +1,7 @@
 //! `import 'IO'` — file and stdio operations.
 //!
 //! Fallible IO (`read_file`, `write_file`, `append_file`, `read_line`,
-//! `list_dir`, `mkdir`, `remove`, `stat`) raises a `Raised(String)` error
+//! `list_dir`, `mkdir`, `remove`, `stat`) raises a string-valued error
 //! on failure — catchable via `try`. Predicate-style entries (`exists`,
 //! `is_dir`, `is_file`) never raise. Output entries (`eprint`) match
 //! `print` semantics: space-separated args + newline.
@@ -45,7 +45,7 @@ fn expect_string<'a>(v: &'a Value, label: &str) -> Result<&'a str, RuntimeError>
 fn raise(msg: String) -> RuntimeError {
     // Line is filled in by the VM dispatch site (it knows the
     // calling opcode's line).
-    RuntimeError::new(RuntimeErrorKind::Raised(msg), 0)
+    RuntimeError::new(RuntimeErrorKind::Raised(Value::Str(msg.into())), 0)
 }
 
 fn read_file(args: &[Value]) -> Result<Value, RuntimeError> {

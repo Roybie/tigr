@@ -152,9 +152,10 @@ impl Vm {
     /// Walk frames from innermost outward looking for an active
     /// try-frame. If found: pop intermediate frames, close their
     /// upvalues, truncate stack to the recorded length, push the
-    /// error message as a String, set the surviving frame's ip to the
-    /// catch PC, and return `true`. If no try-frame anywhere, leave
-    /// state untouched and return `false`.
+    /// caught value (a `raise`d value verbatim, or a built-in error
+    /// reified as a `${kind, message, line}` object), set the
+    /// surviving frame's ip to the catch PC, and return `true`. If no
+    /// try-frame anywhere, leave state untouched and return `false`.
     fn try_catch(&mut self, err: &RuntimeError) -> bool {
         while let Some(frame) = self.frames.last_mut() {
             if let Some(tf) = frame.try_frames.pop() {
@@ -162,15 +163,24 @@ impl Vm {
                 let stack_len = tf.stack_len;
                 self.close_upvalues(stack_len);
                 self.stack.truncate(stack_len);
-                // The handler sees the error message as a String.
-                let msg = match &err.kind {
-                    RuntimeErrorKind::Raised(s) => s.clone(),
-                    // RuntimeError's Display covers every variant —
-                    // reuse it so a caught TypeMismatch shows up as
-                    // `"type mismatch: ..."` etc.
-                    _ => format!("{}", err),
+                // A `raise`d value reaches the handler verbatim; a
+                // built-in error is reified into a structured object
+                // `${kind, message, line}` so it can be `match`ed.
+                let caught = match &err.kind {
+                    RuntimeErrorKind::Raised(v) => v.clone(),
+                    kind => {
+                        let mut m: IndexMap<Rc<str>, Value> =
+                            IndexMap::with_capacity(3);
+                        m.insert(Rc::from("kind"),
+                            Value::Str(kind.kind_tag().into()));
+                        m.insert(Rc::from("message"),
+                            Value::Str(format!("{err}").into()));
+                        m.insert(Rc::from("line"),
+                            Value::Int(err.line as i64));
+                        Value::Object(Rc::new(RefCell::new(m)))
+                    }
                 };
-                self.stack.push(Value::Str(msg.into()));
+                self.stack.push(caught);
                 self.frames.last_mut().unwrap().ip = catch_pc;
                 return true;
             }
@@ -1113,20 +1123,14 @@ impl Vm {
                         .expect("PopTry with no active try-frame");
                 }
                 OpCode::Raise => {
-                    let msg_val = self.pop(line)?;
-                    let msg = match msg_val {
-                        Value::Str(s) => s.to_string(),
-                        // Non-string raises stringify via Display (the
-                        // same path `str()` uses). Lets users raise
-                        // structured values without forcing them to
-                        // pre-format.
-                        other => format!("{}", other),
-                    };
+                    // The raised value is stored verbatim — `catch`
+                    // binds exactly this, no string coercion.
+                    let v = self.pop(line)?;
                     // Commit ip onto the frame so try_catch can rely on
                     // it (though try_catch overwrites with catch_pc).
                     self.frames.last_mut().unwrap().ip = ip;
                     return Err(RuntimeError::new(
-                        RuntimeErrorKind::Raised(msg),
+                        RuntimeErrorKind::Raised(v),
                         line,
                     ));
                 }

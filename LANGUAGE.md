@@ -556,12 +556,25 @@ value), so it can be passed to outer `break`/`return` if needed.
 
 ### 9.6 try / catch / raise (v0.3)
 
-Errors are values. `raise expr` aborts the current evaluation with the
-given message (coerced to string). `try expr` evaluates `expr`,
-producing its value on success or — on a raised or built-in runtime
-error — `null`. `try expr catch (e) { handler }` instead evaluates the
-handler with the error message bound to `e`. Both `try` and `raise` are
-expressions.
+Errors are values. `raise expr` aborts the current evaluation, carrying
+`expr` — **any** value, stored verbatim with no coercion. `try expr`
+evaluates `expr`, producing its value on success or — on a raised or
+built-in runtime error — `null`. `try expr catch (e) { handler }`
+instead evaluates the handler with the error bound to `e`. Both `try`
+and `raise` are expressions.
+
+`catch` binds **exactly what was raised** — `raise 'msg'` binds a
+string, `raise ${...}` binds that object. A **built-in** runtime error
+is instead reified into an object `${kind, message, line}` so a handler
+can `match` on it (v0.7b):
+
+- `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
+  `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
+  `invalid_index_type`, `immutable_target`, `import_failed`,
+  `stack_underflow`.
+- `message` — the human-readable text an uncaught error would show
+  (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
+- `line` — the source line the error occurred on.
 
 ```
 content := try IO.read_file('config.tg') catch (e) {
@@ -571,15 +584,23 @@ content := try IO.read_file('config.tg') catch (e) {
 
 count := try num(input) || 0;             // null on parse failure → 0
 
-raise 'database connection lost'           // never returns
+result := try risky() catch (e) {
+    match e.kind {
+        'div_by_zero' => 0,
+        _             => raise e,          // not ours — re-raise
+    }
+};
+
+raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
 The body of `try` parses at `&&` precedence, so `try f(x) || default`
 binds as `(try f(x)) || default`. Wrap in parens to include `||` inside
-the try body. Built-in runtime errors (type mismatch, division by zero,
-out-of-bounds index, missing import, etc.) are catchable and arrive as
-the same string `RuntimeError::Display` produces — e.g.
-`"type mismatch: ..."` or `"division by zero"`.
+the try body.
+
+Native stdlib modules (`Math`, `IO`, `JSON`, `Path`, ...) raise plain
+**string** messages, so `catch` binds those as strings. An uncaught
+raised value is rendered via `str()` in the error report.
 
 `raise` does not require a string; non-string values stringify via the
 same rules as `str()`. The error value handlers see is always a string.
@@ -1374,5 +1395,18 @@ Additions (non-breaking):
     Backed by the native `_NativeArray` module.
 
 The structured-error work (`catch` binding the raised value; built-in
-errors as `${kind, message, line}` objects) is deferred to a later
-v0.7b release.
+errors as `${kind, message, line}` objects) landed separately — see
+Appendix G.
+
+## Appendix G — Changes in v0.7b
+
+User-visible breaking change:
+
+35. **Errors are structured values** (§9.6). `raise expr` no longer
+    coerces `expr` to a string — `catch (e)` binds the exact value
+    raised, whatever its type. A built-in runtime error, when caught,
+    is reified into a `${kind, message, line}` object instead of a
+    string, so handlers can `match e.kind`. Handlers that did string
+    operations on a caught built-in error must adapt (read
+    `e.message`, or branch on `e.kind`). `raise` of a string, and the
+    string messages raised by native stdlib modules, are unaffected.

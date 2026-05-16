@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.7**: the v0.6 release plus lazy iteration via the new `Iter` module and in-place array growth (`Array.push` / `Array.extend`, and a `+=` that now mutates rather than rebinds). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.7b**: the v0.6 release plus lazy iteration (the new `Iter` module), in-place array growth (`Array.push` / `Array.extend`, and a `+=` that now mutates rather than rebinds), and structured errors (`catch` binds the raised value; built-in errors become `${kind, message, line}` objects). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -371,7 +371,9 @@ find := fn(arr, target) {
 
 ### `try` / `catch` / `raise`
 
-Recoverable errors. `raise expr` aborts the current evaluation with a string message; `try expr` evaluates `expr` and yields its value on success, or `null` on a raised/runtime error. `try expr catch (e) { handler }` runs the handler with the error message bound to `e`. All three are expressions.
+Recoverable errors. `raise expr` aborts the current evaluation, carrying `expr`'s value — **any** value, not just a string. `try expr` evaluates `expr` and yields its value on success, or `null` on a raised/runtime error. `try expr catch (e) { handler }` runs the handler with the raised value bound to `e`. All three are expressions.
+
+`catch` binds **exactly what was raised** — `raise 'msg'` gives `e` a string, `raise ${...}` gives `e` that object. A **built-in** runtime error (division by zero, type mismatch, calling a non-function, a failed import...) is instead reified into an object `${kind, message, line}`, so a handler can `match` on `e.kind`:
 
 ```
 content := try IO.read_file('config.tg') catch (e) {
@@ -381,10 +383,18 @@ content := try IO.read_file('config.tg') catch (e) {
 
 n := try int(input) || 0;       // null on parse failure → 0
 
-raise 'database connection lost'
+result := try risky() catch (e) {
+    match e.kind {
+        'div_by_zero'   => 0,
+        'type_mismatch' => raise e,        // not ours — re-raise it
+        _               => null,
+    }
+};
+
+raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
-Built-in runtime errors (division by zero, type mismatch, out-of-bounds, missing file...) are catchable — the catch handler sees the same message that an uncaught error would print.
+`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `stack_underflow`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings. An uncaught raised value is rendered via `str()` in the error report.
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 
@@ -1023,10 +1033,11 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.7 is in progress.** 388 tests pass. Phase 1 — lazy iteration and fast array growth — is complete; Phase 2 (structured, non-string errors) is planned. On top of v0.6, Phase 1 adds:
+**v0.7b is feature-complete.** 402 tests pass. v0.7 added lazy iteration and fast array growth; v0.7b adds structured errors. On top of v0.6:
 
 1. **`Iter` module** — lazy, pull-based iterators: pipelines that never materialize intermediate arrays, plus infinite sequences and short-circuiting consumers.
 2. **In-place array growth** — `Array.push` / `Array.extend`, and a `+=` operator that now mutates an array in place instead of rebinding it. A deliberate breaking change: aliases of the array see the mutation, consistent with `arr[i] = v`.
+3. **Structured errors** — `catch` binds the exact raised value (no string coercion); a built-in runtime error is reified into a `${kind, message, line}` object so handlers can `match` on `e.kind`. Breaking: handlers that did string operations on a caught built-in error must adapt.
 
 Earlier releases:
 

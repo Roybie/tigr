@@ -1,0 +1,118 @@
+// tests/string_format_test.tg — v0.9 #9: String formatting.
+//
+// Exercises `String.format` (per-value formatter) and `String.printf`
+// (template), which share one spec mini-language. Run directly
+// (`tigr tests/string_format_test.tg`) or via discovery (`tigr test`).
+//
+// The file evaluates to an array of suites so `tigr test` aggregates
+// every suite's tally, not just the last.
+
+Test   := import 'Test';
+String := import 'String';
+
+[
+    Test.suite('String.format — numbers', [
+        Test.case('zero-pad an integer', fn() {
+            Test.assert_eq(String.format(42, '05'), '00042')
+        }),
+        Test.case('zero-pad keeps the sign outside the zeros', fn() {
+            Test.assert_eq(String.format(-7, '05'), '-0007')
+        }),
+        Test.case('explicit + sign on a positive', fn() {
+            Test.assert_eq(String.format(7, '+d'), '+7')
+        }),
+        Test.case('thousands grouping', fn() {
+            Test.assert_eq(String.format(1234567, ',d'), '1,234,567')
+        }),
+        Test.case('float precision rounds', fn() {
+            Test.assert_eq(String.format(3.14159, '.2'), '3.14')
+        }),
+        Test.case('fixed-point with a type code', fn() {
+            Test.assert_eq(String.format(2.5, '.3f'), '2.500')
+        }),
+        Test.case('grouped float keeps the fraction', fn() {
+            Test.assert_eq(String.format(1234567.5, ',.1f'), '1,234,567.5')
+        }),
+        Test.case('exponential notation', fn() {
+            Test.assert_eq(String.format(12345.6, '.2e'), '1.23e4')
+        }),
+        Test.case('hex, binary, octal', fn() {
+            Test.assert_eq(String.format(255, 'x'), 'ff');
+            Test.assert_eq(String.format(10, 'b'), '1010');
+            Test.assert_eq(String.format(8, 'o'), '10')
+        }),
+        Test.case('alternate form adds the base prefix', fn() {
+            Test.assert_eq(String.format(255, '#x'), '0xff');
+            Test.assert_eq(String.format(5, '#b'), '0b101')
+        }),
+        Test.case('uppercase hex', fn() {
+            Test.assert_eq(String.format(255, 'X'), 'FF')
+        }),
+        Test.case('empty spec is plain str()', fn() {
+            Test.assert_eq(String.format(42, ''), '42');
+            Test.assert_eq(String.format(3.0, ''), '3.0')
+        }),
+    ]),
+
+    Test.suite('String.format — alignment & strings', [
+        Test.case('left-align a string', fn() {
+            Test.assert_eq(String.format('hi', '<8'), 'hi      ')
+        }),
+        Test.case('right-align with a width', fn() {
+            Test.assert_eq(String.format(255, '>8x'), '      ff')
+        }),
+        Test.case('centre with the extra space on the right', fn() {
+            Test.assert_eq(String.format('x', '^5'), '  x  ')
+        }),
+        Test.case('a custom fill character', fn() {
+            Test.assert_eq(String.format(3, '*>5d'), '****3')
+        }),
+        Test.case('precision truncates a string', fn() {
+            Test.assert_eq(String.format('hello', '.3'), 'hel')
+        }),
+        Test.case('numbers default to right-align, strings to left', fn() {
+            Test.assert_eq(String.format(7, '4'), '   7');
+            Test.assert_eq(String.format('ab', '4'), 'ab  ')
+        }),
+    ]),
+
+    Test.suite('String.printf', [
+        Test.case('a single placeholder', fn() {
+            Test.assert_eq(String.printf('%(05) items', [42]), '00042 items')
+        }),
+        Test.case('%% is a literal percent', fn() {
+            Test.assert_eq(String.printf('100%%'), '100%')
+        }),
+        Test.case('multiple placeholders consume args in order', fn() {
+            Test.assert_eq(String.printf('%(>4d):%(.1f)', [7, 3.14159]), '   7:3.1')
+        }),
+        Test.case('placeholder specs are the format mini-language', fn() {
+            Test.assert_eq(
+                String.printf('dec %(d) = hex %(#x)', [255, 255]),
+                'dec 255 = hex 0xff')
+        }),
+        Test.case('an aligned row', fn() {
+            Test.assert_eq(
+                String.printf('%(<8)%(>6.2f)', ['apple', 1.5]),
+                'apple     1.50')
+        }),
+    ]),
+
+    Test.suite('String.format — errors', [
+        Test.case('an invalid spec raises', fn() {
+            Test.assert_raises(fn() { String.format(1, 'zz') })
+        }),
+        Test.case('a number type on a string raises', fn() {
+            Test.assert_raises(fn() { String.format('hi', 'f') })
+        }),
+        Test.case('an integer type on a non-integral float raises', fn() {
+            Test.assert_raises(fn() { String.format(3.5, 'd') })
+        }),
+        Test.case('printf with too few arguments raises', fn() {
+            Test.assert_raises(fn() { String.printf('%(d) %(d)', [1]) })
+        }),
+        Test.case('printf with too many arguments raises', fn() {
+            Test.assert_raises(fn() { String.printf('%(d)', [1, 2]) })
+        }),
+    ]),
+]

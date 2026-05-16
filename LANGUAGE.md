@@ -1161,7 +1161,41 @@ collapsing duplicates. Like `Map`, a `Set` is not JSON-serializable.
 
 `split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
 `starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`,
-`repeat`, `chars`, `pad_start`, `pad_end`.
+`repeat`, `chars`, `pad_start`, `pad_end`, `format`, `printf`.
+
+`format(value, spec)` (v0.9) renders one value through a spec
+mini-language and `printf(template, args)` (v0.9) fills a template;
+both share the same spec:
+
+```
+spec := [[fill]align][sign]['#'][width][','][.precision][type]
+```
+
+| Field       | Meaning                                                          |
+|-------------|------------------------------------------------------------------|
+| `fill`      | Any char — only a fill char when immediately followed by `align` |
+| `align`     | `<` left, `>` right, `^` centre                                  |
+| `sign`      | `+` shows a sign on positive numbers (`-` is always shown)        |
+| `#`         | Alternate form — adds the `0x`/`0o`/`0b` prefix for `x`/`X`/`o`/`b` |
+| `width`     | Minimum field width; a *bare* leading `0` means zero-pad         |
+| `,`         | Thousands grouping of the integer part                           |
+| `.precision`| Float decimal places; truncates strings                         |
+| `type`      | `s d f e E x X b o` — absent renders by the value's natural type |
+
+Numbers default to right-align, everything else to left-align. `f`/`e`
+default to 6 decimals. A `f`/`e` type on a non-number, an integer type
+on a non-integral float, an `s` on a non-string, or an unparsable spec
+all raise. `printf` placeholders are `%(SPEC)` — each consumes the next
+element of `args` and `%%` is a literal percent; too few or too many
+arguments both raise. (`%(...)`, not `{}`, because tigr interpolates
+`{}` in every string literal.) Example:
+
+```tigr
+String.format(1234567, ',d')                   // "1,234,567"
+String.format(3.14159, '.2f')                  // "3.14"
+String.format('hi', '^8')                      // "   hi   "
+String.printf('%(<8)%(>6.2f)', ['tea', 1.5])   // "tea       1.50"
+```
 
 #### `Math`
 
@@ -1724,3 +1758,13 @@ Additive changes:
     a single per-thread PRNG stream, so `Random.seed(n)` makes `rand()`
     reproducible too — previously `rand()` was unseedable. Behaviour of
     `rand()` is otherwise unchanged.
+
+45. **String formatting** (§13.3). Two new `String` functions sharing
+    one spec mini-language. `String.format(value, spec)` formats a
+    single value — width, alignment, fill, sign, precision, thousands
+    grouping, and the type codes `s d f e E x X b o`. `String.printf(
+    template, args)` substitutes `%(SPEC)` placeholders, each SPEC being
+    the `format` mini-language and `%%` a literal percent. The template
+    marker is `%(...)` rather than `{}` because `{}` is already string
+    interpolation. Previously interpolation only did bare `str(expr)` —
+    no width, precision, or alignment.

@@ -147,7 +147,7 @@ fn native_str(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// Render a non-negative magnitude in `radix` (2..=36), lowercase
 /// digits. Zero renders as `"0"`.
-fn int_to_radix(mut n: u64, radix: u32) -> String {
+pub(crate) fn int_to_radix(mut n: u64, radix: u32) -> String {
     const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     if n == 0 {
         return "0".to_string();

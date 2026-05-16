@@ -5079,3 +5079,141 @@ fn v09_array_group_by_returns_map_with_int_keys() {
                [m[0], m[1], #m]";
     assert_eq!(run(src), run("[[2, 4], [1, 3], 2]"));
 }
+
+// ---- v0.9 #9: String formatting ----
+
+/// `import 'String'; <expr>` — saves repeating the import in each test.
+fn fmt(expr: &str) -> Value {
+    run(&format!("S := import 'String'; {expr}"))
+}
+
+#[test]
+fn v09_string_format_zero_pad_int() {
+    assert_eq!(fmt("S.format(42, '05')"), run("'00042'"));
+    assert_eq!(fmt("S.format(-7, '05')"), run("'-0007'"));
+}
+
+#[test]
+fn v09_string_format_float_precision() {
+    assert_eq!(fmt("S.format(3.14159, '.2')"), run("'3.14'"));
+    assert_eq!(fmt("S.format(2.5, '.3f')"), run("'2.500'"));
+}
+
+#[test]
+fn v09_string_format_left_align_string() {
+    assert_eq!(fmt("S.format('hi', '<8')"), run("'hi      '"));
+}
+
+#[test]
+fn v09_string_format_hex_right_align() {
+    assert_eq!(fmt("S.format(255, '>8x')"), run("'      ff'"));
+}
+
+#[test]
+fn v09_string_format_alternate_hex() {
+    assert_eq!(fmt("S.format(255, '#x')"), run("'0xff'"));
+    assert_eq!(fmt("S.format(5, '#b')"), run("'0b101'"));
+}
+
+#[test]
+fn v09_string_format_exponential() {
+    assert_eq!(fmt("S.format(12345.6, '.2e')"), run("'1.23e4'"));
+}
+
+#[test]
+fn v09_string_format_thousands_grouping() {
+    assert_eq!(fmt("S.format(1234567, ',d')"), run("'1,234,567'"));
+}
+
+#[test]
+fn v09_string_format_grouped_float() {
+    assert_eq!(fmt("S.format(1234567.5, ',.1f')"), run("'1,234,567.5'"));
+}
+
+#[test]
+fn v09_string_format_sign_plus() {
+    assert_eq!(fmt("S.format(7, '+d')"), run("'+7'"));
+    assert_eq!(fmt("S.format(-7, '+d')"), run("'-7'"));
+}
+
+#[test]
+fn v09_string_format_center() {
+    assert_eq!(fmt("S.format('x', '^5')"), run("'  x  '"));
+}
+
+#[test]
+fn v09_string_format_fill_char() {
+    assert_eq!(fmt("S.format(3, '*>5d')"), run("'****3'"));
+}
+
+#[test]
+fn v09_string_format_uppercase_variants() {
+    assert_eq!(fmt("S.format(255, 'X')"), run("'FF'"));
+    let e = fmt("S.format(255000.0, '.1E')");
+    assert!(matches!(&e, Value::Str(s) if s.contains('E')), "got: {e:?}");
+}
+
+#[test]
+fn v09_string_format_binary_octal() {
+    assert_eq!(fmt("S.format(10, 'b')"), run("'1010'"));
+    assert_eq!(fmt("S.format(8, 'o')"), run("'10'"));
+}
+
+#[test]
+fn v09_string_format_empty_spec() {
+    assert_eq!(fmt("S.format(42, '')"), run("'42'"));
+    assert_eq!(fmt("S.format(3.0, '')"), run("'3.0'"));
+}
+
+#[test]
+fn v09_string_format_string_truncate() {
+    assert_eq!(fmt("S.format('hello', '.3')"), run("'hel'"));
+}
+
+#[test]
+fn v09_string_format_bad_spec_raises() {
+    let err = run_err("S := import 'String'; S.format(1, 'zz')");
+    assert!(err.contains("invalid format spec"), "got: {err}");
+}
+
+#[test]
+fn v09_string_format_type_mismatch_raises() {
+    let err = run_err("S := import 'String'; S.format('hi', 'f')");
+    assert!(err.contains("expects a number"), "got: {err}");
+}
+
+#[test]
+fn v09_string_format_non_integral_float_raises() {
+    let err = run_err("S := import 'String'; S.format(3.5, 'd')");
+    assert!(err.contains("non-integral"), "got: {err}");
+}
+
+#[test]
+fn v09_string_printf_basic() {
+    assert_eq!(fmt("S.printf('%(05) items', [42])"), run("'00042 items'"));
+}
+
+#[test]
+fn v09_string_printf_literal_percent() {
+    assert_eq!(fmt("S.printf('100%%')"), run("'100%'"));
+}
+
+#[test]
+fn v09_string_printf_multi_args() {
+    assert_eq!(
+        fmt("S.printf('%(>4d):%(.1f)', [7, 3.14159])"),
+        run("'   7:3.1'"),
+    );
+}
+
+#[test]
+fn v09_string_printf_too_few_args_raises() {
+    let err = run_err("S := import 'String'; S.printf('%(d) %(d)', [1])");
+    assert!(err.contains("not enough arguments"), "got: {err}");
+}
+
+#[test]
+fn v09_string_printf_too_many_args_raises() {
+    let err = run_err("S := import 'String'; S.printf('%(d)', [1, 2])");
+    assert!(err.contains("too many arguments"), "got: {err}");
+}

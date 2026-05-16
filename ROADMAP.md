@@ -151,11 +151,18 @@ Object, so non-string group keys work. Two fixes landed alongside:
   Python-slice style — `head(arr, -1)` is all but the last element —
   and so genuinely distinct from the negative-clamping `take`/`drop`.
 
-### 9. String formatting  *(library)*
+### 9. String formatting  ✅ done  *(library)*
 
 Interpolation only does `str(expr)` — no width, precision, or
 alignment. Add a `String.format` (or printf-style) helper covering
 width / precision / alignment / fill.
+
+Shipped as two `String` functions sharing one spec mini-language —
+`[[fill]align][sign][#][width][,][.precision][type]`. `String.format(
+value, spec)` formats a single value (drops into interpolation);
+`String.printf(template, args)` substitutes `%(SPEC)` placeholders
+(`%%` is a literal percent). Type codes cover `s d f e E x X b o`,
+plus sign, alternate-form base prefixes, and thousands grouping.
 
 ---
 

@@ -19,6 +19,7 @@ ${
     trim_end:    _n.trim_end,
     repeat:      _n.repeat,
     chars:       _n.chars,
+    format:      _n.format,
 
     // Join with a separator, stringifying via `str`.
     join: fn(parts, sep) {
@@ -41,5 +42,61 @@ ${
     pad_end: fn(s, len, ch) {
         while #s < len { s = s + ch };
         s
+    },
+
+    // Render `template`, substituting each `%(SPEC)` placeholder with
+    // `format(next arg, SPEC)` — SPEC is the `format` mini-language.
+    // `%%` is a literal percent. Strict on arity: too few or too many
+    // `args` both raise, as does a malformed placeholder.
+    printf: fn(template, args = []) {
+        cs := _n.chars(template);
+        n := #cs;
+        out := '';
+        ai := 0;
+        i := 0;
+        while i < n {
+            c := cs[i];
+            if c == '%' {
+                if i + 1 >= n {
+                    raise 'String.printf: stray % at end of template'
+                };
+                nx := cs[i + 1];
+                if nx == '%' {
+                    out = out + '%';
+                    i = i + 2
+                } else {
+                    if nx != '(' {
+                        raise 'String.printf: expected ( or % after %'
+                    };
+                    j := i + 2;
+                    spec := '';
+                    closed := false;
+                    while j < n {
+                        if cs[j] == ')' {
+                            closed = true;
+                            break
+                        };
+                        spec = spec + cs[j];
+                        j = j + 1
+                    };
+                    if !closed {
+                        raise 'String.printf: unterminated %( placeholder'
+                    };
+                    if ai >= #args {
+                        raise 'String.printf: not enough arguments for template'
+                    };
+                    out = out + _n.format(args[ai], spec);
+                    ai = ai + 1;
+                    i = j + 1
+                }
+            } else {
+                out = out + c;
+                i = i + 1
+            }
+        };
+        if ai < #args {
+            raise 'String.printf: too many arguments for template'
+        };
+        out
     },
 }

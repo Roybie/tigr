@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.9** (in progress): the v0.8 core-semantics release plus a growing standard library — the `Test` framework and `tigr test` runner, the `Map` / `Set` collection types, and the seedable `Random` module. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
+This README documents **v0.9**: the v0.8 core-semantics release plus a broadened standard library — the `Test` framework and `tigr test` runner, the `Map` / `Set` collection types, the seedable `Random` module, more `Array` combinators, and `String` formatting. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
 
 ```
 double := fn(x) { x * 2 };
@@ -771,10 +771,84 @@ A tigr-source module wrapping native primitives. Every entry raises on a non-`St
 | `chars(s)` | `Array<String>` | One-character strings, one per Unicode character |
 | `pad_start(s, len, ch)` | `String` | Left-pad `s` with `ch` until it reaches length `len` |
 | `pad_end(s, len, ch)` | `String` | Right-pad `s` with `ch` until it reaches length `len` |
+| `format(value, spec)` *(v0.9)* | `String` | Render `value` through the spec mini-language (see below) |
+| `printf(template, args)` *(v0.9)* | `String` | Fill `%(SPEC)` placeholders in `template` from `args` |
+
+#### The format spec mini-language
+
+`format` and `printf` (v0.9) share one spec mini-language. Every part is
+optional; they must appear in this order:
+
+```
+spec := [[fill]align][sign]['#'][width][','][.precision][type]
+```
+
+**`fill`** — the character used to pad a value out to `width`. Defaults
+to a space. A character is only read as `fill` when an `align` character
+immediately follows it, so `*>8` fills with `*` but `>8` fills with
+spaces.
+
+**`align`** — which side the value sits on inside a `width` field:
+
+- `<` — left-align (the value sits at the left, padding on the right)
+- `>` — right-align (padding on the left)
+- `^` — centre (padding split both sides; an odd remainder goes right)
+
+Without `align`, numbers default to right-align and everything else to
+left-align.
+
+**`sign`** — only `+` is accepted. It forces a leading `+` on positive
+numbers; negatives always show `-`, with or without this flag.
+
+**`#`** — alternate form. Adds the base prefix `0x`, `0o`, or `0b` in
+front of an `x`/`X`, `o`, or `b` value. Ignored for other types.
+
+**`width`** — the minimum field width, in characters. A shorter value is
+padded to this width; a longer value is never truncated by `width`. A
+*bare leading `0`* (with no explicit `fill`+`align`) means zero-pad — the
+zeros go between the sign/base-prefix and the digits, e.g. `format(-7,
+'05')` is `'-0007'`.
+
+**`,`** — group the integer part into thousands with commas, e.g.
+`1234567` becomes `1,234,567`. Ignored for non-decimal types.
+
+**`.precision`** — a `.` followed by digits. For floats it sets the
+number of decimal places (`f` and `e` default to 6); for strings it
+truncates to that many characters; for integers it is ignored.
+
+**`type`** — how to interpret and render the value. If omitted, the
+value is rendered in its natural form (what `str()` would give) while
+still honouring the rest of the spec.
+
+- `s` — string. Requires a `String` value; raises otherwise.
+- `d` — decimal integer.
+- `f` — fixed-point float, e.g. `3.14`.
+- `e` — float in scientific notation with a lowercase `e`, e.g. `1.2e3`.
+- `E` — scientific notation with an uppercase `E`.
+- `x` — hexadecimal, lowercase digits (`ff`).
+- `X` — hexadecimal, uppercase digits (`FF`).
+- `b` — binary (`1010`).
+- `o` — octal (`17`).
+
+The numeric types (`d f e E x X b o`) require a number. `d`, `x`, `X`,
+`b`, and `o` need an integer — an integral float like `3.0` is accepted,
+but a fractional one like `3.5` raises. A mismatched type code or an
+unparsable spec always raises.
+
+`printf` placeholders are `%(SPEC)` — the marker is `%(...)`, not `{}`,
+because `{}` is already string interpolation. Each placeholder consumes
+the next element of `args`; `%%` is a literal percent; passing too few
+or too many `args` raises.
 
 ```
 S := import 'String';
-S.split('a,b,c', ',') |> S.join('-')   // 'a-b-c'
+S.split('a,b,c', ',') |> S.join('-')      // 'a-b-c'
+S.format(42, '05')                        // '00042'   (zero-pad)
+S.format(3.14159, '.2f')                  // '3.14'    (fixed-point)
+S.format('hi', '^8')                      // '   hi   '(centre)
+S.format(255, '#x')                       // '0xff'    (hex, prefixed)
+S.format(1234567, ',d')                   // '1,234,567'
+S.printf('%(<6)%(>6.2f)', ['tea', 1.5])   // 'tea     1.50'
 ```
 
 ### `Math`
@@ -1173,11 +1247,13 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.9 is in progress.** 501 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. So far, on top of v0.8:
+**v0.9 is feature-complete.** 531 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. On top of v0.8:
 
 1. **`Test` module + `tigr test`** — a test framework written in tigr itself (`assert`/`assert_eq`/`assert_raises`, `case` / `suite`), and a CLI subcommand that discovers and runs `*_test.tg` files (and `.tg` files under a `tests/` directory), reporting pass/fail counts.
 2. **`Map` and `Set` types** — `Map` is an arbitrary-keyed dictionary (any null/bool/int/string key, not just strings like `Object`); `Set` is a collection of unique values with `union`/`intersection`/`difference`. Both are native value types with `m[k]`/`s[x]` indexing, `#` length, and `for` iteration. `Object.has` is now O(1) and `Object.keys`/`values`/`entries` are O(n) (were O(n²)).
 3. **`Random` module** — seedable pseudo-random numbers (`seed`, `float`, `int`, `bool`, `choice`, `range`, `shuffle`). `Random` and the `rand()` built-in share one PRNG stream, so `Random.seed(n)` makes `rand()` reproducible too.
+4. **More `Array` combinators** — `group_by`, `chunk`, `windows`, `partition`, `flat_map`, `count_of`, plus in-place removal (`pop`/`shift`/`unshift`/`insert`/`remove`/`clear`) and negative-aware `head`/`tail`.
+5. **String formatting** — `String.format(value, spec)` and `String.printf(template, args)`, sharing a Rust/Python-inspired spec mini-language (width, alignment, fill, sign, precision, thousands grouping, and the type codes `s d f e E x X b o`).
 
 Earlier releases:
 

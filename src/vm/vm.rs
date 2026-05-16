@@ -1469,7 +1469,7 @@ fn underflow(line: u32) -> RuntimeError {
 fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
-        (Int(x), Int(y)) => Ok(Int(x + y)),
+        (Int(x), Int(y)) => Ok(Int(x.checked_add(y).ok_or_else(|| overflow_err(line))?)),
         (Int(x), Float(y)) => Ok(Float(x as f64 + y)),
         (Float(x), Int(y)) => Ok(Float(x + y as f64)),
         (Float(x), Float(y)) => Ok(Float(x + y)),
@@ -1496,7 +1496,7 @@ fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
 fn arith_sub(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
-        (Int(x), Int(y)) => Ok(Int(x - y)),
+        (Int(x), Int(y)) => Ok(Int(x.checked_sub(y).ok_or_else(|| overflow_err(line))?)),
         (Int(x), Float(y)) => Ok(Float(x as f64 - y)),
         (Float(x), Int(y)) => Ok(Float(x - y as f64)),
         (Float(x), Float(y)) => Ok(Float(x - y)),
@@ -1507,7 +1507,7 @@ fn arith_sub(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
 fn arith_mul(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
-        (Int(x), Int(y)) => Ok(Int(x * y)),
+        (Int(x), Int(y)) => Ok(Int(x.checked_mul(y).ok_or_else(|| overflow_err(line))?)),
         (Int(x), Float(y)) => Ok(Float(x as f64 * y)),
         (Float(x), Int(y)) => Ok(Float(x * y as f64)),
         (Float(x), Float(y)) => Ok(Float(x * y)),
@@ -1556,7 +1556,7 @@ fn arith_pow(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
 fn arith_neg(a: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match a {
-        Int(x) => Ok(Int(-x)),
+        Int(x) => Ok(Int(x.checked_neg().ok_or_else(|| overflow_err(line))?)),
         Float(x) => Ok(Float(-x)),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!("cannot negate {}", other.type_name())),
@@ -1827,4 +1827,8 @@ fn type_err(op: &str, a: &Value, b: &Value, line: u32) -> RuntimeError {
         )),
         line,
     )
+}
+
+fn overflow_err(line: u32) -> RuntimeError {
+    RuntimeError::new(RuntimeErrorKind::Overflow, line)
 }

@@ -274,6 +274,19 @@ comparison operators).
 -16 >> 2           // -4
 ```
 
+### 6.2b Integer overflow (v0.8)
+
+`Int` is a signed 64-bit value (range `-2^63 .. 2^63-1`). Integer
+arithmetic — `+`, `-`, `*`, and unary `-` — is *checked*: a result
+that falls outside the `Int` range raises a catchable runtime error
+with `kind: 'overflow'` (§9.6) rather than wrapping silently. `^^`
+(power) always yields `Float` and so has no integer-overflow path.
+`Float` arithmetic is unchecked IEEE-754 and may produce `inf`.
+
+```
+try (9223372036854775807 + 1) catch (e) { e.kind }   // 'overflow'
+```
+
 ### 6.3 Equality
 
 - `==` and `!=` work between any two values. Different types are unequal,
@@ -595,7 +608,7 @@ can `match` on it (v0.7b):
 - `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
   `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
   `invalid_index_type`, `immutable_target`, `import_failed`,
-  `stack_underflow`.
+  `overflow`, `stack_underflow`.
 - `message` — the human-readable text an uncaught error would show
   (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
 - `line` — the source line the error occurred on.
@@ -1451,3 +1464,14 @@ User-visible breaking change:
     entries. Objects without a callable `next` are unaffected.
     Object-literal spread (`${...x}`) is unchanged and still requires
     an Object.
+
+37. **Integer overflow raises a catchable error** (§6.2b). `Int`
+    arithmetic — `+`, `-`, `*`, and unary `-` — is now *checked*: a
+    result outside the signed 64-bit range raises a runtime error with
+    `kind: 'overflow'` instead of wrapping (debug builds previously
+    panicked; release builds wrapped). Caught, it reifies to
+    `${kind: 'overflow', message: 'integer overflow', line}` like every
+    other built-in error. `^^` is unaffected — it always yields
+    `Float`. **Breaking** only for code that relied on silent
+    two's-complement wraparound, expected to be effectively no existing
+    Tigr programs.

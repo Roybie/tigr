@@ -174,6 +174,8 @@ pub enum RuntimeErrorKind {
     InvalidIndexType(String),
     ImmutableTarget(String),
     ImportFailed(String, String),
+    /// Integer arithmetic (`+ - *`, unary `-`) overflowed `i64`.
+    Overflow,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -197,6 +199,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::InvalidIndexType(_) => "invalid_index_type",
             RuntimeErrorKind::ImmutableTarget(_) => "immutable_target",
             RuntimeErrorKind::ImportFailed(..) => "import_failed",
+            RuntimeErrorKind::Overflow => "overflow",
             RuntimeErrorKind::Raised(_) => "raised",
         }
     }
@@ -218,6 +221,7 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::ImportFailed(path, msg) => write!(
                 f, "import of {path:?} failed: {msg}"
             ),
+            RuntimeErrorKind::Overflow => f.write_str("integer overflow"),
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }

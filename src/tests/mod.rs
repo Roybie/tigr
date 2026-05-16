@@ -4334,3 +4334,71 @@ fn v08_err_next_raise_uncaught_propagates() {
     let msg = run_err("for (v, ${next: fn(){ raise 'kaboom' }}) { v }");
     assert!(msg.contains("kaboom"), "got {msg}");
 }
+
+// ---- v0.8 #2: integer overflow raises a catchable error ----
+
+#[test]
+fn v08_overflow_add_kind() {
+    let src = "try (9223372036854775807 + 1) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("overflow".into()));
+}
+
+#[test]
+fn v08_overflow_sub_kind() {
+    let src = "try (0 - 9223372036854775807 - 1 - 1) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("overflow".into()));
+}
+
+#[test]
+fn v08_overflow_mul_kind() {
+    let src = "try (9223372036854775807 * 2) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("overflow".into()));
+}
+
+#[test]
+fn v08_overflow_neg_kind() {
+    // Unary `-` of i64::MIN overflows. i64::MIN is built without an
+    // out-of-range literal: `0 - i64::MAX - 1`.
+    let src = "min := 0 - 9223372036854775807 - 1; try (-min) catch (e) { e.kind }";
+    assert_eq!(run(src), Value::Str("overflow".into()));
+}
+
+#[test]
+fn v08_overflow_message() {
+    let src = "try (9223372036854775807 + 1) catch (e) { e.message }";
+    assert_eq!(run(src), Value::Str("integer overflow".into()));
+}
+
+#[test]
+fn v08_overflow_line() {
+    let src = "try (9223372036854775807 + 1) catch (e) { e.line }";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v08_overflow_match_on_kind() {
+    let src = "
+        try (9223372036854775807 + 1) catch (e) {
+            match e.kind {
+                'overflow' => 'too big',
+                'div_by_zero' => 'math error',
+                _ => 'other',
+            }
+        }
+    ";
+    assert_eq!(run(src), Value::Str("too big".into()));
+}
+
+#[test]
+fn v08_overflow_uncaught_renders() {
+    // An uncaught overflow renders cleanly — it must not panic the host.
+    let msg = render_err("9223372036854775807 + 1");
+    assert!(msg.contains("integer overflow"), "got {msg}");
+}
+
+#[test]
+fn v08_no_overflow_normal_arith_unchanged() {
+    // Ordinary arithmetic still produces the right value.
+    let src = "a := 1000000 * 1000000; b := a + 1 - 2; -b";
+    assert_eq!(run(src), Value::Int(-999999999999));
+}

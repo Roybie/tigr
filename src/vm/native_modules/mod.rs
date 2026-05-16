@@ -21,12 +21,12 @@ pub mod set;
 pub mod string;
 pub mod time;
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::vm::error::RuntimeError;
+use crate::vm::gc;
 use crate::vm::value::{Arity, NativeFn, Value};
 
 /// Look up a bare-name module. Returns `None` if no native module of
@@ -71,5 +71,5 @@ pub(crate) fn object(entries: &[(&'static str, Value)]) -> Value {
     for (k, v) in entries {
         m.insert(Rc::from(*k), v.clone());
     }
-    Value::Object(Rc::new(RefCell::new(m)))
+    Value::Object(gc::alloc_object(m))
 }

@@ -4,18 +4,16 @@
 //! pure-tigr `+` / spread forms cannot express without copying the
 //! whole array: `arr + x` and `[...arr, x]` both clone `arr`, so
 //! building an array by repeated append is O(n^2). `push`/`extend`
-//! mutate the array behind its `Rc<RefCell<..>>` directly, the same
-//! way the `for[]` collecting opcode does — O(1) amortized / O(m).
+//! mutate the array the handle points at directly, the same way the
+//! `for[]` collecting opcode does — O(1) amortized / O(m).
 //!
 //! Element *removal* lives here for the same reason: pure tigr can
 //! grow an array but has no way to shrink one. `pop`/`shift`/`remove`/
 //! `clear` (plus the front/middle inserts `unshift`/`insert`) all
 //! mutate the backing `Vec` in place.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc::{self, ArrayKind, GcRef};
 use crate::vm::value::{Arity, Value};
 
 use super::{native, object};
@@ -40,9 +38,9 @@ fn err(msg: String) -> RuntimeError {
 fn expect_array(
     v: &Value,
     label: &str,
-) -> Result<Rc<RefCell<Vec<Value>>>, RuntimeError> {
+) -> Result<GcRef<ArrayKind>, RuntimeError> {
     match v {
-        Value::Array(a) => Ok(a.clone()),
+        Value::Array(a) => Ok(*a),
         other => Err(err(format!(
             "Array.{label}: expected Array, got {}",
             other.type_name()
@@ -153,7 +151,7 @@ fn a_remove(args: &[Value]) -> Result<Value, RuntimeError> {
         let start = resolve_index(start, len).clamp(0, len as i64) as usize;
         let count = count.clamp(0, (len - start) as i64) as usize;
         let removed: Vec<Value> = arr.drain(start..start + count).collect();
-        Ok(Value::Array(Rc::new(RefCell::new(removed))))
+        Ok(Value::Array(gc::alloc_array(removed)))
     }
 }
 

@@ -12,6 +12,16 @@ fn run(src: &str) -> Value {
     run_source(src).unwrap_or_else(|e| panic!("error: {e}"))
 }
 
+/// Assert two programs produce equal results. Each result is rendered
+/// to a string *before* the next program runs: the GC heap is shared
+/// across `Vm`s on a thread, so a `Value` from one run does not
+/// survive a later run's collection (`gc-torture` makes this bite).
+fn eval_eq(a: &str, b: &str) {
+    let ra = format!("{:?}", run(a));
+    let rb = format!("{:?}", run(b));
+    assert_eq!(ra, rb);
+}
+
 fn run_err(src: &str) -> String {
     match run_source(src) {
         Ok(v) => panic!("expected error, got value {v:?}"),
@@ -2483,9 +2493,9 @@ fn v04_json_roundtrip_via_stringify() {
 fn v04_assign_pattern_array() {
     // After `:=`, `[b, a] = [a, b]` swaps via the array-pattern.
     let v = run("[a, b] := [1, 2]; [b, a] = [a, b]; [a, b]");
-    assert_eq!(v, Value::Array(std::rc::Rc::new(std::cell::RefCell::new(
+    assert_eq!(v, Value::Array(crate::vm::gc::alloc_array(
         vec![Value::Int(2), Value::Int(1)]
-    ))));
+    )));
 }
 
 #[test]
@@ -2498,9 +2508,9 @@ fn v04_assign_pattern_object() {
 fn v04_assign_pattern_returns_rhs() {
     // `[a, b] = rhs` evaluates to rhs (just like `x = 5` does).
     let v = run("a := 0; b := 0; r := ([a, b] = [3, 4]); r");
-    assert_eq!(v, Value::Array(std::rc::Rc::new(std::cell::RefCell::new(
+    assert_eq!(v, Value::Array(crate::vm::gc::alloc_array(
         vec![Value::Int(3), Value::Int(4)]
-    ))));
+    )));
 }
 
 #[test]
@@ -4852,28 +4862,28 @@ fn v09_map_new_from_pairs() {
 fn v09_map_has_distinguishes_null_value() {
     let src = "Map := import 'Map'; m := Map.new(); m['k'] = null;\
                [Map.has(m, 'k'), Map.has(m, 'missing')]";
-    assert_eq!(run(src), run("[true, false]"));
+    eval_eq(src, "[true, false]");
 }
 
 #[test]
 fn v09_map_delete() {
     let src = "Map := import 'Map'; m := Map.new(); m['k'] = 1;\
                was := Map.delete(m, 'k'); [was, Map.has(m, 'k')]";
-    assert_eq!(run(src), run("[true, false]"));
+    eval_eq(src, "[true, false]");
 }
 
 #[test]
 fn v09_map_keys_values_entries() {
     let src = "Map := import 'Map'; m := Map.new(); m['a'] = 1; m['b'] = 2;\
                [Map.keys(m), Map.values(m), Map.entries(m)]";
-    assert_eq!(run(src), run("[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]"));
+    eval_eq(src, "[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]");
 }
 
 #[test]
 fn v09_set_add_has_membership() {
     let src = "Set := import 'Set'; s := Set.new(); Set.add(s, 5);\
                [s[5], s[6]]";
-    assert_eq!(run(src), run("[true, false]"));
+    eval_eq(src, "[true, false]");
 }
 
 #[test]
@@ -4893,7 +4903,7 @@ fn v09_set_union_intersection_difference() {
                [Set.items(Set.union(a, b)),\
                 Set.items(Set.intersection(a, b)),\
                 Set.items(Set.difference(a, b))]";
-    assert_eq!(run(src), run("[[1, 2, 3, 4], [2, 3], [1]]"));
+    eval_eq(src, "[[1, 2, 3, 4], [2, 3], [1]]");
 }
 
 #[test]
@@ -4907,7 +4917,7 @@ fn v09_set_iter() {
 fn v09_set_delete() {
     let src = "Set := import 'Set'; s := Set.new([1, 2]);\
                was := Set.delete(s, 2); [was, s[2], #s]";
-    assert_eq!(run(src), run("[true, false, 1]"));
+    eval_eq(src, "[true, false, 1]");
 }
 
 #[test]
@@ -4946,14 +4956,14 @@ fn v09_json_stringify_map_errors() {
 fn v09_object_has_is_o1_and_null_aware() {
     let src = "Object := import 'Object'; o := ${a: 1, b: null};\
                [Object.has(o, 'a'), Object.has(o, 'b'), Object.has(o, 'z')]";
-    assert_eq!(run(src), run("[true, true, false]"));
+    eval_eq(src, "[true, true, false]");
 }
 
 #[test]
 fn v09_object_keys_values_entries_unchanged() {
     let src = "Object := import 'Object'; o := ${a: 1, b: 2};\
                [Object.keys(o), Object.values(o), Object.entries(o)]";
-    assert_eq!(run(src), run("[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]"));
+    eval_eq(src, "[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]");
 }
 
 // ---- v0.9 #7: Random module ----
@@ -5016,7 +5026,7 @@ fn v09_random_shuffle_is_nondestructive_permutation() {
                R.seed(9); orig := [1, 2, 3, 4, 5, 6];\
                sh := R.shuffle(orig);\
                [A.sort(sh) == orig, orig == [1, 2, 3, 4, 5, 6]]";
-    assert_eq!(run(src), run("[true, true]"));
+    eval_eq(src, "[true, true]");
 }
 
 #[test]
@@ -5024,7 +5034,7 @@ fn v09_array_pop_shift_mutate_in_place() {
     let src = "A := import 'Array'; a := [1, 2, 3];\
                last := A.pop(a); first := A.shift(a);\
                [last, first, a]";
-    assert_eq!(run(src), run("[3, 1, [2]]"));
+    eval_eq(src, "[3, 1, [2]]");
 }
 
 #[test]
@@ -5038,21 +5048,21 @@ fn v09_array_remove_index_and_range() {
                one := A.remove(a, 1);\
                many := A.remove(a, 0, 2);\
                [one, many, a]";
-    assert_eq!(run(src), run("[20, [10, 30], [40, 50]]"));
+    eval_eq(src, "[20, [10, 30], [40, 50]]");
 }
 
 #[test]
 fn v09_array_insert_unshift_negative_index() {
     let src = "A := import 'Array'; a := [1, 2, 4];\
                A.insert(a, -1, 3); A.unshift(a, 0); a";
-    assert_eq!(run(src), run("[0, 1, 2, 3, 4]"));
+    eval_eq(src, "[0, 1, 2, 3, 4]");
 }
 
 #[test]
 fn v09_array_head_tail_negative_aware() {
     let src = "A := import 'Array'; a := [1, 2, 3, 4, 5];\
                [A.head(a, -2), A.tail(a, -2), A.take(a, -2)]";
-    assert_eq!(run(src), run("[[1, 2, 3], [3, 4, 5], []]"));
+    eval_eq(src, "[[1, 2, 3], [3, 4, 5], []]");
 }
 
 #[test]
@@ -5063,13 +5073,13 @@ fn v09_array_combinators() {
                 A.partition(a, fn(x) { x % 2 == 0 }),\
                 A.flat_map([1, 2], fn(x) { [x, x] }),\
                 A.count_of(a, fn(x) { x > 2 })]";
-    assert_eq!(
-        run(src),
-        run("[[[1, 2], [3, 4], [5]],\
-              [[1, 2, 3], [2, 3, 4], [3, 4, 5]],\
-              [[2, 4], [1, 3, 5]],\
-              [1, 1, 2, 2],\
-              3]"),
+    eval_eq(
+        src,
+        "[[[1, 2], [3, 4], [5]],\
+          [[1, 2, 3], [2, 3, 4], [3, 4, 5]],\
+          [[2, 4], [1, 3, 5]],\
+          [1, 1, 2, 2],\
+          3]",
     );
 }
 
@@ -5077,7 +5087,7 @@ fn v09_array_combinators() {
 fn v09_array_group_by_returns_map_with_int_keys() {
     let src = "A := import 'Array'; m := A.group_by([1, 2, 3, 4], fn(x) { x % 2 });\
                [m[0], m[1], #m]";
-    assert_eq!(run(src), run("[[2, 4], [1, 3], 2]"));
+    eval_eq(src, "[[2, 4], [1, 3], 2]");
 }
 
 // ---- v0.9 #9: String formatting ----

@@ -6,11 +6,10 @@
 //! `is_dir`, `is_file`) never raise. Output entries (`eprint`) match
 //! `print` semantics: space-separated args + newline.
 
-use std::cell::RefCell;
 use std::io::Write;
-use std::rc::Rc;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::value::{Arity, Value};
 
 use super::{native, object};
@@ -90,7 +89,7 @@ fn list_dir(args: &[Value]) -> Result<Value, RuntimeError> {
         let entry = entry.map_err(|e| raise(format!("list_dir({path:?}): {e}")))?;
         names.push(Value::Str(entry.file_name().to_string_lossy().into_owned().into()));
     }
-    Ok(Value::Array(Rc::new(RefCell::new(names))))
+    Ok(Value::Array(gc::alloc_array(names)))
 }
 
 fn mkdir(args: &[Value]) -> Result<Value, RuntimeError> {

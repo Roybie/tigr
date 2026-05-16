@@ -930,6 +930,12 @@ my_print := print;
 | `ceil`    | `ceil(x) -> Int`         | Round up                               |
 | `rand`    | `rand() -> Float`        | Uniform in [0, 1); seedable via `Random.seed` (§13.2) |
 | `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
+| `gc`      | `gc() -> Object`         | Garbage-collector counters (v0.10): `${live, collections, allocated, freed}` |
+
+`gc()` returns a read-only snapshot of the tracing collector's state
+(§15.1): `live` is the current managed-object count, `collections` the
+number of collections run so far, and `allocated` / `freed` the lifetime
+totals. Collection is automatic — `gc()` only observes it.
 
 `type(x)` returns one of `'int'`, `'float'`, `'string'`, `'bool'`,
 `'null'`, `'array'`, `'object'`, `'range'`, `'function'`. Both user
@@ -1411,9 +1417,13 @@ Range(Rc<RangeData>)
 Function(Rc<Closure>)
 ```
 
-`Rc<RefCell<...>>` for collections gives you reference semantics cheaply
-without a real GC. If you later add cycles (objects referencing themselves),
-upgrade to a tracing GC.
+As of v0.10 the reference implementation no longer uses `Rc<RefCell<...>>`
+for the mutable, potentially-cyclic types. `Array`, `Object`, `Map`,
+`Set`, iterators, and closure upvalue cells live on a per-thread arena
+heap managed by a tracing mark-sweep collector; a `Value` carries a
+small generation-tagged handle into that heap. `Str`, `Range`, and the
+immutable `Function` template stay `Rc` — they are acyclic, so a
+reference count reclaims them correctly. See Appendix J.
 
 ### 15.2 Closures and upvalues
 
@@ -1768,3 +1778,28 @@ Additive changes:
     marker is `%(...)` rather than `{}` because `{}` is already string
     interpolation. Previously interpolation only did bare `str(expr)` —
     no width, precision, or alignment.
+
+## Appendix J — Changes in v0.10
+
+46. **Tracing garbage collector** (§15.1). The reference implementation
+    replaces the `Rc<RefCell<...>>` representation of the mutable,
+    potentially-cyclic value types — `Array`, `Object`, `Map`, `Set`,
+    iterators, and closure upvalue cells — with a hand-written
+    mark-sweep collector over a per-thread arena heap; a `Value` now
+    carries a small generation-tagged handle into that heap. Reference
+    cycles (a self-referential object, two closures that capture each
+    other) are reclaimed instead of leaking forever. Collection is
+    automatic — it runs at VM dispatch-loop safepoints once the
+    live-object count crosses a growing threshold — and has no effect
+    observable from tigr code beyond reclaiming memory. `Str`, `Range`,
+    and the immutable `Function` template stay reference-counted
+    (acyclic, so a count suffices). This is an implementation change;
+    the language is unaffected.
+
+47. **`gc()` built-in** (§13). A new zero-argument built-in returning
+    the garbage collector's counters as an object,
+    `${live, collections, allocated, freed}` — `live` is the current
+    managed-object count, `collections` the number of collections run,
+    and `allocated` / `freed` the lifetime totals. Read-only: collection
+    itself is automatic and cannot be forced from tigr code. Intended
+    for tests and for observing memory behaviour.

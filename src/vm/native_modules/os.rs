@@ -11,10 +11,8 @@
 //! A non-zero exit is a normal result (reported in `.code`), not an
 //! error; it raises only when the process cannot be spawned at all.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::value::{Arity, Value};
 
 use super::{native, object};
@@ -34,7 +32,7 @@ fn build_args() -> Value {
     let v: Vec<Value> = std::env::args()
         .map(|s| Value::Str(s.into()))
         .collect();
-    Value::Array(Rc::new(RefCell::new(v)))
+    Value::Array(gc::alloc_array(v))
 }
 
 fn raise(msg: String) -> RuntimeError {

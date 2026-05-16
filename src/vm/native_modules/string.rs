@@ -4,10 +4,8 @@
 //! be O(n) per character (every `s[i]` walks UTF-8 from the start),
 //! so we expose Rust implementations that are linear over bytes.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::stdlib::int_to_radix;
 use crate::vm::value::{Arity, Value};
 
@@ -54,7 +52,7 @@ fn s_split(args: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         s.split(sep).map(|p| Value::Str(p.into())).collect()
     };
-    Ok(Value::Array(Rc::new(RefCell::new(parts))))
+    Ok(Value::Array(gc::alloc_array(parts)))
 }
 
 fn s_replace(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -149,7 +147,7 @@ fn s_chars(args: &[Value]) -> Result<Value, RuntimeError> {
         .chars()
         .map(|c| Value::Str(c.to_string().into()))
         .collect();
-    Ok(Value::Array(Rc::new(RefCell::new(parts))))
+    Ok(Value::Array(gc::alloc_array(parts)))
 }
 
 // --- String.format: a printf-flavoured per-value formatter ----------

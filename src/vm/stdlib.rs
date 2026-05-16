@@ -8,7 +8,10 @@
 
 use std::rc::Rc;
 
+use indexmap::IndexMap;
+
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::rng;
 use crate::vm::value::{Arity, NativeFn, Value};
 
@@ -48,11 +51,12 @@ const BUILTINS: &[Spec] = &[
     Spec { name: "ceil",  arity: Arity::Exact(1), func: native_ceil },
     Spec { name: "rand",  arity: Arity::Exact(0), func: native_rand },
     Spec { name: "type",  arity: Arity::Exact(1), func: native_type },
+    Spec { name: "gc",    arity: Arity::Exact(0), func: native_gc },
 ];
 
-const BUILTIN_NAMES: [&str; 10] = [
+const BUILTIN_NAMES: [&str; 11] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type",
+    "type", "gc",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -291,4 +295,21 @@ fn native_ceil(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn native_rand(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Float(rng::next_f64()))
+}
+
+// -- gc -------------------------------------------------------------
+//
+// `gc()` reports the tracing collector's counters as an object —
+// `${live, collections, allocated, freed}`. Collection itself is
+// automatic (it runs at VM safepoints once the heap crosses a size
+// threshold); `gc()` is a read-only window for tests and tuning.
+
+fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = gc::stats();
+    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(4);
+    m.insert(Rc::from("live"), Value::Int(s.live as i64));
+    m.insert(Rc::from("collections"), Value::Int(s.collections as i64));
+    m.insert(Rc::from("allocated"), Value::Int(s.total_allocated as i64));
+    m.insert(Rc::from("freed"), Value::Int(s.total_freed as i64));
+    Ok(Value::Object(gc::alloc_object(m)))
 }

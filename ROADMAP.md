@@ -168,22 +168,24 @@ plus sign, alternate-form base prefixes, and thousands grouping.
 
 ## v0.10 — Memory model: tracing GC
 
-### 14. Tracing garbage collector  *(core)*
+### 14. Tracing garbage collector  ✅ done  *(core)*
 
-Collections are `Rc<RefCell<...>>` (`LANGUAGE.md` §15.1) — reference
-cycles leak and are never reclaimed. Replace the representation with a
+Collections were `Rc<RefCell<...>>` — reference cycles leaked and were
+never reclaimed. v0.10 replaces the representation with a hand-written
 tracing collector.
 
-- Mark-sweep collector over the heap-allocated value types
-  (`Array`, `Object`, `Function`/closure cells, upvalue cells).
-- Touches the `Value` enum and every native module that holds values
-  — the largest single change on this roadmap; its own release.
-- **Staged option** if a full collector proves too large at once:
-  ship interim cycle *detection* (raise/refuse on cycle creation
-  where it bites) first, then the collector. Decide when scoping the
-  release.
-- Independent of the v0.8 `JSON.stringify` fix (item 13), which
-  handles stringify recursion regardless of how memory is managed.
+- A mark-sweep collector over a per-thread arena heap. The mutable,
+  potentially-cyclic value types — `Array`, `Object`, `Map`, `Set`,
+  iterators, and closure upvalue cells — are GC-managed; a `Value`
+  carries a small generation-tagged handle into the heap. `Str`,
+  `Range`, and `Function` templates stay `Rc` (immutable, acyclic).
+- Collection is automatic, running at VM dispatch-loop safepoints once
+  the live-object count crosses a growing threshold. The `gc()`
+  built-in exposes the collector's counters.
+- A `gc-torture` build (and the `TIGR_GC_TORTURE` env var) collects on
+  every dispatch step — used to prove the root set is exhaustive.
+- Shipped as the full collector, not the staged cycle-detection
+  fallback the original sketch allowed for.
 
 ---
 

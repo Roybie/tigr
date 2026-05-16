@@ -1,22 +1,23 @@
 //! Runtime values.
 //!
-//! Phase 1 only constructs `Null`, `Bool`, `Int`, `Float`, `Str`. The
-//! enum already lists the full v0.2 type set so opcodes that reference
-//! `Value` don't need refactoring as later phases land.
-//!
-//! Collection types use `Rc<RefCell<...>>` for reference semantics. The
-//! `Rc` cycle leak is acknowledged for v0.2 (spec §15.1) — a tracing GC
-//! is a v0.3 concern.
+//! The mutable / potentially-cyclic types — `Array`, `Object`, `Map`,
+//! `Set`, `Iter`, `Closure`, and upvalue cells — are managed by the
+//! v0.10 tracing collector ([`crate::vm::gc`]): a `Value` carries a
+//! small `Copy` [`GcRef`] handle into the thread-local heap rather than
+//! the data itself. `Str`, `Range`, and `NativeFn` are immutable and
+//! acyclic, so they stay plain `Rc` — `Rc` reclaims acyclic data fine
+//! and the collector skips them.
 
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
 
-use indexmap::{IndexMap, IndexSet};
-
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc::{
+    ArrayKind, ClosureKind, GcRef, IterKind, MapKind, ObjectKind, SetKind,
+    UpvalueKind,
+};
 
 #[derive(Clone)]
 pub enum Value {
@@ -26,26 +27,26 @@ pub enum Value {
     Float(f64),
     Str(Rc<str>),
 
-    // Phase 3+
-    Array(Rc<RefCell<Vec<Value>>>),
-    Object(Rc<RefCell<IndexMap<Rc<str>, Value>>>),
+    // Phase 3+ — GC-managed (see `crate::vm::gc`).
+    Array(GcRef<ArrayKind>),
+    Object(GcRef<ObjectKind>),
 
     // v0.9 — arbitrary-keyed dictionary / set. Keys are restricted to
     // hashable primitives (see `MapKey`); insertion-ordered like Object.
-    Map(Rc<RefCell<IndexMap<MapKey, Value>>>),
-    Set(Rc<RefCell<IndexSet<MapKey>>>),
+    Map(GcRef<MapKind>),
+    Set(GcRef<SetKind>),
 
     // Phase 5+
     Range(Rc<RangeData>),
-    /// Internal iterator state for `for`. Wrapped in `RefCell` so the
-    /// position advances in place while the value lives on the stack.
-    /// Never observable from tigr code.
-    Iter(Rc<RefCell<IterState>>),
+    /// Internal iterator state for `for`. GC-managed so the position
+    /// advances in place while the value lives on the stack. Never
+    /// observable from tigr code.
+    Iter(GcRef<IterKind>),
 
     // Phase 4+ — runtime callable. Plain functions with no captured
     // variables are still represented as a Closure with an empty
     // upvalues vec.
-    Function(Rc<Closure>),
+    Function(GcRef<ClosureKind>),
 
     // Phase 6+
     NativeFn(Rc<NativeFn>),
@@ -148,19 +149,19 @@ pub enum IterState {
         index: i64,
     },
     Array {
-        array: Rc<RefCell<Vec<Value>>>,
+        array: GcRef<ArrayKind>,
         index: usize,
     },
     Object {
-        object: Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        object: GcRef<ObjectKind>,
         index: usize,
     },
     Map {
-        map: Rc<RefCell<IndexMap<MapKey, Value>>>,
+        map: GcRef<MapKind>,
         index: usize,
     },
     Set {
-        set: Rc<RefCell<IndexSet<MapKey>>>,
+        set: GcRef<SetKind>,
         index: usize,
     },
     String {
@@ -174,7 +175,7 @@ pub enum IterState {
     /// synthetic counter for the two-var `for` form; `done` is sticky
     /// once the object has reported exhaustion.
     IterObject {
-        object: Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        object: GcRef<ObjectKind>,
         index: i64,
         done: bool,
     },
@@ -292,7 +293,7 @@ pub struct UpvalueInfo {
 /// Runtime callable: a function template + its captured upvalue cells.
 pub struct Closure {
     pub function: Rc<Function>,
-    pub upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    pub upvalues: Vec<GcRef<UpvalueKind>>,
 }
 
 /// A captured variable. `Open` means "still on the value stack at this
@@ -394,13 +395,16 @@ impl PartialEq for Value {
             (Float(a), Float(b)) => a == b,
             (Int(a), Float(b)) | (Float(b), Int(a)) => (*a as f64) == *b,
             (Str(a), Str(b)) => a == b,
-            (Array(a), Array(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
-            (Object(a), Object(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
-            (Map(a), Map(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
-            (Set(a), Set(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
+            // `a == b` is GcRef identity (slot + generation) — the role
+            // `Rc::ptr_eq` played before — and short-circuits the deep
+            // structural compare for the same-object case.
+            (Array(a), Array(b)) => a == b || *a.borrow() == *b.borrow(),
+            (Object(a), Object(b)) => a == b || *a.borrow() == *b.borrow(),
+            (Map(a), Map(b)) => a == b || *a.borrow() == *b.borrow(),
+            (Set(a), Set(b)) => a == b || *a.borrow() == *b.borrow(),
             (Range(a), Range(b)) => a == b,
-            (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
-            (Function(a), Function(b)) => Rc::ptr_eq(a, b),
+            (Iter(a), Iter(b)) => a == b,
+            (Function(a), Function(b)) => a == b,
             (NativeFn(a), NativeFn(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
@@ -482,10 +486,13 @@ impl fmt::Display for Value {
                 }
             }
             Value::Iter(_) => f.write_str("<iterator>"),
-            Value::Function(c) => match &c.function.name {
-                Some(n) => write!(f, "<fn {n}>"),
-                None => f.write_str("<fn>"),
-            },
+            Value::Function(c) => {
+                let closure = c.borrow();
+                match &closure.function.name {
+                    Some(n) => write!(f, "<fn {n}>"),
+                    None => f.write_str("<fn>"),
+                }
+            }
             Value::NativeFn(n) => write!(f, "<native fn {}>", n.name),
         }
     }

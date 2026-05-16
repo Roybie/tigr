@@ -4,14 +4,12 @@
 //! backed by an insertion-ordered `IndexMap<MapKey, Value>`. Keys are
 //! restricted to hashable primitives (null, bool, int, string); a
 //! `Float` or collection key raises `InvalidKeyType`. Every operation
-//! needs direct `RefCell` access, so the whole module is native.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! mutates the backing map in place, so the whole module is native.
 
 use indexmap::IndexMap;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc::{self, GcRef, MapKind};
 use crate::vm::value::{Arity, MapKey, Value};
 
 use super::{native, object};
@@ -38,9 +36,9 @@ fn err(msg: String) -> RuntimeError {
 fn expect_map(
     v: &Value,
     label: &str,
-) -> Result<Rc<RefCell<IndexMap<MapKey, Value>>>, RuntimeError> {
+) -> Result<GcRef<MapKind>, RuntimeError> {
     match v {
-        Value::Map(m) => Ok(m.clone()),
+        Value::Map(m) => Ok(*m),
         other => Err(err(format!(
             "Map.{label}: expected Map, got {}", other.type_name()
         ))),
@@ -48,7 +46,7 @@ fn expect_map(
 }
 
 fn new_map(entries: IndexMap<MapKey, Value>) -> Value {
-    Value::Map(Rc::new(RefCell::new(entries)))
+    Value::Map(gc::alloc_map(entries))
 }
 
 /// `new()` → empty Map. `new(obj)` copies an Object's entries.
@@ -124,7 +122,7 @@ fn m_delete(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn array(items: Vec<Value>) -> Value {
-    Value::Array(Rc::new(RefCell::new(items)))
+    Value::Array(gc::alloc_array(items))
 }
 
 /// `keys(m)` → Array of keys in insertion order.

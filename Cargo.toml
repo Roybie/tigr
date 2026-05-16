@@ -8,3 +8,8 @@ exclude = ["examples/*"]
 [dependencies]
 indexmap = "2"
 rustyline = "14"
+
+[features]
+# Collect on every VM dispatch step — stress mode that turns any
+# missing GC root into an immediate stale-handle panic.
+gc-torture = []

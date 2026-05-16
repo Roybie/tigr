@@ -22,13 +22,16 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
+use crate::vm::gc::{
+    self, ArrayKind, ClosureKind, GcRef, Marker, ObjectKind, Trace, UpvalueKind,
+};
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{Closure, Function, IterState, MapKey, RangeData, Upvalue, Value};
 
 struct CallFrame {
-    closure: Rc<Closure>,
+    closure: GcRef<ClosureKind>,
     ip: usize,
     /// Index in `vm.stack` corresponding to slot 0 of this frame.
     base_slot: usize,
@@ -77,7 +80,7 @@ pub struct Vm {
     pub max_call_depth: usize,
     stack: Vec<Value>,
     globals: Vec<Value>,
-    open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    open_upvalues: Vec<GcRef<UpvalueKind>>,
     /// Per-Vm cache of `import 'path'` results, keyed by absolute path.
     /// Spec §12 was no-caching in v0.2; v0.3 adds caching so a module
     /// imported twice within the same run evaluates only once.
@@ -116,12 +119,12 @@ impl Vm {
         self.frames.clear();
         self.open_upvalues.clear();
 
-        let main_closure = Rc::new(Closure {
+        let main_closure = gc::alloc_closure(Closure {
             function: Rc::new(main),
             upvalues: Vec::new(),
         });
         // slot 0 of main frame = the main closure itself
-        self.stack.push(Value::Function(main_closure.clone()));
+        self.stack.push(Value::Function(main_closure));
         self.frames.push(CallFrame {
             closure: main_closure,
             ip: 0,
@@ -155,7 +158,7 @@ impl Vm {
             return;
         }
         if let Some(top) = self.frames.last() {
-            err.source = top.closure.function.chunk.source;
+            err.source = top.closure.borrow().function.chunk.source;
         }
     }
 
@@ -194,7 +197,7 @@ impl Vm {
                             Value::Str(format!("{err}").into()));
                         m.insert(Rc::from("line"),
                             Value::Int(err.line as i64));
-                        Value::Object(Rc::new(RefCell::new(m)))
+                        Value::Object(gc::alloc_object(m))
                     }
                 };
                 self.stack.push(caught);
@@ -215,7 +218,8 @@ impl Vm {
             // error's precise line; for callers use the call-site line
             // (`ip` sits just past the `Call` operand). The trace rides
             // on `err`; if a handler is found later it is discarded.
-            let func = &popped.closure.function;
+            let popped_closure = popped.closure.borrow();
+            let func = &popped_closure.function;
             let line = if err.trace.is_empty() {
                 err.line
             } else {
@@ -248,7 +252,7 @@ impl Vm {
         self.stack.clear();
         self.frames.clear();
         self.open_upvalues.clear();
-        let dummy = Rc::new(Closure {
+        let dummy = gc::alloc_closure(Closure {
             function: Rc::new(crate::vm::value::Function {
                 arity: 0,
                 has_rest: false,
@@ -260,7 +264,7 @@ impl Vm {
         });
         // Slot 0 of the REPL frame holds the *currently active*
         // line's closure. `run_repl_line` replaces this each line.
-        self.stack.push(Value::Function(dummy.clone()));
+        self.stack.push(Value::Function(dummy));
         self.frames.push(CallFrame {
             closure: dummy,
             ip: 0,
@@ -276,12 +280,12 @@ impl Vm {
     /// uncaught raise the stack is truncated back to this snapshot.
     pub fn run_repl_line(
         &mut self,
-        closure: Rc<Closure>,
+        closure: GcRef<ClosureKind>,
         snapshot_len: usize,
     ) -> Result<Value, RuntimeError> {
         debug_assert!(matches!(self.frames[0].kind, FrameKind::Repl));
         // Install the new line's closure at slot 0 and reset ip.
-        self.stack[0] = Value::Function(closure.clone());
+        self.stack[0] = Value::Function(closure);
         self.frames[0].closure = closure;
         self.frames[0].ip = 0;
         self.frames[0].try_frames.clear();
@@ -317,11 +321,16 @@ impl Vm {
     /// returns once its callee frame has returned.
     fn run_until(&mut self, floor: usize) -> Result<Value, RuntimeError> {
         loop {
+            // GC safepoint: collect here, before any opcode work, while
+            // no borrow guard is live and every root is on a Vm field.
+            self.maybe_collect();
+
             // Snapshot the current frame's chunk for this iteration.
-            // Cloning the Rc<Closure> is cheap and lets us read from
-            // the chunk while mutating self.stack / self.frames.
-            let closure = Rc::clone(&self.frames.last().expect("at least one frame").closure);
-            let function_rc = Rc::clone(&closure.function);
+            // The closure handle is `Copy`; cloning the `Rc<Function>`
+            // out lets us read the chunk while mutating self.stack /
+            // self.frames.
+            let closure = self.frames.last().expect("at least one frame").closure;
+            let function_rc = closure.borrow().function.clone();
             let chunk = &function_rc.chunk;
             let base_slot = self.frames.last().unwrap().base_slot;
             let mut ip = self.frames.last().unwrap().ip;
@@ -535,7 +544,7 @@ impl Vm {
                     ip += 1;
                     let start = self.stack.len() - n;
                     let items: Vec<Value> = self.stack.drain(start..).collect();
-                    self.stack.push(Value::Array(Rc::new(RefCell::new(items))));
+                    self.stack.push(Value::Array(gc::alloc_array(items)));
                 }
                 OpCode::MakeObject => {
                     let n = chunk.code[ip] as usize;
@@ -554,7 +563,7 @@ impl Vm {
                         };
                         obj.insert(key, v);
                     }
-                    self.stack.push(Value::Object(Rc::new(RefCell::new(obj))));
+                    self.stack.push(Value::Object(gc::alloc_object(obj)));
                 }
                 OpCode::IndexGet => {
                     let key = self.pop(line)?;
@@ -600,8 +609,10 @@ impl Vm {
                             if self.frames.len() >= self.max_call_depth {
                                 return Err(stack_overflow_err(line));
                             }
-                            let arity = c.function.arity;
-                            let has_rest = c.function.has_rest;
+                            let (arity, has_rest) = {
+                                let cf = c.borrow();
+                                (cf.function.arity, cf.function.has_rest)
+                            };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
                             } else if n < arity {
@@ -666,8 +677,10 @@ impl Vm {
                     let callee = self.stack[args_start - 1].clone();
                     match callee {
                         Value::Function(c) => {
-                            let arity = c.function.arity;
-                            let has_rest = c.function.has_rest;
+                            let (arity, has_rest) = {
+                                let cf = c.borrow();
+                                (cf.function.arity, cf.function.has_rest)
+                            };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
                             } else if n < arity {
@@ -746,17 +759,17 @@ impl Vm {
                             self.capture_upvalue(stack_slot)
                         } else {
                             // Reuse upvalue from current frame's closure.
-                            closure.upvalues[index].clone()
+                            closure.borrow().upvalues[index]
                         };
                         upvalues.push(upvalue);
                     }
-                    let new_closure = Rc::new(Closure { function, upvalues });
+                    let new_closure = gc::alloc_closure(Closure { function, upvalues });
                     self.stack.push(Value::Function(new_closure));
                 }
                 OpCode::GetUpvalue => {
                     let idx = chunk.code[ip] as usize;
                     ip += 1;
-                    let upv = closure.upvalues[idx].clone();
+                    let upv = closure.borrow().upvalues[idx];
                     let v = match &*upv.borrow() {
                         Upvalue::Open(slot) => self.stack[*slot].clone(),
                         Upvalue::Closed(v) => v.clone(),
@@ -767,7 +780,7 @@ impl Vm {
                     let idx = chunk.code[ip] as usize;
                     ip += 1;
                     let new_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
-                    let upv = closure.upvalues[idx].clone();
+                    let upv = closure.borrow().upvalues[idx];
                     let mut up = upv.borrow_mut();
                     match &mut *up {
                         Upvalue::Open(slot) => self.stack[*slot] = new_val,
@@ -824,7 +837,7 @@ impl Vm {
                 }
                 OpCode::MakeIter => {
                     let iter = make_iter(self.pop(line)?, line)?;
-                    self.stack.push(Value::Iter(Rc::new(RefCell::new(iter))));
+                    self.stack.push(Value::Iter(gc::alloc_iter(iter)));
                 }
                 OpCode::IterNext => {
                     let dist = chunk.read_u16(ip);
@@ -857,7 +870,7 @@ impl Vm {
                         Some(None) => ip += dist as usize,
                         Some(Some(obj)) => {
                             self.frames.last_mut().unwrap().ip = ip;
-                            match self.iter_object_pull(&obj, line)? {
+                            match self.iter_object_pull(obj, line)? {
                                 Some(value) => {
                                     if let IterState::IterObject { index, .. } =
                                         &mut *it.borrow_mut()
@@ -909,7 +922,7 @@ impl Vm {
                         Some(None) => ip += dist as usize,
                         Some(Some(obj)) => {
                             self.frames.last_mut().unwrap().ip = ip;
-                            match self.iter_object_pull(&obj, line)? {
+                            match self.iter_object_pull(obj, line)? {
                                 Some(value) => {
                                     // Synthetic counter (0, 1, 2, ...).
                                     let counter = {
@@ -1001,15 +1014,29 @@ impl Vm {
                             Some(Value::Function(_)) | Some(Value::NativeFn(_))
                         );
                         if is_iter {
-                            let o = o.clone();
+                            let o = *o;
                             self.frames.last_mut().unwrap().ip = ip;
-                            while let Some(v) = self.iter_object_pull(&o, line)? {
-                                target_arr.borrow_mut().push(v);
+                            // `iter_object_pull` re-enters the VM, which
+                            // may collect. `src` is already off the
+                            // stack — push it back as a temporary root
+                            // so the iterator object survives the loop.
+                            let root = self.stack.len();
+                            self.stack.push(src);
+                            loop {
+                                match self.iter_object_pull(o, line) {
+                                    Ok(Some(v)) => target_arr.borrow_mut().push(v),
+                                    Ok(None) => break,
+                                    Err(e) => {
+                                        self.stack.truncate(root);
+                                        return Err(e);
+                                    }
+                                }
                             }
+                            self.stack.truncate(root);
                             continue;
                         }
                     }
-                    extend_array(&target_arr, src, line)?;
+                    extend_array(target_arr, src, line)?;
                 }
                 OpCode::ObjectMerge => {
                     let src = self.pop(line)?;
@@ -1058,8 +1085,10 @@ impl Vm {
                     let callee = self.stack[args_start - 1].clone();
                     match callee {
                         Value::Function(c) => {
-                            let arity = c.function.arity;
-                            let has_rest = c.function.has_rest;
+                            let (arity, has_rest) = {
+                                let cf = c.borrow();
+                                (cf.function.arity, cf.function.has_rest)
+                            };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
                             } else if n < arity {
@@ -1146,7 +1175,7 @@ impl Vm {
                             line,
                         )),
                     };
-                    self.stack.push(Value::Array(Rc::new(RefCell::new(out))));
+                    self.stack.push(Value::Array(gc::alloc_array(out)));
                 }
                 OpCode::ObjRest => {
                     let keys_val = self.pop(line)?;
@@ -1181,7 +1210,7 @@ impl Vm {
                             out.insert(k.clone(), v.clone());
                         }
                     }
-                    self.stack.push(Value::Object(Rc::new(RefCell::new(out))));
+                    self.stack.push(Value::Object(gc::alloc_object(out)));
                 }
                 OpCode::Import => {
                     let path_val = self.pop(line)?;
@@ -1234,13 +1263,13 @@ impl Vm {
                                 }
                             };
                             self.in_flight.insert(key.clone());
-                            let mc = Rc::new(Closure {
+                            let mc = gc::alloc_closure(Closure {
                                 function: Rc::new(main),
                                 upvalues: Vec::new(),
                             });
                             self.frames.last_mut().unwrap().ip = ip;
                             let base = self.stack.len();
-                            self.stack.push(Value::Function(mc.clone()));
+                            self.stack.push(Value::Function(mc));
                             self.frames.push(CallFrame {
                                 closure: mc,
                                 ip: 0,
@@ -1300,7 +1329,7 @@ impl Vm {
                         }
                     };
                     self.in_flight.insert(path.clone());
-                    let main_closure = Rc::new(Closure {
+                    let main_closure = gc::alloc_closure(Closure {
                         function: Rc::new(main),
                         upvalues: Vec::new(),
                     });
@@ -1391,11 +1420,11 @@ impl Vm {
     fn pack_rest(&mut self, args_start: usize, n: usize, arity: usize) {
         if n < arity {
             for _ in n..arity { self.stack.push(Value::Null); }
-            self.stack.push(Value::Array(Rc::new(RefCell::new(Vec::new()))));
+            self.stack.push(Value::Array(gc::alloc_array(Vec::new())));
         } else {
             let rest_start = args_start + arity;
             let extras: Vec<Value> = self.stack.drain(rest_start..).collect();
-            self.stack.push(Value::Array(Rc::new(RefCell::new(extras))));
+            self.stack.push(Value::Array(gc::alloc_array(extras)));
         }
     }
 
@@ -1433,8 +1462,10 @@ impl Vm {
                 if floor >= self.max_call_depth {
                     return Err(stack_overflow_err(line));
                 }
-                let arity = c.function.arity;
-                let has_rest = c.function.has_rest;
+                let (arity, has_rest) = {
+                    let cf = c.borrow();
+                    (cf.function.arity, cf.function.has_rest)
+                };
                 let n = args.len();
                 // Mirror the `Call` opcode's stack layout: callee slot
                 // followed by the arity-adjusted args.
@@ -1486,7 +1517,7 @@ impl Vm {
     /// spread over iterator objects.
     fn iter_object_pull(
         &mut self,
-        obj: &Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        obj: GcRef<ObjectKind>,
         line: u32,
     ) -> Result<Option<Value>, RuntimeError> {
         let next_fn = obj.borrow().get("next").cloned();
@@ -1533,16 +1564,16 @@ impl Vm {
         }
     }
 
-    fn capture_upvalue(&mut self, stack_slot: usize) -> Rc<RefCell<Upvalue>> {
+    fn capture_upvalue(&mut self, stack_slot: usize) -> GcRef<UpvalueKind> {
         for up in &self.open_upvalues {
             if let Upvalue::Open(slot) = *up.borrow() {
                 if slot == stack_slot {
-                    return up.clone();
+                    return *up;
                 }
             }
         }
-        let new_up = Rc::new(RefCell::new(Upvalue::Open(stack_slot)));
-        self.open_upvalues.push(new_up.clone());
+        let new_up = gc::alloc_upvalue(Upvalue::Open(stack_slot));
+        self.open_upvalues.push(new_up);
         new_up
     }
 
@@ -1565,6 +1596,41 @@ impl Vm {
             }
         }
         self.open_upvalues = still_open;
+    }
+
+    /// Mark every GC root this Vm holds. The root set is exactly these
+    /// five fields — nothing else retains a `Value` (see `gc.rs`).
+    fn trace_roots(&self, m: &mut Marker) {
+        for v in &self.stack {
+            v.trace(m);
+        }
+        for v in &self.globals {
+            v.trace(m);
+        }
+        for up in &self.open_upvalues {
+            m.mark_upvalue(*up);
+        }
+        for frame in &self.frames {
+            m.mark_closure(frame.closure);
+        }
+        for v in self.module_cache.values() {
+            v.trace(m);
+        }
+    }
+
+    /// Run one mark-sweep collection over the managed heap.
+    fn collect(&mut self) {
+        gc::collect(|m| self.trace_roots(m));
+    }
+
+    /// Collect if the heap trigger fires. Called only at the dispatch-
+    /// loop safepoint: no borrow guard is live there and the whole root
+    /// set is reachable from the Vm's five fields, so a sweep is safe.
+    #[inline]
+    fn maybe_collect(&mut self) {
+        if gc::should_collect() {
+            self.collect();
+        }
     }
 }
 
@@ -1590,12 +1656,12 @@ fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Array(x), Array(y)) => {
             let mut v: Vec<Value> = x.borrow().clone();
             v.extend(y.borrow().iter().cloned());
-            Ok(Array(Rc::new(RefCell::new(v))))
+            Ok(Array(gc::alloc_array(v)))
         }
         (Array(x), other) => {
             let mut v: Vec<Value> = x.borrow().clone();
             v.push(other);
-            Ok(Array(Rc::new(RefCell::new(v))))
+            Ok(Array(gc::alloc_array(v)))
         }
         (a, b) => Err(type_err("+", &a, &b, line)),
     }
@@ -1756,7 +1822,7 @@ fn cmp(
 /// Extend the array `target` in place with the elements of `src`.
 /// Backs `ArrayExtend` (array spread) and indirectly `CallSpread`.
 fn extend_array(
-    target: &Rc<RefCell<Vec<Value>>>,
+    target: GcRef<ArrayKind>,
     src: Value,
     line: u32,
 ) -> Result<(), RuntimeError> {

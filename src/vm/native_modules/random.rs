@@ -6,10 +6,8 @@
 //! `rand()` reproducible, which is the whole point: tests can pin a
 //! seed and get deterministic output.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::rng;
 use crate::vm::value::{Arity, Value};
 
@@ -129,5 +127,5 @@ fn r_shuffle(args: &[Value]) -> Result<Value, RuntimeError> {
         let j = rng::next_below((i + 1) as u64) as usize;
         out.swap(i, j);
     }
-    Ok(Value::Array(Rc::new(RefCell::new(out))))
+    Ok(Value::Array(gc::alloc_array(out)))
 }

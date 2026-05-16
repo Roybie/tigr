@@ -196,12 +196,12 @@ mod tests {
             let mut m = indexmap::IndexMap::new();
             m.insert(Rc::from("passed"), Value::Int(p));
             m.insert(Rc::from("failed"), Value::Int(f));
-            Value::Object(Rc::new(RefCell::new(m)))
+            Value::Object(crate::vm::gc::alloc_object(m))
         };
         let mut totals = Totals::default();
         aggregate(&suite(3, 1), &mut totals);
         aggregate(
-            &Value::Array(Rc::new(RefCell::new(vec![suite(2, 0), suite(1, 4)]))),
+            &Value::Array(crate::vm::gc::alloc_array(vec![suite(2, 0), suite(1, 4)])),
             &mut totals,
         );
         assert_eq!(totals.passed, 6);

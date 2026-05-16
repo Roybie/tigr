@@ -1,0 +1,67 @@
+// tests/gc_test.tg — v0.10, the tracing garbage collector.
+//
+// The collector runs automatically at VM safepoints; `gc()` exposes
+// its counters (`live`, `collections`, `allocated`, `freed`) so a test
+// can observe that cyclic garbage is actually reclaimed — something a
+// plain reference count could never do.
+//
+// Run directly (`tigr tests/gc_test.tg`) or via `tigr test`.
+
+Test := import 'Test';
+
+Test.suite('garbage collector', [
+    Test.case('unreferenced cyclic objects are reclaimed', fn() {
+        before := gc();
+        // 6000 short-lived self-referential objects. A reference count
+        // would leak every one; the tracing collector reclaims them.
+        for (i, 0..6000) {
+            o := ${};
+            o.link = o;
+        };
+        after := gc();
+        Test.assert(after.collections > before.collections,
+                    'a collection should have run');
+        Test.assert(after.live < 2000,
+                    'live objects should stay bounded, got {after.live}');
+        Test.assert(after.freed > 3000,
+                    'most cycles should have been reclaimed, freed {after.freed}');
+    }),
+
+    Test.case('a rooted structure survives collection', fn() {
+        keep := ${tag: 'keep', items: [1, 2, 3]};
+        // Allocate well past the collection threshold while `keep` is
+        // still in scope — it and everything it points at must live.
+        for (i, 0..3000) { junk := ${n: i}; };
+        Test.assert_eq(keep.tag, 'keep');
+        Test.assert_eq(keep.items, [1, 2, 3]);
+    }),
+
+    Test.case('a mutual closure cycle is reclaimed', fn() {
+        before := gc();
+        // Each iteration builds two closures that capture each other —
+        // a cycle through upvalue cells, the closure analogue of the
+        // object cycle above.
+        for (i, 0..4000) {
+            make := fn() {
+                a := null;
+                b := fn() { a };
+                a = fn() { b };
+                a
+            };
+            make();
+        };
+        after := gc();
+        Test.assert(after.collections > before.collections,
+                    'a collection should have run');
+        Test.assert(after.live < 3000,
+                    'closure cycles should not accumulate, got {after.live}');
+    }),
+
+    Test.case('gc() counters rise monotonically', fn() {
+        a := gc();
+        for (i, 0..2000) { junk := [i, i, i]; };
+        b := gc();
+        Test.assert(b.allocated > a.allocated, 'allocated must rise');
+        Test.assert(b.freed >= a.freed, 'freed must not decrease');
+    }),
+])

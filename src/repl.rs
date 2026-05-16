@@ -72,7 +72,7 @@ impl Repl {
         let (main, new_locals) =
             Compiler::compile_repl_with_source(&program, &self.locals, sid)?;
 
-        let closure = Rc::new(Closure {
+        let closure = crate::vm::gc::alloc_closure(Closure {
             function: Rc::new(main),
             upvalues: Vec::new(),
         });

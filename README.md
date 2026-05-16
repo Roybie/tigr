@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.9**: the v0.8 core-semantics release plus a broadened standard library — the `Test` framework and `tigr test` runner, the `Map` / `Set` collection types, the seedable `Random` module, more `Array` combinators, and `String` formatting. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
+This README documents **v0.10**: the v0.9 standard-library release plus a tracing **garbage collector** that replaces the reference-counted memory model, so reference cycles are reclaimed instead of leaked. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
 
 ```
 double := fn(x) { x * 2 };
@@ -27,7 +27,7 @@ When a script finishes, its final value is printed. So `1 + 1` as a one-line fil
 
 `tigr test` discovers test files — any `*_test.tg` file, plus every `.tg` file under a `tests/` directory — runs them, and reports pass/fail counts. See the [`Test`](#test-v09) module for writing tests.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), v0.7 demos in [`examples/v07/`](examples/v07/), v0.8 demos in [`examples/v08/`](examples/v08/), and v0.9 demos in [`examples/v09/`](examples/v09/).
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), v0.7 demos in [`examples/v07/`](examples/v07/), v0.8 demos in [`examples/v08/`](examples/v08/), v0.9 demos in [`examples/v09/`](examples/v09/), and v0.10 demos in [`examples/v10/`](examples/v10/).
 
 ---
 
@@ -622,6 +622,7 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | `ceil`  | `ceil(x) -> Int`           | Round up                                   |
 | `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`; seed it via `Random.seed` |
 | `type`  | `type(x) -> String`        | Name of the value's type (`'int'`, `'array'`, `'function'`, ...) |
+| `gc`    | `gc() -> Object` *(v0.10)* | Garbage-collector counters: `${live, collections, allocated, freed}` |
 
 `str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
 
@@ -1245,17 +1246,46 @@ Low to high, with associativity:
 
 ---
 
+## Garbage collection
+
+The mutable, potentially-cyclic value types — `Array`, `Object`, `Map`,
+`Set`, iterators, and the cells closures capture — live on a heap
+managed by a tracing **mark-sweep** garbage collector (v0.10). Earlier
+releases reference-counted these, which leaks any structure that points
+back at itself; a tracing collector reclaims cycles like any other
+garbage:
+
+```
+node := ${value: 1, next: null};
+node.next = node;            // a cycle — node points at itself
+// `node` going out of scope is enough; the collector reclaims it.
+```
+
+Collection is automatic. It runs at safe points between bytecode
+instructions, once the live-object count crosses a growing threshold —
+you never call it by hand. The `gc()` built-in is a read-only window on
+the collector for tests and tuning:
+
+```
+stats := gc();
+print(stats.live, stats.collections, stats.allocated, stats.freed);
+```
+
+`Str`, `Range`, and functions' immutable templates stay reference-counted
+— they are acyclic, so a count reclaims them correctly and the collector
+need not trace them.
+
+---
+
 ## Status
 
-**v0.9 is feature-complete.** 531 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. On top of v0.8:
+**v0.10 is feature-complete.** 542 tests pass. v0.10 replaces the reference-counted memory model with a tracing **garbage collector**:
 
-1. **`Test` module + `tigr test`** — a test framework written in tigr itself (`assert`/`assert_eq`/`assert_raises`, `case` / `suite`), and a CLI subcommand that discovers and runs `*_test.tg` files (and `.tg` files under a `tests/` directory), reporting pass/fail counts.
-2. **`Map` and `Set` types** — `Map` is an arbitrary-keyed dictionary (any null/bool/int/string key, not just strings like `Object`); `Set` is a collection of unique values with `union`/`intersection`/`difference`. Both are native value types with `m[k]`/`s[x]` indexing, `#` length, and `for` iteration. `Object.has` is now O(1) and `Object.keys`/`values`/`entries` are O(n) (were O(n²)).
-3. **`Random` module** — seedable pseudo-random numbers (`seed`, `float`, `int`, `bool`, `choice`, `range`, `shuffle`). `Random` and the `rand()` built-in share one PRNG stream, so `Random.seed(n)` makes `rand()` reproducible too.
-4. **More `Array` combinators** — `group_by`, `chunk`, `windows`, `partition`, `flat_map`, `count_of`, plus in-place removal (`pop`/`shift`/`unshift`/`insert`/`remove`/`clear`) and negative-aware `head`/`tail`.
-5. **String formatting** — `String.format(value, spec)` and `String.printf(template, args)`, sharing a Rust/Python-inspired spec mini-language (width, alignment, fill, sign, precision, thousands grouping, and the type codes `s d f e E x X b o`).
+- **Tracing mark-sweep GC** — the mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a mark-sweep collector over a per-thread heap; a `Value` holds a small generation-tagged handle into it. Reference cycles — a self-referential object (`o.link = o`), two closures capturing each other — are now **reclaimed** rather than leaked forever, which a reference count could never do. Collection is automatic, running at VM safepoints once the heap crosses a size threshold; the `gc()` built-in returns the collector's counters as `${live, collections, allocated, freed}`.
 
 Earlier releases:
+
+- **v0.9**: a `Test` framework + `tigr test` runner (written in tigr itself), the `Map` / `Set` collection types, the seedable `Random` module, more `Array` combinators (`group_by`/`chunk`/`windows`/`partition`/`flat_map`, in-place removal), and `String` formatting (`format` / `printf` with a width/precision/alignment spec mini-language).
 
 - **v0.8**: integer-overflow checks (a catchable `overflow` error), tail calls + bounded recursion, stack traces on uncaught errors, `JSON.stringify` cycle detection, and `for` / spread consuming iterator objects directly.
 - **v0.7 / v0.7b**: lazy `Iter` iterators (pipelines that never materialize intermediate arrays), in-place array growth (`Array.push` / `extend`, and a mutating `+=`), and structured errors — `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object.
@@ -1269,6 +1299,5 @@ See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walki
 
 Known limitations / candidates for later:
 
-- No tracing GC — collections use `Rc<RefCell<...>>`, so reference cycles leak. Acceptable for hobby-scale data.
 - Runtime error spans are line-only (no column information). Lex/parse/compile errors carry full spans.
 - No regex; `String.contains` / `split` / `replace` cover the 80%.

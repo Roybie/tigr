@@ -8,15 +8,15 @@
 //!
 //! Circular references in arrays/objects are detected during
 //! `stringify` (v0.8): `write_value` carries an ancestor-path set of
-//! `Rc` pointers and raises a catchable `cycle` error on a repeat. A
+//! GC handles and raises a catchable `cycle` error on a repeat. A
 //! non-cyclic shared subtree (DAG) still serializes fine.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc::{self, ArrayKind, GcRef, ObjectKind};
 use crate::vm::value::{Arity, Value};
 
 use super::{native, object};
@@ -309,7 +309,7 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         if self.peek() == Some(b']') {
             self.advance();
-            return Ok(Value::Array(Rc::new(RefCell::new(items))));
+            return Ok(Value::Array(gc::alloc_array(items)));
         }
         loop {
             let v = self.parse_value()?;
@@ -324,7 +324,7 @@ impl<'a> Parser<'a> {
                 None => return Err(self.err("unterminated array")),
             }
         }
-        Ok(Value::Array(Rc::new(RefCell::new(items))))
+        Ok(Value::Array(gc::alloc_array(items)))
     }
 
     fn parse_object(&mut self) -> Result<Value, RuntimeError> {
@@ -333,7 +333,7 @@ impl<'a> Parser<'a> {
         let mut map: IndexMap<Rc<str>, Value> = IndexMap::new();
         if self.peek() == Some(b'}') {
             self.advance();
-            return Ok(Value::Object(Rc::new(RefCell::new(map))));
+            return Ok(Value::Object(gc::alloc_object(map)));
         }
         loop {
             self.skip_ws();
@@ -352,7 +352,7 @@ impl<'a> Parser<'a> {
                 None => return Err(self.err("unterminated object")),
             }
         }
-        Ok(Value::Object(Rc::new(RefCell::new(map))))
+        Ok(Value::Object(gc::alloc_object(map)))
     }
 }
 
@@ -375,8 +375,12 @@ fn stringify(args: &[Value]) -> Result<Value, RuntimeError> {
         None
     };
     let mut out = String::new();
-    let mut seen: Vec<*const ()> = Vec::new();
-    write_value(&mut out, &args[0], indent.as_deref(), 0, &mut seen)?;
+    // Ancestor-path sets, one per managed kind a cycle can route
+    // through. Array and Object live in separate arenas, so a node is
+    // identified by its handle within its own kind's set.
+    let mut seen_a: Vec<GcRef<ArrayKind>> = Vec::new();
+    let mut seen_o: Vec<GcRef<ObjectKind>> = Vec::new();
+    write_value(&mut out, &args[0], indent.as_deref(), 0, &mut seen_a, &mut seen_o)?;
     Ok(Value::Str(out.into()))
 }
 
@@ -391,7 +395,8 @@ fn write_value(
     v: &Value,
     indent: Option<&str>,
     depth: usize,
-    seen: &mut Vec<*const ()>,
+    seen_a: &mut Vec<GcRef<ArrayKind>>,
+    seen_o: &mut Vec<GcRef<ObjectKind>>,
 ) -> Result<(), RuntimeError> {
     match v {
         Value::Null => out.push_str("null"),
@@ -407,22 +412,21 @@ fn write_value(
                 return Ok(());
             }
             // Cycle guard: a node already on the ancestor path → cycle.
-            let p = Rc::as_ptr(a) as *const ();
-            if seen.contains(&p) {
+            if seen_a.contains(a) {
                 return Err(cycle_err());
             }
-            seen.push(p);
+            seen_a.push(*a);
             out.push('[');
             for (i, item) in arr.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
                 write_indent(out, indent, depth + 1);
-                write_value(out, item, indent, depth + 1, seen)?;
+                write_value(out, item, indent, depth + 1, seen_a, seen_o)?;
             }
             write_indent(out, indent, depth);
             out.push(']');
-            seen.pop();
+            seen_a.pop();
         }
         Value::Object(o) => {
             let obj = o.borrow();
@@ -430,11 +434,10 @@ fn write_value(
                 out.push_str("{}");
                 return Ok(());
             }
-            let p = Rc::as_ptr(o) as *const ();
-            if seen.contains(&p) {
+            if seen_o.contains(o) {
                 return Err(cycle_err());
             }
-            seen.push(p);
+            seen_o.push(*o);
             out.push('{');
             for (i, (k, val)) in obj.iter().enumerate() {
                 if i > 0 {
@@ -446,11 +449,11 @@ fn write_value(
                 if indent.is_some() {
                     out.push(' ');
                 }
-                write_value(out, val, indent, depth + 1, seen)?;
+                write_value(out, val, indent, depth + 1, seen_a, seen_o)?;
             }
             write_indent(out, indent, depth);
             out.push('}');
-            seen.pop();
+            seen_o.pop();
         }
         // Non-serializable value types — raise so the caller can `try`.
         Value::Function(_)

@@ -4,12 +4,10 @@
 //! collection of unique values backed by `IndexSet<MapKey>`. Elements
 //! share `Map`'s key restriction: hashable primitives only.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use indexmap::IndexSet;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc::{self, GcRef, SetKind};
 use crate::vm::value::{Arity, MapKey, Value};
 
 use super::{native, object};
@@ -36,9 +34,9 @@ fn err(msg: String) -> RuntimeError {
 fn expect_set(
     v: &Value,
     label: &str,
-) -> Result<Rc<RefCell<IndexSet<MapKey>>>, RuntimeError> {
+) -> Result<GcRef<SetKind>, RuntimeError> {
     match v {
-        Value::Set(s) => Ok(s.clone()),
+        Value::Set(s) => Ok(*s),
         other => Err(err(format!(
             "Set.{label}: expected Set, got {}", other.type_name()
         ))),
@@ -46,7 +44,7 @@ fn expect_set(
 }
 
 fn new_set(elems: IndexSet<MapKey>) -> Value {
-    Value::Set(Rc::new(RefCell::new(elems)))
+    Value::Set(gc::alloc_set(elems))
 }
 
 /// `new()` → empty Set. `new(array)` builds from an Array's elements.
@@ -97,7 +95,7 @@ fn s_delete(args: &[Value]) -> Result<Value, RuntimeError> {
 fn s_items(args: &[Value]) -> Result<Value, RuntimeError> {
     let set = expect_set(&args[0], "items")?;
     let items = set.borrow().iter().map(|e| Value::from(e.clone())).collect();
-    Ok(Value::Array(Rc::new(RefCell::new(items))))
+    Ok(Value::Array(gc::alloc_array(items)))
 }
 
 /// `size(s)` → element count.

@@ -120,17 +120,36 @@ primitive. Added `Set` (membership, union/intersection/difference) and
 - Also fixed `Object`: `has` is now O(1) (native `_NativeObject`),
   `keys`/`values`/`entries` are O(n) (were O(n²)).
 
-### 7. `Random` module  *(library)*
+### 7. `Random` module  ✅ done  *(library)*
 
 `rand()` is unseedable, so nothing random is reproducible (bad for
 tests — which now exist, item 10). Add `Random`: `seed`, `int(lo,
 hi)`, `float`, `choice`, `shuffle`.
 
-### 8. More `Array` combinators  *(library)*
+Shipped as a native module sharing one per-thread PRNG stream with the
+`rand()` builtin — `Random.seed` makes `rand()` reproducible too.
+`int(lo, hi)` is inclusive of both ends; `shuffle` is non-destructive
+(returns a fresh array). Added `bool()` and `range(r)` (a random
+element of a `Range`, honouring its step) beyond the original sketch.
+
+### 8. More `Array` combinators  ✅ done  *(library)*
 
 Add `group_by`, `chunk`, `windows`, `partition`, `flat_map`, and a
 predicate `count_of`. Pure source-stdlib; in-place append where it
 helps (v0.7 `_NativeArray`).
+
+Shipped as pure source-stdlib. `group_by` returns a `Map`, not an
+Object, so non-string group keys work. Two fixes landed alongside:
+
+- **In-place removal.** `_NativeArray` could only grow an array
+  (`push`/`extend`); pure tigr has no way to shrink one. Added native
+  `pop`, `shift`, `unshift`, `insert`, `remove` (single element, or a
+  `start`/`count` range), and `clear` — so a deck can actually be dealt
+  from, not just copied.
+- **Negative-aware `head`/`tail`.** `head` ignored a negative `n` and
+  fell into a descending range (garbage output); it and `tail` are now
+  Python-slice style — `head(arr, -1)` is all but the last element —
+  and so genuinely distinct from the negative-clamping `take`/`drop`.
 
 ### 9. String formatting  *(library)*
 

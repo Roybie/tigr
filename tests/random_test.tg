@@ -1,0 +1,123 @@
+// tests/random_test.tg — v0.9 #7, the `Random` module.
+//
+// Run directly (`tigr tests/random_test.tg`) or via the discovery
+// subcommand (`tigr test`, which picks up everything under `tests/`).
+//
+// Every case seeds first, so the suite is fully deterministic.
+
+Test   := import 'Test';
+Random := import 'Random';
+Array  := import 'Array';
+
+Test.suite('Random', [
+    Test.case('seed makes a sequence reproducible', fn() {
+        Random.seed(42);
+        a := [Random.float(), Random.int(0, 1000000), Random.bool()];
+        Random.seed(42);
+        b := [Random.float(), Random.int(0, 1000000), Random.bool()];
+        Test.assert_eq(a, b)
+    }),
+
+    Test.case('seed also makes the bare rand() reproducible', fn() {
+        Random.seed(7);
+        x := rand();
+        Random.seed(7);
+        Test.assert_eq(x, rand())
+    }),
+
+    Test.case('different seeds give different streams', fn() {
+        Random.seed(1);
+        a := Random.float();
+        Random.seed(2);
+        Test.assert_ne(a, Random.float())
+    }),
+
+    Test.case('float stays in [0, 1)', fn() {
+        Random.seed(99);
+        for (_, 0..200) {
+            x := Random.float();
+            Test.assert(x >= 0.0 && x < 1.0)
+        }
+    }),
+
+    Test.case('int stays within the inclusive bounds', fn() {
+        Random.seed(3);
+        for (_, 0..500) {
+            x := Random.int(10, 20);
+            Test.assert(x >= 10 && x <= 20)
+        }
+    }),
+
+    Test.case('int reaches both endpoints', fn() {
+        Random.seed(123);
+        saw_lo := false;
+        saw_hi := false;
+        for (_, 0..500) {
+            x := Random.int(1, 6);
+            if x == 1 { saw_lo = true };
+            if x == 6 { saw_hi = true }
+        };
+        Test.assert(saw_lo && saw_hi)
+    }),
+
+    Test.case('int with lo == hi is that value', fn() {
+        Test.assert_eq(Random.int(5, 5), 5)
+    }),
+
+    Test.case('int with lo > hi raises', fn() {
+        Test.assert_raises(fn() { Random.int(10, 1) })
+    }),
+
+    Test.case('int rejects a non-Int argument', fn() {
+        Test.assert_raises(fn() { Random.int(0, 1.5) })
+    }),
+
+    Test.case('choice returns a member of the array', fn() {
+        Random.seed(8);
+        pool := [11, 22, 33, 44];
+        for (_, 0..100) {
+            x := Random.choice(pool);
+            Test.assert(x == 11 || x == 22 || x == 33 || x == 44)
+        }
+    }),
+
+    Test.case('choice of an empty array raises', fn() {
+        Test.assert_raises(fn() { Random.choice([]) })
+    }),
+
+    Test.case('range honours the step', fn() {
+        Random.seed(55);
+        for (_, 0..200) {
+            x := Random.range(0..=8:2);
+            Test.assert(x >= 0 && x <= 8 && x % 2 == 0)
+        }
+    }),
+
+    Test.case('range of an empty range raises', fn() {
+        Test.assert_raises(fn() { Random.range(5..5) })
+    }),
+
+    Test.case('shuffle returns a permutation', fn() {
+        Random.seed(17);
+        original := [1, 2, 3, 4, 5, 6, 7, 8];
+        shuffled := Random.shuffle(original);
+        Test.assert_eq(Array.sort(shuffled), original)
+    }),
+
+    Test.case('shuffle leaves the input untouched', fn() {
+        Random.seed(17);
+        original := [1, 2, 3, 4, 5];
+        Random.shuffle(original);
+        Test.assert_eq(original, [1, 2, 3, 4, 5])
+    }),
+
+    Test.case('bool yields both values across a seeded run', fn() {
+        Random.seed(4);
+        saw_true := false;
+        saw_false := false;
+        for (_, 0..100) {
+            if Random.bool() { saw_true = true } else { saw_false = true }
+        };
+        Test.assert(saw_true && saw_false)
+    }),
+])

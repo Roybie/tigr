@@ -16,6 +16,7 @@ pub mod math;
 pub mod object;
 pub mod os;
 pub mod path;
+pub mod random;
 pub mod set;
 pub mod string;
 pub mod time;
@@ -39,6 +40,7 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Time" => Some(time::module()),
         "DateTime" => Some(datetime::module()),
         "JSON" => Some(json::module()),
+        "Random" => Some(random::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.

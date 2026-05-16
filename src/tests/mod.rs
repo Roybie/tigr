@@ -4955,3 +4955,127 @@ fn v09_object_keys_values_entries_unchanged() {
                [Object.keys(o), Object.values(o), Object.entries(o)]";
     assert_eq!(run(src), run("[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]"));
 }
+
+// ---- v0.9 #7: Random module ----
+
+#[test]
+fn v09_random_seed_is_reproducible() {
+    // The same seed must replay the same sequence of draws.
+    let src = "R := import 'Random';\
+               R.seed(42); a := [R.float(), R.int(0, 1000000), R.bool()];\
+               R.seed(42); b := [R.float(), R.int(0, 1000000), R.bool()];\
+               a == b";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v09_random_seed_also_pins_bare_rand() {
+    // `Random` and the `rand()` builtin share one stream.
+    let src = "R := import 'Random';\
+               R.seed(7); x := rand(); R.seed(7); x == rand()";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v09_random_int_within_inclusive_bounds() {
+    let src = "R := import 'Random'; R.seed(3); ok := true;\
+               for (_, 0..500) { x := R.int(-3, 3);\
+                 if x < -3 || x > 3 { ok = false } }; ok";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v09_random_int_lo_equals_hi() {
+    assert_eq!(run("(import 'Random').int(5, 5)"), Value::Int(5));
+}
+
+#[test]
+fn v09_random_int_lo_above_hi_raises() {
+    let err = run_err("(import 'Random').int(10, 1)");
+    assert!(err.contains("must not exceed"), "got: {err}");
+}
+
+#[test]
+fn v09_random_choice_empty_raises() {
+    let err = run_err("(import 'Random').choice([])");
+    assert!(err.contains("empty"), "got: {err}");
+}
+
+#[test]
+fn v09_random_range_honours_step() {
+    // `range(0..=8:2)` only ever yields 0, 2, 4, 6, or 8.
+    let src = "R := import 'Random'; R.seed(55); ok := true;\
+               for (_, 0..200) { x := R.range(0..=8:2);\
+                 if x < 0 || x > 8 || x % 2 != 0 { ok = false } }; ok";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v09_random_shuffle_is_nondestructive_permutation() {
+    let src = "R := import 'Random'; A := import 'Array';\
+               R.seed(9); orig := [1, 2, 3, 4, 5, 6];\
+               sh := R.shuffle(orig);\
+               [A.sort(sh) == orig, orig == [1, 2, 3, 4, 5, 6]]";
+    assert_eq!(run(src), run("[true, true]"));
+}
+
+#[test]
+fn v09_array_pop_shift_mutate_in_place() {
+    let src = "A := import 'Array'; a := [1, 2, 3];\
+               last := A.pop(a); first := A.shift(a);\
+               [last, first, a]";
+    assert_eq!(run(src), run("[3, 1, [2]]"));
+}
+
+#[test]
+fn v09_array_pop_empty_returns_null() {
+    assert_eq!(run("A := import 'Array'; A.pop([])"), Value::Null);
+}
+
+#[test]
+fn v09_array_remove_index_and_range() {
+    let src = "A := import 'Array'; a := [10, 20, 30, 40, 50];\
+               one := A.remove(a, 1);\
+               many := A.remove(a, 0, 2);\
+               [one, many, a]";
+    assert_eq!(run(src), run("[20, [10, 30], [40, 50]]"));
+}
+
+#[test]
+fn v09_array_insert_unshift_negative_index() {
+    let src = "A := import 'Array'; a := [1, 2, 4];\
+               A.insert(a, -1, 3); A.unshift(a, 0); a";
+    assert_eq!(run(src), run("[0, 1, 2, 3, 4]"));
+}
+
+#[test]
+fn v09_array_head_tail_negative_aware() {
+    let src = "A := import 'Array'; a := [1, 2, 3, 4, 5];\
+               [A.head(a, -2), A.tail(a, -2), A.take(a, -2)]";
+    assert_eq!(run(src), run("[[1, 2, 3], [3, 4, 5], []]"));
+}
+
+#[test]
+fn v09_array_combinators() {
+    let src = "A := import 'Array'; a := [1, 2, 3, 4, 5];\
+               [A.chunk(a, 2),\
+                A.windows(a, 3),\
+                A.partition(a, fn(x) { x % 2 == 0 }),\
+                A.flat_map([1, 2], fn(x) { [x, x] }),\
+                A.count_of(a, fn(x) { x > 2 })]";
+    assert_eq!(
+        run(src),
+        run("[[[1, 2], [3, 4], [5]],\
+              [[1, 2, 3], [2, 3, 4], [3, 4, 5]],\
+              [[2, 4], [1, 3, 5]],\
+              [1, 1, 2, 2],\
+              3]"),
+    );
+}
+
+#[test]
+fn v09_array_group_by_returns_map_with_int_keys() {
+    let src = "A := import 'Array'; m := A.group_by([1, 2, 3, 4], fn(x) { x % 2 });\
+               [m[0], m[1], #m]";
+    assert_eq!(run(src), run("[[2, 4], [1, 3], 2]"));
+}

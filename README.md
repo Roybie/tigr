@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.9** (in progress): the v0.8 core-semantics release plus a growing standard library — the `Test` framework and `tigr test` runner, and the `Map` / `Set` collection types. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
+This README documents **v0.9** (in progress): the v0.8 core-semantics release plus a growing standard library — the `Test` framework and `tigr test` runner, the `Map` / `Set` collection types, and the seedable `Random` module. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
 
 ```
 double := fn(x) { x * 2 };
@@ -620,7 +620,7 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | `bool`  | `bool(x) -> Bool`          | Apply the truthiness rule                  |
 | `floor` | `floor(x) -> Int`          | Round down                                 |
 | `ceil`  | `ceil(x) -> Int`           | Round up                                   |
-| `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`                        |
+| `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`; seed it via `Random.seed` |
 | `type`  | `type(x) -> String`        | Name of the value's type (`'int'`, `'array'`, `'function'`, ...) |
 
 `str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
@@ -640,16 +640,23 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
-A tigr-source module. Several functions take a **callback** — a function value you supply, which the module calls for you. These are the parameters named `func`, `pred`, and `key` in the table below. Unless a row's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`; since tigr drops extra arguments, declare it with only the parameters you need — `fn(x)`, `fn(x, i)`, or `fn(x, i, arr)` all work. (`reduce`, `create`, and `sort_by` use different callback signatures — see their rows.) Most of these are pure tigr and raise only when an operation they perform does (e.g. `sum` on non-numbers); `push` / `extend` are native-backed and raise on a non-array argument.
+A tigr-source module. Several functions take a **callback** — a function value you supply, which the module calls for you. These are the parameters named `func`, `pred`, and `key` in the table below. Unless a row's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`; since tigr drops extra arguments, declare it with only the parameters you need — `fn(x)`, `fn(x, i)`, or `fn(x, i, arr)` all work. (`reduce`, `create`, and `sort_by` use different callback signatures — see their rows.) Most of these are pure tigr and raise only when an operation they perform does (e.g. `sum` on non-numbers); the in-place mutators (`push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`, `clear`) are native-backed and raise on a non-array argument.
 
 | Function | Returns | Behavior |
 |---|---|---|
 | `push(arr, value)` | `Array` | Append `value` to `arr` **in place** (O(1) amortized); returns `arr` |
 | `extend(arr, other)` | `Array` | Append every element of `other` to `arr` **in place**; returns `arr` |
+| `pop(arr)` | value `\| null` | Remove and return the last element **in place**; `null` if empty |
+| `shift(arr)` | value `\| null` | Remove and return the first element **in place**; `null` if empty |
+| `unshift(arr, value)` | `Array` | Prepend `value` to `arr` **in place**; returns `arr` |
+| `insert(arr, index, value)` | `Array` | Insert `value` at `index` **in place** (negative counts from the end, clamped to `0..#arr`); returns `arr` |
+| `remove(arr, index)` | value `\| null` | Remove and return one element at `index` **in place** (negative counts from the end); `null` if out of range |
+| `remove(arr, start, count)` | `Array` | Remove and return `count` elements from `start` **in place**, as a new array |
+| `clear(arr)` | `Array` | Remove every element **in place**; returns `arr` |
 | `create(len, func)` | `Array` | Length-`len` array; element `i` is `func(i)` |
 | `concat(a, b)` | `Array` | A fresh array — `a` and `b` concatenated, neither mutated |
 | `map(arr, func)` | `Array` | Apply `func` to each element |
@@ -662,8 +669,8 @@ A tigr-source module. Several functions take a **callback** — a function value
 | `find_index(arr, pred)` | `Int` | Index of the first match, or `-1` |
 | `any(arr, pred)` | `Bool` | True if `pred` holds for at least one element |
 | `all(arr, pred)` | `Bool` | True if `pred` holds for every element |
-| `head(arr, n)` | `Array` | First `n` elements (clamped to length) |
-| `tail(arr, n)` | `Array` | Last `n` elements (clamped to length) |
+| `head(arr, n)` | `Array` | First `n` elements; a negative `n` counts from the end (`-1` ⇒ all but the last) |
+| `tail(arr, n)` | `Array` | Last `n` elements; a negative `n` counts from the start (`-1` ⇒ all but the first) |
 | `take(arr, n)` | `Array` | First `n` elements (`n` clamped to `0..#arr`) |
 | `drop(arr, n)` | `Array` | All but the first `n` elements |
 | `slice(arr, start, end)` | `Array` | Elements `[start, end)`; out-of-range bounds clamp |
@@ -673,6 +680,12 @@ A tigr-source module. Several functions take a **callback** — a function value
 | `uniq(arr)` | `Array` | First-seen unique elements, order preserved |
 | `zip(a, b)` | `Array` | Pairwise `[a[i], b[i]]`; length is `min(#a, #b)` |
 | `join(arr, sep)` | `String` | `str()` each element, joined by `sep` |
+| `group_by(arr, key)` | `Map` | Group elements into a `Map` keyed by `key(elem)`; each value is the array of matching elements |
+| `chunk(arr, size)` | `Array` | Split into consecutive `size`-long sub-arrays (last may be shorter) |
+| `windows(arr, size)` | `Array` | Every contiguous `size`-long sub-array (sliding window) |
+| `partition(arr, pred)` | `Array` | `[matching, non_matching]` — elements split by `pred` |
+| `flat_map(arr, func)` | `Array` | `map` by `func`, then flatten one level |
+| `count_of(arr, pred)` | `Int` | Count of elements where `pred` is truthy |
 | `sort(arr)` | `Array` | Ascending order, comparing elements directly (insertion sort) |
 | `sort_by(arr, key)` | `Array` | Ascending order, but comparing `key(element)` instead of the elements themselves. `key` is a callback applied to each element to derive the value to sort on — use it to sort by a field or a computed property |
 
@@ -981,6 +994,27 @@ JSON.stringify(${name: 'tigr', v: 0.6}, 2)
 
 JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and an integer-valued `Float` keeps a `.0` suffix. `JSON.stringify` of a circular structure raises a catchable `cycle` error; a non-cyclic shared subtree still serializes fine.
 
+### `Random` (v0.9)
+
+A native module for seedable pseudo-random numbers. `Random` and the bare `rand()` built-in draw from a single per-thread PRNG stream, so `Random.seed(n)` makes `rand()` reproducible too — pin a seed in a test and the draws are deterministic. Until `seed` is called the stream is auto-seeded from the wall clock.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `seed(n)` | `null` | Pin the stream to the `Int` `n` (any value works, `0` included) |
+| `float()` | `Float` | Uniform in `[0, 1)` |
+| `int(lo, hi)` | `Int` | Uniform in the **inclusive** range `[lo, hi]`; raises if `lo > hi` |
+| `bool()` | `Bool` | `true` or `false`, each with probability ½ |
+| `choice(arr)` | value | A uniformly random element of a non-empty array; raises if empty |
+| `range(r)` | `Int` | A uniformly random element of a non-empty range, honouring its step |
+| `shuffle(arr)` | `Array` | A **new** array with `arr`'s elements reordered; the input is untouched |
+
+```
+Random := import 'Random';
+Random.seed(42);
+roll := fn() { Random.int(1, 6) };
+[roll(), roll(), Random.choice(['a', 'b', 'c']), Random.range(0..=8:2)]
+```
+
 ---
 
 ## Error rendering (v0.4)
@@ -1139,10 +1173,11 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.9 is in progress.** 493 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. So far, on top of v0.8:
+**v0.9 is in progress.** 501 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. So far, on top of v0.8:
 
 1. **`Test` module + `tigr test`** — a test framework written in tigr itself (`assert`/`assert_eq`/`assert_raises`, `case` / `suite`), and a CLI subcommand that discovers and runs `*_test.tg` files (and `.tg` files under a `tests/` directory), reporting pass/fail counts.
 2. **`Map` and `Set` types** — `Map` is an arbitrary-keyed dictionary (any null/bool/int/string key, not just strings like `Object`); `Set` is a collection of unique values with `union`/`intersection`/`difference`. Both are native value types with `m[k]`/`s[x]` indexing, `#` length, and `for` iteration. `Object.has` is now O(1) and `Object.keys`/`values`/`entries` are O(n) (were O(n²)).
+3. **`Random` module** — seedable pseudo-random numbers (`seed`, `float`, `int`, `bool`, `choice`, `range`, `shuffle`). `Random` and the `rand()` built-in share one PRNG stream, so `Random.seed(n)` makes `rand()` reproducible too.
 
 Earlier releases:
 

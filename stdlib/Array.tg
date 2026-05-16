@@ -10,6 +10,7 @@
 // each of which copies the whole array.
 
 _na := import '_NativeArray';
+_nm := import '_NativeMap';
 
 ${
     // -------- in-place append --------
@@ -20,6 +21,33 @@ ${
     // Append every element of `other` to `arr` in place; returns
     // `arr`. O(#other).
     extend: _na.extend,
+
+    // -------- in-place removal --------
+    // Pure tigr can grow an array but not shrink one, so these are
+    // native (`_NativeArray`). They mutate `arr` itself, unlike the
+    // slicing helpers below, which build fresh arrays.
+
+    // Remove and return the last element; `null` if `arr` is empty.
+    pop: _na.pop,
+
+    // Remove and return the first element; `null` if `arr` is empty.
+    shift: _na.shift,
+
+    // Prepend `value` to `arr` in place; returns `arr`.
+    unshift: _na.unshift,
+
+    // Insert `value` at `index` in place; returns `arr`. A negative
+    // `index` counts from the end; the index is clamped to `[0, #arr]`.
+    insert: _na.insert,
+
+    // `remove(arr, index)` removes and returns the single element at
+    // `index` (`null` if out of range). `remove(arr, start, count)`
+    // removes and returns `count` elements from `start` as a new
+    // array. Negative indices count from the end. Mutates `arr`.
+    remove: _na.remove,
+
+    // Remove every element of `arr` in place; returns `arr`.
+    clear: _na.clear,
 
     // -------- builders --------
 
@@ -111,16 +139,24 @@ ${
 
     // -------- slicing --------
 
-    // First `n` elements (clamped to length).
+    // First `n` elements. A negative `n` counts from the end
+    // (Python-slice style): `head(arr, -1)` is everything but the last
+    // element. Compare `take`, which clamps a negative `n` to 0.
     head: fn(arr, n) {
+        if n < 0 { n = #arr + n };
         if n > #arr { n = #arr };
+        if n < 0 { n = 0 };
         for[] (i, 0..n) { arr[i] }
     },
 
-    // Last `n` elements.
+    // Last `n` elements. A negative `n` counts from the start:
+    // `tail(arr, -1)` is everything but the first element. Compare
+    // `drop`, which clamps a negative `n` to 0.
     tail: fn(arr, n) {
-        if n > #arr { n = #arr };
-        for[] (i, (#arr - n)..#arr) { arr[i] }
+        start := if n < 0 { 0 - n } else { #arr - n };
+        if start < 0 { start = 0 };
+        if start > #arr { start = #arr };
+        for[] (i, start..#arr) { arr[i] }
     },
 
     take: fn(arr, n) {
@@ -196,6 +232,80 @@ ${
             if i > 0 { r = r + sep + str(x) }
         };
         r
+    },
+
+    // -------- grouping & combinators --------
+
+    // Group elements into a `Map` keyed by `key(x)`. Each value is the
+    // array of elements that produced that key, in first-seen order. A
+    // `Map` (not an Object) so non-string keys work.
+    group_by: fn(arr, key) {
+        m := _nm.new();
+        for (i, x, arr) {
+            k := key(x, i, arr);
+            bucket := m[k];
+            if bucket == null {
+                bucket = [];
+                m[k] = bucket
+            };
+            _na.push(bucket, x)
+        };
+        m
+    },
+
+    // Split `arr` into consecutive sub-arrays of length `size`; the
+    // last chunk is shorter if `#arr` isn't a multiple of `size`.
+    // `size < 1` yields `[]`.
+    chunk: fn(arr, size) {
+        if size < 1 { return [] };
+        out := [];
+        start := 0;
+        while start < #arr {
+            end := start + size;
+            if end > #arr { end = #arr };
+            piece := for[] (i, start..end) { arr[i] };
+            _na.push(out, piece);
+            start = start + size
+        };
+        out
+    },
+
+    // Every contiguous length-`size` sub-array (sliding window).
+    // Empty if `size < 1` or `size > #arr`.
+    windows: fn(arr, size) {
+        if size < 1 { return [] };
+        if size > #arr { return [] };
+        for[] (start, 0..(#arr - size + 1)) {
+            for[] (i, start..(start + size)) { arr[i] }
+        }
+    },
+
+    // `[matching, non_matching]` — elements split by `pred`.
+    partition: fn(arr, pred) {
+        yes := [];
+        no := [];
+        for (i, x, arr) {
+            if pred(x, i, arr) { _na.push(yes, x) }
+            else { _na.push(no, x) }
+        };
+        [yes, no]
+    },
+
+    // Map each element to an array (or value) via `func`, then flatten
+    // one level — `map` + `flatten` in one pass.
+    flat_map: fn(arr, func) {
+        out := [];
+        for (i, x, arr) { out += func(x, i, arr) };
+        out
+    },
+
+    // Count elements for which `pred` is true.
+    count_of: fn(arr, pred) {
+        n := 0;
+        for (i, x, arr) {
+            if pred(x, i, arr) { n = n + 1 }
+        };
+        n
     },
 
     // -------- sorting --------

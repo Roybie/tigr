@@ -1,0 +1,178 @@
+// tests/array_test.tg — v0.9 #8: Array combinators, in-place removal,
+// and the negative-aware `head`/`tail`.
+//
+// Run directly (`tigr tests/array_test.tg`) or via discovery
+// (`tigr test`, which picks up everything under `tests/`).
+
+Test  := import 'Test';
+Array := import 'Array';
+
+Test.suite('Array — in-place removal', [
+    Test.case('pop removes and returns the last element', fn() {
+        a := [1, 2, 3];
+        Test.assert_eq(Array.pop(a), 3);
+        Test.assert_eq(a, [1, 2])
+    }),
+
+    Test.case('pop on an empty array returns null', fn() {
+        a := [];
+        Test.assert_eq(Array.pop(a), null);
+        Test.assert_eq(a, [])
+    }),
+
+    Test.case('shift removes and returns the first element', fn() {
+        a := [1, 2, 3];
+        Test.assert_eq(Array.shift(a), 1);
+        Test.assert_eq(a, [2, 3])
+    }),
+
+    Test.case('shift on an empty array returns null', fn() {
+        Test.assert_eq(Array.shift([]), null)
+    }),
+
+    Test.case('unshift prepends in place', fn() {
+        a := [2, 3];
+        Array.unshift(a, 1);
+        Test.assert_eq(a, [1, 2, 3])
+    }),
+
+    Test.case('insert places a value at an index', fn() {
+        a := [1, 2, 4];
+        Array.insert(a, 2, 3);
+        Test.assert_eq(a, [1, 2, 3, 4])
+    }),
+
+    Test.case('insert with a negative index counts from the end', fn() {
+        a := [1, 2, 4];
+        Array.insert(a, -1, 3);
+        Test.assert_eq(a, [1, 2, 3, 4])
+    }),
+
+    Test.case('insert clamps an out-of-range index', fn() {
+        a := [1, 2];
+        Array.insert(a, 99, 3);
+        Test.assert_eq(a, [1, 2, 3])
+    }),
+
+    Test.case('remove(arr, index) drops one element and returns it', fn() {
+        a := [10, 20, 30, 40];
+        Test.assert_eq(Array.remove(a, 1), 20);
+        Test.assert_eq(a, [10, 30, 40])
+    }),
+
+    Test.case('remove with a negative index counts from the end', fn() {
+        a := [10, 20, 30];
+        Test.assert_eq(Array.remove(a, -1), 30);
+        Test.assert_eq(a, [10, 20])
+    }),
+
+    Test.case('remove with an out-of-range index returns null', fn() {
+        a := [1, 2];
+        Test.assert_eq(Array.remove(a, 7), null);
+        Test.assert_eq(a, [1, 2])
+    }),
+
+    Test.case('remove(arr, start, count) drains a range', fn() {
+        deck := [1, 2, 3, 4, 5, 6, 7];
+        hand := Array.remove(deck, 0, 3);
+        Test.assert_eq(hand, [1, 2, 3]);
+        Test.assert_eq(deck, [4, 5, 6, 7])
+    }),
+
+    Test.case('remove range clamps count past the end', fn() {
+        a := [1, 2, 3];
+        Test.assert_eq(Array.remove(a, 1, 99), [2, 3]);
+        Test.assert_eq(a, [1])
+    }),
+
+    Test.case('clear empties the array in place', fn() {
+        a := [1, 2, 3];
+        Array.clear(a);
+        Test.assert_eq(a, [])
+    }),
+]);
+
+Test.suite('Array — negative-aware head/tail', [
+    Test.case('head takes the first n', fn() {
+        Test.assert_eq(Array.head([1, 2, 3, 4], 2), [1, 2])
+    }),
+
+    Test.case('head with a negative n drops from the end', fn() {
+        Test.assert_eq(Array.head([1, 2, 3, 4], -1), [1, 2, 3])
+    }),
+
+    Test.case('head clamps a too-negative n to empty', fn() {
+        Test.assert_eq(Array.head([1, 2], -9), [])
+    }),
+
+    Test.case('head clamps an oversized n to the whole array', fn() {
+        Test.assert_eq(Array.head([1, 2], 9), [1, 2])
+    }),
+
+    Test.case('tail takes the last n', fn() {
+        Test.assert_eq(Array.tail([1, 2, 3, 4], 2), [3, 4])
+    }),
+
+    Test.case('tail with a negative n drops from the start', fn() {
+        Test.assert_eq(Array.tail([1, 2, 3, 4], -1), [2, 3, 4])
+    }),
+
+    Test.case('tail clamps a too-negative n to empty', fn() {
+        Test.assert_eq(Array.tail([1, 2], -9), [])
+    }),
+
+    Test.case('take still clamps a negative n to 0', fn() {
+        Test.assert_eq(Array.take([1, 2, 3], -1), [])
+    }),
+]);
+
+Test.suite('Array — combinators', [
+    Test.case('chunk splits into fixed-size pieces', fn() {
+        Test.assert_eq(
+            Array.chunk([1, 2, 3, 4, 5], 2),
+            [[1, 2], [3, 4], [5]])
+    }),
+
+    Test.case('chunk with size >= length yields one chunk', fn() {
+        Test.assert_eq(Array.chunk([1, 2], 9), [[1, 2]])
+    }),
+
+    Test.case('chunk with size < 1 yields empty', fn() {
+        Test.assert_eq(Array.chunk([1, 2, 3], 0), [])
+    }),
+
+    Test.case('windows slides over the array', fn() {
+        Test.assert_eq(
+            Array.windows([1, 2, 3, 4], 2),
+            [[1, 2], [2, 3], [3, 4]])
+    }),
+
+    Test.case('windows with size > length is empty', fn() {
+        Test.assert_eq(Array.windows([1, 2], 5), [])
+    }),
+
+    Test.case('partition splits by a predicate', fn() {
+        Test.assert_eq(
+            Array.partition([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 }),
+            [[2, 4], [1, 3, 5]])
+    }),
+
+    Test.case('flat_map maps then flattens one level', fn() {
+        Test.assert_eq(
+            Array.flat_map([1, 2, 3], fn(x) { [x, x * 10] }),
+            [1, 10, 2, 20, 3, 30])
+    }),
+
+    Test.case('count_of counts predicate matches', fn() {
+        Test.assert_eq(
+            Array.count_of([1, 2, 3, 4, 5, 6], fn(x) { x % 3 == 0 }),
+            2)
+    }),
+
+    Test.case('group_by buckets by key, keeping non-string keys', fn() {
+        m := Array.group_by([1, 2, 3, 4, 5], fn(x) { x % 2 });
+        Test.assert_eq(m[0], [2, 4]);
+        Test.assert_eq(m[1], [1, 3, 5]);
+        Test.assert_eq(#m, 2)
+    }),
+])

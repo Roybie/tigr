@@ -1,0 +1,41 @@
+// v0.9 #7 — the `Random` module.
+//
+// Every run seeds first, so the output is reproducible — re-run this
+// file and you'll see the same rolls, the same deck. That is the
+// whole point of `seed`: random behaviour you can pin down in tests.
+
+Random := import 'Random';
+Array  := import 'Array';
+
+Random.seed(2026);
+
+// -------- dice --------
+
+roll := fn() { Random.int(1, 6) };
+
+rolls := for[] (_, 0..10) { roll() };
+print('ten dice rolls:', rolls);
+
+// -------- a coin and a raw float --------
+
+print('coin flip:', if Random.bool() { 'heads' } else { 'tails' });
+print('a float in [0, 1):', Random.float());
+
+// -------- choice and a stepped range --------
+
+fruits := ['apple', 'pear', 'plum', 'cherry'];
+print('random fruit:', Random.choice(fruits));
+print('a random even number 0..8:', Random.range(0..=8:2));
+
+// -------- shuffling a deck --------
+
+ranks := ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+deck := Array.flatten(
+    for[] (suit, ['♠', '♥', '♦', '♣']) {
+        for[] (r, ranks) { r + suit }
+    }
+);
+
+hand := Array.take(Random.shuffle(deck), 5);
+print('a five-card hand:', hand);
+print('the deck itself is untouched — still', #deck, 'cards in order');

@@ -6,11 +6,10 @@
 //! resolvable global; the VM populates the matching `Value::NativeFn`
 //! instances at startup.
 
-use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::rng;
 use crate::vm::value::{Arity, NativeFn, Value};
 
 /// Returns the ordered list of built-in names. The compiler uses this
@@ -286,37 +285,10 @@ fn native_ceil(args: &[Value]) -> Result<Value, RuntimeError> {
 
 // -- rand -----------------------------------------------------------
 //
-// Small xorshift64 PRNG seeded from the wall clock on first use. We
-// don't pull in the `rand` crate — a hobby PRNG is plenty for a
-// hobby language. Distribution: `next_f64()` is uniform on [0, 1)
-// using the top 53 bits of the xorshift output.
-
-thread_local! {
-    static RNG_STATE: Cell<u64> = Cell::new(0);
-}
-
-fn next_rand_u64() -> u64 {
-    RNG_STATE.with(|s| {
-        let mut x = s.get();
-        if x == 0 {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0xdeadbeef);
-            // mix the seed so two near-simultaneous starts diverge
-            x = nanos ^ 0x9E3779B97F4A7C15;
-            if x == 0 { x = 0xdeadbeef; }
-        }
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        s.set(x);
-        x
-    })
-}
+// `rand()` draws from the shared per-thread PRNG in [`crate::vm::rng`].
+// That same stream backs the `Random` module, so `Random.seed(n)`
+// makes `rand()` reproducible too.
 
 fn native_rand(_args: &[Value]) -> Result<Value, RuntimeError> {
-    // top 53 bits → [0, 2^53) → divide by 2^53 → [0, 1)
-    let bits = next_rand_u64() >> 11;
-    Ok(Value::Float((bits as f64) / ((1u64 << 53) as f64)))
+    Ok(Value::Float(rng::next_f64()))
 }

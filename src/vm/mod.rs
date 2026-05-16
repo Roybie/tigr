@@ -11,6 +11,7 @@ pub mod lexer;
 pub mod native_modules;
 pub mod opcode;
 pub mod parser;
+pub mod rng;
 pub mod source_map;
 pub mod source_stdlib;
 pub mod stdlib;

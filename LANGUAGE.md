@@ -928,7 +928,7 @@ my_print := print;
 | `bool`    | `bool(x) -> Bool`        | Truthiness rule from §5                |
 | `floor`   | `floor(x) -> Int`        | Round down                             |
 | `ceil`    | `ceil(x) -> Int`         | Round up                               |
-| `rand`    | `rand() -> Float`        | Uniform in [0, 1)                      |
+| `rand`    | `rand() -> Float`        | Uniform in [0, 1); seedable via `Random.seed` (§13.2) |
 | `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
 
 `type(x)` returns one of `'int'`, `'float'`, `'string'`, `'bool'`,
@@ -1036,6 +1036,29 @@ DateTime := import 'DateTime';
 DateTime.format(DateTime.to_ms(DateTime.now()), '%Y-%m-%d')   // '2026-05-15'
 ```
 
+#### `Random` (v0.9)
+
+Seedable pseudo-random numbers. Every entry — and the bare `rand()`
+built-in (§13.1) — draws from a single per-thread stream, so
+`Random.seed(n)` makes `rand()` reproducible too. Until `seed` is
+called the stream is auto-seeded from the wall clock.
+
+| Entry     | Signature                       | Behavior                                                        |
+|-----------|---------------------------------|-----------------------------------------------------------------|
+| `seed`    | `seed(n) -> null`               | Pin the stream to Int `n` (any value, `0` included)             |
+| `float`   | `float() -> Float`              | Uniform Float in `[0, 1)`                                       |
+| `int`     | `int(lo, hi) -> Int`            | Uniform Int in the **inclusive** range `[lo, hi]`; raises if `lo > hi` |
+| `bool`    | `bool() -> Bool`                | `true` or `false`, each with probability ½                      |
+| `choice`  | `choice(arr) -> value`          | A uniformly random element of a non-empty Array; raises if empty |
+| `range`   | `range(r) -> Int`               | A uniformly random element of a non-empty Range, honouring its step (`range(0..=8:2)` → one of `0,2,4,6,8`) |
+| `shuffle` | `shuffle(arr) -> Array`         | A **new** array with `arr`'s elements in random order; the input is left untouched |
+
+```
+Random := import 'Random';
+Random.seed(42);
+Random.int(1, 6)          // a dice roll, reproducible after the seed
+```
+
 ### 13.3 Source-stdlib modules (v0.3)
 
 These ship as tigr `.tg` files embedded in the interpreter. `import`
@@ -1044,15 +1067,31 @@ user-defined module.
 
 #### `Array`
 
-`push`, `extend`, `create`, `concat`, `map`, `filter`, `reduce`,
-`flatten`, `reverse`, `index`, `find`, `find_index`, `any`, `all`,
-`head`, `tail`, `take`, `drop`, `slice`, `sum`, `max_of`, `min_of`,
-`uniq`, `zip`, `join`, `sort`, `sort_by`. Callbacks receive
+`push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`,
+`clear`, `create`, `concat`, `map`, `filter`, `reduce`, `flatten`,
+`reverse`, `index`, `find`, `find_index`, `any`, `all`, `head`, `tail`,
+`take`, `drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`,
+`join`, `group_by`, `chunk`, `windows`, `partition`, `flat_map`,
+`count_of`, `sort`, `sort_by`. Callbacks receive
 `(elem, index, whole_array)`; unused trailing args are dropped per
-spec §10.3. `push(arr, v)` and `extend(arr, other)` mutate `arr` in
-place (O(1) amortized / O(#other)) and return it — unlike `concat`,
-which builds a fresh array. They are backed by the native
-`_NativeArray` module.
+spec §10.3.
+
+The eight in-place mutators are backed by the native `_NativeArray`
+module — pure tigr can grow an array (`+`/spread) but cannot shrink
+one. `push(arr, v)` / `extend(arr, other)` append (O(1) amortized /
+O(#other)); `pop` / `shift` remove and return the last / first element
+(`null` on an empty array); `unshift(arr, v)` prepends; `insert(arr,
+i, v)` inserts at `i`; `remove(arr, i)` removes and returns one element
+(`null` if out of range), while `remove(arr, start, count)` removes and
+returns a `count`-long sub-array; `clear` empties in place. All return
+`arr` except `pop`/`shift`/`remove`. Negative indices count from the
+end. Contrast `concat`, which builds a fresh array.
+
+`head`/`tail` accept a negative `n` (Python-slice style):
+`head(arr, -1)` is all but the last element, `tail(arr, -1)` all but
+the first — whereas `take`/`drop` clamp a negative `n` to 0. `group_by`
+returns a `Map` (so non-string keys work); the other combinators build
+fresh arrays.
 
 #### `Iter` (v0.7)
 
@@ -1677,3 +1716,11 @@ Additive changes:
     `Object.keys` / `values` / `entries` append in place rather than
     rebuilding the accumulator array each step, dropping their cost
     from O(n²) to O(n). Behaviour is unchanged — purely a speed fix.
+
+44. **`Random` module** (§13.2). A new native module, `import 'Random'`,
+    for seedable pseudo-random numbers: `seed`, `float`, `int(lo, hi)`
+    (inclusive both ends), `bool`, `choice`, `range`, and `shuffle`
+    (non-destructive). `Random` and the bare `rand()` built-in now share
+    a single per-thread PRNG stream, so `Random.seed(n)` makes `rand()`
+    reproducible too — previously `rand()` was unseedable. Behaviour of
+    `rand()` is otherwise unchanged.

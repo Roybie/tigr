@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.7b**: the v0.6 release plus lazy iteration (the new `Iter` module), in-place array growth (`Array.push` / `Array.extend`, and a `+=` that now mutates rather than rebinds), and structured errors (`catch` binds the raised value; built-in errors become `${kind, message, line}` objects). The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
+This README documents **v0.9** (in progress): the v0.8 core-semantics release plus a growing standard library — the `Test` framework and `tigr test` runner, and the `Map` / `Set` collection types. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
 
 ```
 double := fn(x) { x * 2 };
@@ -19,11 +19,15 @@ cargo build --release
 ./target/release/tigr path/to/program.tg              # run a script
 ./target/release/tigr path/to/program.tg arg1 arg2    # script + args (Os.args)
 ./target/release/tigr                                  # interactive REPL
+./target/release/tigr test                             # discover and run tests
+./target/release/tigr test path/                       # tests under a path
 ```
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), and v0.7 demos in [`examples/v07/`](examples/v07/).
+`tigr test` discovers test files — any `*_test.tg` file, plus every `.tg` file under a `tests/` directory — runs them, and reports pass/fail counts. See the [`Test`](#test-v09) module for writing tests.
+
+There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), v0.7 demos in [`examples/v07/`](examples/v07/), v0.8 demos in [`examples/v08/`](examples/v08/), and v0.9 demos in [`examples/v09/`](examples/v09/).
 
 ---
 
@@ -60,12 +64,14 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `Null`   | `null`                                        |                                          |
 | `Array`  | `[1, 'two', true]`                            | Heterogeneous, reference type            |
 | `Object` | `${name: 'a', age: 1}`                        | String keys, reference type              |
+| `Map`    | `Map.new()` *(v0.9)*                          | Arbitrary-keyed dictionary, reference type |
+| `Set`    | `Set.new([1, 2, 3])` *(v0.9)*                 | Collection of unique values, reference type |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
 
 Underscores are allowed only between digits — `_5`, `5_`, `5__5`, and `0x_FF` are all rejected. A trailing `5.` lexes as `Int(5)` followed by `Dot` so `5.method` style member access still works.
 
-`Array` and `Object` are **reference types** — passing them around shares the same underlying value.
+`Array`, `Object`, `Map`, and `Set` are **reference types** — passing them around shares the same underlying value.
 
 ### Truthiness
 
@@ -298,13 +304,15 @@ last := while i < 5 { i = i + 1; i * 10 };   // last == 50
 
 ### `for` and `for[]`
 
-Iterates a Range, Array, Object, String, or iterator object. One-variable or two-variable form:
+Iterates a Range, Array, Object, Map, Set, String, or iterator object. One-variable or two-variable form:
 
 | Iterable | One-var          | Two-var                              |
 |----------|------------------|--------------------------------------|
 | Range    | `for (i, 0..10)` | `for (n, i, 0..10)`   (`n` = 0,1,2…) |
 | Array    | `for (x, arr)`   | `for (i, x, arr)`                    |
 | Object   | `for (v, obj)`   | `for (k, v, obj)`                    |
+| Map      | `for (v, map)`   | `for (k, v, map)`                    |
+| Set      | `for (x, set)`   | `for (i, x, set)`     (`i` = 0,1,2…) |
 | String   | `for (ch, str)`  | `for (i, ch, str)`                   |
 | Iterator | `for (v, it)`    | `for (i, v, it)`      (`i` = 0,1,2…) |
 
@@ -397,7 +405,7 @@ result := try risky() catch (e) {
 raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
-`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`, `cycle`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings — except `JSON.stringify` of a circular structure, which raises a structured `cycle` error. An uncaught raised value is rendered via `str()` in the error report.
+`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `invalid_key_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`, `cycle`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings — except `JSON.stringify` of a circular structure, which raises a structured `cycle` error. An uncaught raised value is rendered via `str()` in the error report.
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 
@@ -580,7 +588,7 @@ local := import './lib/util';  // path → user file
 
 There are two flavors:
 
-- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `Iter`, `String`, `Math` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
+- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
 - **Path-shaped**: resolved relative to the importing file. The `.tg` extension is added automatically if absent.
 
 A user module is typically just an object literal:
@@ -632,7 +640,7 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, and `Object` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, and `JSON` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
@@ -797,6 +805,82 @@ Object := import 'Object';
 Object.entries(${a: 1, b: 2})                  // [['a', 1], ['b', 2]]
 Object.map(${a: 1, b: 2}, fn(v) { v * 10 })    // ${a: 10, b: 20}  — fn is the callback
 ```
+
+As of v0.9 `has` is O(1) (it was an O(n) key scan), and `keys` / `values` / `entries` build their result in O(n) rather than O(n²).
+
+### `Map` (v0.9)
+
+A tigr-source module (backed by native `_NativeMap` primitives) exposing the `Map` type — an arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`, whose keys are strings only, a `Map` key may be any `null` / `bool` / `int` / `string` value; a `Float` or collection key raises `invalid_key_type`. Read and write entries with `m[key]` / `m[key] = value`, take the count with `#m`, and iterate with `for (k, v, m)`. `type(m)` is `'map'`. A `Map` is not JSON-serializable.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `new(source?)` | `Map` | Empty map; or copy an `Object`'s entries; or build from an array of `[key, value]` pairs |
+| `get(m, key)` | value | The entry's value, or `null` if absent (same as `m[key]`) |
+| `set(m, key, value)` | `Map` | Insert / overwrite in place; returns `m` (same as `m[key] = value`) |
+| `has(m, key)` | `Bool` | True if `key` is present — O(1), distinguishes a missing key from a `null` value |
+| `delete(m, key)` | `Bool` | Remove `key`; true if it was present |
+| `keys(m)` / `values(m)` / `entries(m)` | `Array` | Keys / values / `[key, value]` pairs in insertion order |
+| `size(m)` | `Int` | Entry count (same as `#m`) |
+| `clear(m)` | `Map` | Remove every entry in place; returns `m` |
+
+```
+Map := import 'Map';
+m := Map.new();
+m[1] = 'one';                  // int key
+m['1'] = 'string';             // distinct string key
+[m[1], m['1'], Map.has(m, 2)]  // ['one', 'string', false]
+```
+
+### `Set` (v0.9)
+
+A tigr-source module (backed by native `_NativeSet` primitives) exposing the `Set` type — an insertion-ordered collection of unique values. Elements share `Map`'s key restriction (`null` / `bool` / `int` / `string`). Test membership with `s[x]` (writing `s[x] = ...` is an error); take the count with `#s`; iterate with `for (x, s)`. `type(s)` is `'set'`. Not JSON-serializable.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `new(array?)` | `Set` | Empty set; or build from an array, collapsing duplicates |
+| `add(s, x)` | `Set` | Insert `x` in place; returns `s` |
+| `has(s, x)` | `Bool` | True if `x` is a member (same as `s[x]`) |
+| `delete(s, x)` | `Bool` | Remove `x`; true if it was present |
+| `items(s)` | `Array` | Elements in insertion order |
+| `size(s)` | `Int` | Element count (same as `#s`) |
+| `clear(s)` | `Set` | Remove every element in place; returns `s` |
+| `union(a, b)` | `Set` | Fresh set: every element of either |
+| `intersection(a, b)` | `Set` | Fresh set: elements in both |
+| `difference(a, b)` | `Set` | Fresh set: `a`'s elements not in `b` |
+
+```
+Set := import 'Set';
+a := Set.new([1, 2, 3]);
+b := Set.new([2, 3, 4]);
+Set.items(Set.intersection(a, b))   // [2, 3]
+```
+
+### `Test` (v0.9)
+
+A tigr-source module — a small test framework written in tigr itself. The **assertions** `raise` on failure (so they work standalone, anywhere), and `case` / `suite` group tests as plain data. `assert_eq` compares with `==`, which is structural for arrays and objects. `assert_raises` runs `thunk` and fails unless it raised; pass a `kind` to also require a specific error — a reified built-in error's `kind` field, or the raised value itself otherwise — and it returns the caught error.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `assert(cond, msg?)` | `true` | Raise `msg` (default `'assertion failed'`) unless `cond` is truthy |
+| `assert_eq(actual, expected, msg?)` | `true` | Raise unless `actual == expected`; the message shows both |
+| `assert_ne(a, b, msg?)` | `true` | Raise unless `a != b` |
+| `assert_raises(thunk, kind?)` | the caught error | Run `thunk`; raise unless it raised. With `kind`, the raised error must match |
+| `fail(msg?)` | — | Raise unconditionally (default `'explicit failure'`) |
+| `case(name, func)` | `Object` | Package an unrun test — `${name, func}` |
+| `suite(name, cases)` | `Object` | Run an array of `case`s; print PASS/FAIL lines + a tally; return `${name, passed, failed, total, failures}` |
+
+```
+Test := import 'Test';
+
+Test.suite('arithmetic', [
+    Test.case('adds', fn() { Test.assert_eq(1 + 1, 2) }),
+    Test.case('div zero raises', fn() {
+        Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero')
+    }),
+])
+```
+
+Run this file directly, or via `tigr test` — which discovers every `*_test.tg` file (and every `.tg` file under a `tests/` directory), runs each, sums the `suite` results a file's final expression yields, and exits non-zero if any test failed.
 
 ### `IO`
 
@@ -1055,14 +1139,15 @@ Low to high, with associativity:
 
 ## Status
 
-**v0.7b is feature-complete.** 402 tests pass. v0.7 added lazy iteration and fast array growth; v0.7b adds structured errors. On top of v0.6:
+**v0.9 is in progress.** 493 tests pass. v0.9 expands the standard library, leading with a test framework so every later module ships with tests written in tigr. So far, on top of v0.8:
 
-1. **`Iter` module** — lazy, pull-based iterators: pipelines that never materialize intermediate arrays, plus infinite sequences and short-circuiting consumers.
-2. **In-place array growth** — `Array.push` / `Array.extend`, and a `+=` operator that now mutates an array in place instead of rebinding it. A deliberate breaking change: aliases of the array see the mutation, consistent with `arr[i] = v`.
-3. **Structured errors** — `catch` binds the exact raised value (no string coercion); a built-in runtime error is reified into a `${kind, message, line}` object so handlers can `match` on `e.kind`. Breaking: handlers that did string operations on a caught built-in error must adapt.
+1. **`Test` module + `tigr test`** — a test framework written in tigr itself (`assert`/`assert_eq`/`assert_raises`, `case` / `suite`), and a CLI subcommand that discovers and runs `*_test.tg` files (and `.tg` files under a `tests/` directory), reporting pass/fail counts.
+2. **`Map` and `Set` types** — `Map` is an arbitrary-keyed dictionary (any null/bool/int/string key, not just strings like `Object`); `Set` is a collection of unique values with `union`/`intersection`/`difference`. Both are native value types with `m[k]`/`s[x]` indexing, `#` length, and `for` iteration. `Object.has` is now O(1) and `Object.keys`/`values`/`entries` are O(n) (were O(n²)).
 
 Earlier releases:
 
+- **v0.8**: integer-overflow checks (a catchable `overflow` error), tail calls + bounded recursion, stack traces on uncaught errors, `JSON.stringify` cycle detection, and `for` / spread consuming iterator objects directly.
+- **v0.7 / v0.7b**: lazy `Iter` iterators (pipelines that never materialize intermediate arrays), in-place array growth (`Array.push` / `extend`, and a mutating `+=`), and structured errors — `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object.
 - **v0.6**: `continue` keyword, default parameter values (`fn(a, b = 10)`), and a wider standard library — `IO` filesystem ops, a `Path` module, `Os.run` subprocesses, an `Object` module, and a UTC `DateTime` module.
 - **v0.5**: `type()` built-in, bitwise operators (`& | ^ ~ << >>`; `^` became XOR, `^^` is power), `match` expression with refutable patterns.
 - **v0.4**: rendered errors with source snippets, extended number literals (`0xFF`/`1e6`/`.5`/`_`), patterns on `=` + mid-expression decls, `JSON` module.

@@ -1,0 +1,36 @@
+// examples/v09/calc_test.tg — v0.9 #10, the Test framework.
+//
+// Run it directly — `tigr examples/v09/calc_test.tg` — or let the
+// `tigr test` subcommand discover it: `tigr test examples/v09`. A
+// file named `*_test.tg` (or any `.tg` under a `tests/` directory)
+// is picked up automatically. Its final expression is a
+// `Test.suite(...)` result object, which `tigr test` tallies.
+
+Test := import 'Test';
+
+Test.suite('calculator', [
+    // assert_eq uses `==`, structural for arrays and objects.
+    Test.case('addition', fn() {
+        Test.assert_eq(2 + 3, 5)
+    }),
+
+    Test.case('structural equality', fn() {
+        Test.assert_eq([1, 2, 3], [1, 2, 3], 'arrays compare element-wise')
+    }),
+
+    Test.case('values differ', fn() {
+        Test.assert_ne(floor(2.7), 3)
+    }),
+
+    // assert_raises checks a built-in error's `kind`.
+    Test.case('division by zero raises', fn() {
+        Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero')
+    }),
+
+    // Without a kind it just requires *some* raise, and returns the
+    // caught value so you can assert further on it.
+    Test.case('a raised message is caught', fn() {
+        err := Test.assert_raises(fn() { raise 'nope' });
+        Test.assert_eq(err, 'nope')
+    }),
+])

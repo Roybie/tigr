@@ -1074,6 +1074,50 @@ order (`entries` → `[key, value]` pairs; `from_entries` is its
 inverse). `merge` / `map` / `filter` return fresh objects — inputs are
 never mutated. Callbacks receive `(value, key, whole_object)`.
 
+As of v0.9, `has` is O(1) (backed by native `_NativeObject`) and tells
+a missing key from a present `null` value, which `obj[key]` cannot.
+`keys` / `values` / `entries` append in place (O(n) total) rather than
+copying the accumulator each step.
+
+#### `Map` (v0.9)
+
+An arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`
+(string keys only), a `Map` key may be any **null / bool / int /
+string** value; a `Float` or collection key raises `invalid_key_type`.
+It is a distinct runtime type — `type(m)` is `"map"` — backed by the
+native `_NativeMap` module.
+
+`m[key]` reads an entry (`null` when absent) and `m[key] = value`
+writes one. `#m` is the entry count; `for (k, v, m) { ... }` iterates
+entries in insertion order. Functions: `new`, `get`, `set`, `has`,
+`delete`, `keys`, `values`, `entries`, `size`, `clear`. `new()` builds
+an empty map; `new(obj)` copies an Object's entries; `new(pairs)`
+builds from an array of `[key, value]` pairs. `has` is O(1) and tells
+a missing key from a present `null` value. A `Map` is not
+JSON-serializable (`JSON.stringify` raises).
+
+```
+Map := import 'Map';
+m := Map.new();
+m[1] = 'one';      // int key
+m['1'] = 'string'; // distinct string key — no collision
+Map.has(m, 1)      // → true
+```
+
+#### `Set` (v0.9)
+
+An insertion-ordered collection of unique values. Elements share
+`Map`'s key restriction (null / bool / int / string). `type(s)` is
+`"set"`; backed by the native `_NativeSet` module.
+
+`s[x]` tests membership (`true` / `false`); `s[x] = ...` is an error
+(`immutable_target`) — mutate with `add` / `delete`. `#s` is the
+element count; `for (x, s) { ... }` iterates in insertion order.
+Functions: `new`, `add`, `has`, `delete`, `items`, `size`, `clear`,
+and the algebra `union`, `intersection`, `difference` (each returns a
+fresh set, inputs untouched). `new(array)` builds a set from an array,
+collapsing duplicates. Like `Map`, a `Set` is not JSON-serializable.
+
 #### `String`
 
 `split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
@@ -1089,6 +1133,42 @@ The trig/log/exp functions are backed by the native `_NativeMath`
 module (also importable directly). Source `Math.tg` re-exports them
 alongside pure-tigr helpers — this gives users a single point to
 shadow / extend without touching the interpreter.
+
+#### `Test` (v0.9)
+
+A small test framework, itself written in tigr. Assertions —
+`assert(cond, msg?)`, `assert_eq(actual, expected, msg?)`,
+`assert_ne(a, b, msg?)`, `assert_raises(thunk, kind?)`,
+`fail(msg?)` — `raise` on failure, so they work standalone. `assert_eq`
+uses `==`, which is structural for arrays and objects (§6.3).
+`assert_raises` runs `thunk` and fails unless it raised; with a `kind`
+argument the raised value must match — a reified built-in error's
+`kind` field, or the raised value itself otherwise — and the caught
+error is returned.
+
+Tests are plain data: `case(name, fn)` packages an unrun test, and
+`suite(name, cases)` runs an array of them, printing a `PASS`/`FAIL`
+line per case and a tally, then returning a result object
+`${name, passed, failed, total, failures}` (`failures` being an array
+of `${name, error}`).
+
+```
+Test := import 'Test';
+
+Test.suite('arithmetic', [
+    Test.case('adds', fn() { Test.assert_eq(1 + 1, 2) }),
+    Test.case('div zero raises', fn() {
+        Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero')
+    }),
+])
+```
+
+The `tigr test [path]` CLI subcommand discovers test files —
+`*_test.tg` anywhere, plus every `.tg` file under a `tests/`
+directory — runs each, and sums the `passed`/`failed` fields of the
+`suite` result(s) a file's final expression yields (a lone result
+object, or an array of them). A file that raises an uncaught error
+counts as a failure. The process exits non-zero if any test failed.
 
 ### 13.4 `JSON` (v0.4)
 
@@ -1560,3 +1640,40 @@ Additive changes:
     two places) still serializes normally. This is the one native
     stdlib error that is a structured built-in error rather than a plain
     string message.
+
+## Appendix I — Changes in v0.9
+
+Additive changes:
+
+41. **`Test` module and `tigr test`** (§13.3). A new source-stdlib
+    module, `import 'Test'`, provides a small test framework written in
+    tigr: assertions (`assert`, `assert_eq`, `assert_ne`,
+    `assert_raises`, `fail`) that `raise` on failure, and `case` /
+    `suite` for grouping tests as plain data. `suite` runs an array of
+    `case`s, prints a `PASS`/`FAIL` line per case, and returns a result
+    object `${name, passed, failed, total, failures}`. A new CLI
+    subcommand, `tigr test [path]`, discovers test files (`*_test.tg`
+    anywhere, plus every `.tg` file under a `tests/` directory), runs
+    each, sums the `suite` results, and exits non-zero if any test
+    failed.
+
+42. **`Map` and `Set` types** (§13.3). Two new native value types.
+    `Map` is an arbitrary-keyed, insertion-ordered dictionary — keys
+    may be any null / bool / int / string value, unlike `Object`'s
+    string-only keys. `Set` is an insertion-ordered collection of
+    unique values with `union` / `intersection` / `difference`. Both
+    support `m[k]` / `s[x]` indexing, `#` length, and `for` iteration;
+    a `Float` or collection key/element raises a new `invalid_key_type`
+    error; neither is JSON-serializable. `type()` reports `"map"` /
+    `"set"`. Imported as `import 'Map'` / `import 'Set'`, backed by the
+    native `_NativeMap` / `_NativeSet` modules. The roadmap's "stringify
+    keys internally" option was dropped — distinct native types give
+    true O(1) operations and keep `1` and `'1'` distinct keys.
+
+43. **`Object.has` is O(1); `keys`/`values`/`entries` are O(n)**
+    (§13.3). `Object.has` now uses a native `contains_key` (the new
+    `_NativeObject` module) instead of an O(n) key scan, and still
+    distinguishes a missing key from a present `null` value.
+    `Object.keys` / `values` / `entries` append in place rather than
+    rebuilding the accumulator array each step, dropping their cost
+    from O(n²) to O(n). Behaviour is unchanged — purely a speed fix.

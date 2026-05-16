@@ -1,0 +1,113 @@
+// Tigr stdlib — `import 'Test'`.
+//
+// A tiny test framework, written in Tigr itself. Tests are plain
+// data: `case(name, fn)` packages an unrun test, and `suite(name,
+// cases)` runs a list of them, printing a PASS/FAIL line per case
+// and a tally, then returning a result object.
+//
+//   Test := import 'Test';
+//
+//   Test.suite('arithmetic', [
+//       Test.case('adds', fn() { Test.assert_eq(1 + 1, 2) }),
+//       Test.case('div zero raises', fn() {
+//           Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero')
+//       }),
+//   ])
+//
+// The assertions (`assert`, `assert_eq`, ...) `raise` on failure, so
+// they work standalone too — a `suite` just catches that raise and
+// records it. The result object is `${name, passed, failed, total,
+// failures}`; `failures` is an array of `${name, error}`. The
+// `tigr test` CLI subcommand discovers `*_test.tg` files (and `.tg`
+// files under any `tests/` directory) and sums those result objects.
+// A test file's final expression should be a `suite(...)` result, or
+// an array of them for multiple suites.
+
+${
+    // -------- assertions: raise on failure --------
+
+    // Raise `msg` unless `cond` is truthy.
+    assert: fn(cond, msg = 'assertion failed') {
+        if !cond { raise msg };
+        true
+    },
+
+    // Raise unless `actual == expected` (structural for arrays/objects).
+    assert_eq: fn(actual, expected, msg = null) {
+        if actual != expected {
+            detail := 'expected ' + str(expected) + ', got ' + str(actual);
+            full := if msg == null { detail } else { msg + ': ' + detail };
+            raise full
+        };
+        true
+    },
+
+    // Raise unless `a != b`.
+    assert_ne: fn(a, b, msg = null) {
+        if a == b {
+            detail := 'expected values to differ, both were ' + str(a);
+            full := if msg == null { detail } else { msg + ': ' + detail };
+            raise full
+        };
+        true
+    },
+
+    // Run `thunk`; raise unless it raised. When `kind` is given, the
+    // raised value must match: for a reified built-in error its
+    // `kind` field, otherwise the raised value itself. Returns the
+    // caught error so the caller can assert further on it.
+    assert_raises: fn(thunk, kind = null) {
+        outcome := try { thunk(); ${raised: false} }
+                   catch (e) { ${raised: true, error: e} };
+        if !outcome.raised {
+            raise 'expected an error to be raised, but none was'
+        };
+        if kind != null {
+            e := outcome.error;
+            got := if type(e) == 'object' { e.kind } else { e };
+            if got != kind {
+                raise 'expected error ' + str(kind) + ', got ' + str(got)
+            }
+        };
+        outcome.error
+    },
+
+    // Unconditional failure.
+    fail: fn(msg = 'explicit failure') { raise msg },
+
+    // -------- defining and running tests --------
+
+    // Package a named test. `func` runs nothing until a suite drives
+    // it; it should call the assertions and raise on failure.
+    case: fn(name, func) { ${name: name, func: func} },
+
+    // Run `cases` (an array of `case` descriptors). Prints a header,
+    // a `PASS`/`FAIL` line per case, and a tally. Returns the result
+    // object `${name, passed, failed, total, failures}`.
+    suite: fn(name, cases) {
+        print('suite ' + name);
+        passed := 0;
+        failed := 0;
+        failures := [];
+        for (c, cases) {
+            outcome := try { c.func(); ${ok: true} }
+                       catch (e) { ${ok: false, error: e} };
+            if outcome.ok {
+                passed = passed + 1;
+                print('  PASS  ' + c.name)
+            } else {
+                failed = failed + 1;
+                failures = failures + [${name: c.name, error: outcome.error}];
+                print('  FAIL  ' + c.name + '  —  ' + str(outcome.error))
+            }
+        };
+        print('  ' + str(passed) + ' passed, ' + str(failed) + ' failed');
+        ${
+            name:     name,
+            passed:   passed,
+            failed:   failed,
+            total:    passed + failed,
+            failures: failures,
+        }
+    },
+}

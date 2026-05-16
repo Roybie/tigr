@@ -4606,3 +4606,352 @@ fn v08_json_stringify_cycle_uncaught_renders() {
     );
     assert!(msg.contains("circular reference"), "got:\n{msg}");
 }
+
+// ---- v0.9 #10: Test framework ----
+
+/// Prelude that imports the `Test` source-stdlib module.
+const TEST_PRELUDE: &str = "Test := import 'Test'; ";
+
+fn run_test(body: &str) -> Value {
+    run(&format!("{TEST_PRELUDE}{body}"))
+}
+
+#[test]
+fn v09_assert_pass_returns_true() {
+    assert_eq!(run_test("Test.assert(1 < 2)"), Value::Bool(true));
+}
+
+#[test]
+fn v09_assert_fail_raises_message() {
+    let v = run_test("try Test.assert(false, 'nope') catch (e) { e }");
+    assert_eq!(v, Value::Str("nope".into()));
+}
+
+#[test]
+fn v09_assert_fail_default_message() {
+    let v = run_test("try Test.assert(false) catch (e) { e }");
+    assert_eq!(v, Value::Str("assertion failed".into()));
+}
+
+#[test]
+fn v09_assert_eq_pass() {
+    assert_eq!(run_test("Test.assert_eq(2 + 2, 4)"), Value::Bool(true));
+}
+
+#[test]
+fn v09_assert_eq_structural_on_arrays() {
+    // == is structural for arrays, so assert_eq is too.
+    assert_eq!(
+        run_test("Test.assert_eq([1, [2]], [1, [2]])"),
+        Value::Bool(true),
+    );
+}
+
+#[test]
+fn v09_assert_eq_fail_detail_message() {
+    let v = run_test("try Test.assert_eq(3, 4) catch (e) { e }");
+    assert_eq!(v, Value::Str("expected 4, got 3".into()));
+}
+
+#[test]
+fn v09_assert_eq_fail_with_prefix() {
+    let v = run_test("try Test.assert_eq(3, 4, 'math') catch (e) { e }");
+    assert_eq!(v, Value::Str("math: expected 4, got 3".into()));
+}
+
+#[test]
+fn v09_assert_ne_pass_and_fail() {
+    assert_eq!(run_test("Test.assert_ne(1, 2)"), Value::Bool(true));
+    let v = run_test("try Test.assert_ne(5, 5) catch (e) { e }");
+    assert_eq!(v, Value::Str("expected values to differ, both were 5".into()));
+}
+
+#[test]
+fn v09_fail_raises() {
+    let v = run_test("try Test.fail('boom') catch (e) { e }");
+    assert_eq!(v, Value::Str("boom".into()));
+}
+
+#[test]
+fn v09_assert_raises_matches_builtin_kind() {
+    let v = run_test(
+        "e := Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero'); e.kind",
+    );
+    assert_eq!(v, Value::Str("div_by_zero".into()));
+}
+
+#[test]
+fn v09_assert_raises_wrong_kind() {
+    let v = run_test(
+        "try Test.assert_raises(fn() { 1 / 0 }, 'type_mismatch') \
+         catch (e) { e }",
+    );
+    assert_eq!(
+        v,
+        Value::Str("expected error type_mismatch, got div_by_zero".into()),
+    );
+}
+
+#[test]
+fn v09_assert_raises_no_raise_fails() {
+    let v = run_test("try Test.assert_raises(fn() { 42 }) catch (e) { e }");
+    assert_eq!(
+        v,
+        Value::Str("expected an error to be raised, but none was".into()),
+    );
+}
+
+#[test]
+fn v09_assert_raises_returns_caught_value() {
+    // No kind given: any raise passes, and the caught value comes back.
+    let v = run_test("Test.assert_raises(fn() { raise 'custom' })");
+    assert_eq!(v, Value::Str("custom".into()));
+}
+
+#[test]
+fn v09_case_builds_descriptor() {
+    assert_eq!(
+        run_test("c := Test.case('adds', fn() { 7 }); c.name"),
+        Value::Str("adds".into()),
+    );
+    assert_eq!(
+        run_test("c := Test.case('adds', fn() { 7 }); c.func()"),
+        Value::Int(7),
+    );
+}
+
+#[test]
+fn v09_suite_tallies_pass_and_fail() {
+    let v = run_test(
+        "r := Test.suite('s', [
+             Test.case('ok', fn() { Test.assert(true) }),
+             Test.case('bad', fn() { Test.fail('x') }),
+             Test.case('ok2', fn() { Test.assert_eq(1, 1) }),
+         ]);
+         [r.passed, r.failed, r.total]",
+    );
+    assert_eq!(int_vec(&v), vec![2, 1, 3]);
+}
+
+#[test]
+fn v09_suite_records_failures() {
+    let body = "r := Test.suite('s', [
+                    Test.case('bad', fn() { Test.fail('the reason') }),
+                ]); ";
+    assert_eq!(
+        run_test(&format!("{body} r.failures[0].name")),
+        Value::Str("bad".into()),
+    );
+    assert_eq!(
+        run_test(&format!("{body} r.failures[0].error")),
+        Value::Str("the reason".into()),
+    );
+}
+
+// ---- REPL: destructuring decls must not desync `snapshot_len` ----
+// A `${x} := ...` / `[a,b] := ...` decl leaves an anonymous source
+// local on the REPL's persistent stack. If it isn't reported back,
+// the next uncaught error truncates the stack too far and destroys
+// real bindings (panic / wrong values on the line after that).
+
+#[test]
+fn repl_object_destructure_survives_uncaught_error() {
+    use crate::repl::Repl;
+    let mut repl = Repl::new();
+    repl.eval("${assert} := import 'Test'").expect("import");
+    // assert(false) raises — caught by the REPL wall.
+    assert!(repl.eval("assert(false)").is_err());
+    // The `assert` binding must still resolve to the right slot.
+    assert_eq!(repl.eval("assert(true)").expect("assert"), Value::Bool(true));
+}
+
+#[test]
+fn repl_array_destructure_survives_uncaught_error() {
+    use crate::repl::Repl;
+    let mut repl = Repl::new();
+    repl.eval("[a, b] := [10, 20]").expect("destructure");
+    assert!(repl.eval("1 / 0").is_err());
+    assert_eq!(repl.eval("a + b").expect("read a,b"), Value::Int(30));
+}
+
+#[test]
+fn repl_decl_after_destructure_does_not_collide() {
+    // A later decl must claim a fresh slot, not the anonymous source
+    // slot the destructure left behind.
+    use crate::repl::Repl;
+    let mut repl = Repl::new();
+    repl.eval("${assert} := import 'Test'").expect("import");
+    repl.eval("x := 99").expect("decl x");
+    assert_eq!(repl.eval("x").expect("read x"), Value::Int(99));
+    assert_eq!(repl.eval("assert(true)").expect("assert"), Value::Bool(true));
+}
+
+// ---- v0.9: Map & Set ----
+
+#[test]
+fn v09_map_construct_get_set() {
+    let src = "Map := import 'Map'; m := Map.new(); m['a'] = 1; m['a']";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v09_map_missing_key_is_null() {
+    assert_eq!(run("Map := import 'Map'; Map.new()['nope']"), Value::Null);
+}
+
+#[test]
+fn v09_map_distinct_key_types() {
+    // Int 1, Str "1" and Bool true are three distinct keys.
+    let src = "Map := import 'Map'; m := Map.new();\
+               m[1] = 'int'; m['1'] = 'str'; m[true] = 'bool';\
+               #m";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn v09_map_int_str_keys_do_not_collide() {
+    let src = "Map := import 'Map'; m := Map.new();\
+               m[1] = 'int'; m['1'] = 'str'; m[1]";
+    assert_eq!(run(src), Value::Str("int".into()));
+}
+
+#[test]
+fn v09_map_float_key_errors() {
+    let err = run_err("Map := import 'Map'; Map.new()[1.5]");
+    assert!(err.contains("invalid key type"), "got: {err}");
+    assert!(err.contains("float"), "got: {err}");
+}
+
+#[test]
+fn v09_map_collection_key_errors() {
+    let err = run_err("Map := import 'Map'; m := Map.new(); m[${}] = 1");
+    assert!(err.contains("invalid key type"), "got: {err}");
+}
+
+#[test]
+fn v09_map_len_and_iter() {
+    let src = "Map := import 'Map'; m := Map.new();\
+               m['a'] = 10; m['b'] = 20; m['c'] = 30;\
+               total := 0; for (k, v, m) { total = total + v }; total";
+    assert_eq!(run(src), Value::Int(60));
+}
+
+#[test]
+fn v09_map_new_from_object() {
+    let src = "Map := import 'Map'; m := Map.new(${x: 7, y: 8}); m['x'] + m['y']";
+    assert_eq!(run(src), Value::Int(15));
+}
+
+#[test]
+fn v09_map_new_from_pairs() {
+    let src = "Map := import 'Map'; m := Map.new([[1, 'a'], [2, 'b']]); m[2]";
+    assert_eq!(run(src), Value::Str("b".into()));
+}
+
+#[test]
+fn v09_map_has_distinguishes_null_value() {
+    let src = "Map := import 'Map'; m := Map.new(); m['k'] = null;\
+               [Map.has(m, 'k'), Map.has(m, 'missing')]";
+    assert_eq!(run(src), run("[true, false]"));
+}
+
+#[test]
+fn v09_map_delete() {
+    let src = "Map := import 'Map'; m := Map.new(); m['k'] = 1;\
+               was := Map.delete(m, 'k'); [was, Map.has(m, 'k')]";
+    assert_eq!(run(src), run("[true, false]"));
+}
+
+#[test]
+fn v09_map_keys_values_entries() {
+    let src = "Map := import 'Map'; m := Map.new(); m['a'] = 1; m['b'] = 2;\
+               [Map.keys(m), Map.values(m), Map.entries(m)]";
+    assert_eq!(run(src), run("[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]"));
+}
+
+#[test]
+fn v09_set_add_has_membership() {
+    let src = "Set := import 'Set'; s := Set.new(); Set.add(s, 5);\
+               [s[5], s[6]]";
+    assert_eq!(run(src), run("[true, false]"));
+}
+
+#[test]
+fn v09_set_index_assign_errors() {
+    let err = run_err("Set := import 'Set'; s := Set.new(); s[1] = true");
+    assert!(err.contains("immutable"), "got: {err}");
+}
+
+#[test]
+fn v09_set_dedup_and_size() {
+    assert_eq!(run("Set := import 'Set'; #Set.new([1, 2, 2, 3, 3, 3])"), Value::Int(3));
+}
+
+#[test]
+fn v09_set_union_intersection_difference() {
+    let src = "Set := import 'Set'; a := Set.new([1, 2, 3]); b := Set.new([2, 3, 4]);\
+               [Set.items(Set.union(a, b)),\
+                Set.items(Set.intersection(a, b)),\
+                Set.items(Set.difference(a, b))]";
+    assert_eq!(run(src), run("[[1, 2, 3, 4], [2, 3], [1]]"));
+}
+
+#[test]
+fn v09_set_iter() {
+    let src = "Set := import 'Set'; s := Set.new([4, 5, 6]);\
+               total := 0; for (x, s) { total = total + x }; total";
+    assert_eq!(run(src), Value::Int(15));
+}
+
+#[test]
+fn v09_set_delete() {
+    let src = "Set := import 'Set'; s := Set.new([1, 2]);\
+               was := Set.delete(s, 2); [was, s[2], #s]";
+    assert_eq!(run(src), run("[true, false, 1]"));
+}
+
+#[test]
+fn v09_type_of_map_and_set() {
+    assert_eq!(run("type((import 'Map').new())"), Value::Str("map".into()));
+    assert_eq!(run("type((import 'Set').new())"), Value::Str("set".into()));
+}
+
+#[test]
+fn v09_map_set_truthiness() {
+    assert_eq!(run("Map := import 'Map'; if Map.new() { 1 } else { 0 }"), Value::Int(0));
+    assert_eq!(
+        run("Map := import 'Map'; m := Map.new(); m['k'] = 1; if m { 1 } else { 0 }"),
+        Value::Int(1),
+    );
+    assert_eq!(run("Set := import 'Set'; if Set.new() { 1 } else { 0 }"), Value::Int(0));
+    assert_eq!(run("Set := import 'Set'; if Set.new([1]) { 1 } else { 0 }"), Value::Int(1));
+}
+
+#[test]
+fn v09_map_set_structural_equality() {
+    let map_eq = "Map := import 'Map'; a := Map.new(); a['x'] = 1;\
+                  b := Map.new(); b['x'] = 1; a == b";
+    assert_eq!(run(map_eq), Value::Bool(true));
+    let set_eq = "Set := import 'Set'; Set.new([1, 2]) == Set.new([2, 1])";
+    assert_eq!(run(set_eq), Value::Bool(true));
+}
+
+#[test]
+fn v09_json_stringify_map_errors() {
+    let err = run_err("JSON := import 'JSON'; JSON.stringify((import 'Map').new())");
+    assert!(err.contains("cannot serialize map"), "got: {err}");
+}
+
+#[test]
+fn v09_object_has_is_o1_and_null_aware() {
+    let src = "Object := import 'Object'; o := ${a: 1, b: null};\
+               [Object.has(o, 'a'), Object.has(o, 'b'), Object.has(o, 'z')]";
+    assert_eq!(run(src), run("[true, true, false]"));
+}
+
+#[test]
+fn v09_object_keys_values_entries_unchanged() {
+    let src = "Object := import 'Object'; o := ${a: 1, b: 2};\
+               [Object.keys(o), Object.values(o), Object.entries(o)]";
+    assert_eq!(run(src), run("[['a', 'b'], [1, 2], [['a', 1], ['b', 2]]]"));
+}

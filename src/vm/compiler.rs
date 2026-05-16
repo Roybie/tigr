@@ -294,13 +294,20 @@ impl Compiler {
 
         let fc = c.funcs.pop().expect("repl function compiler popped");
 
-        // Collect the new top-level locals (skip closure placeholder,
-        // existing, anonymous, and `$`-prefixed compiler internals).
+        // Collect the new top-level locals (skip closure placeholder
+        // and existing). Every local the line declares in the REPL's
+        // top-level scope persists on the stack between lines — the
+        // scope never closes — so all of them must be reported, not
+        // just the user-nameable ones. In particular a destructuring
+        // decl (`${x} := ...`) leaves an anonymous slot holding the
+        // source value below the bound names; omitting it desyncs the
+        // REPL's `snapshot_len`, which then truncates real bindings on
+        // the next uncaught error. (Sub-scope temporaries — `$for_*`
+        // and friends — are already gone from `locals` via end_scope.)
         let new_locals: Vec<(String, u8)> = fc
             .locals
             .iter()
             .skip(pre_locals)
-            .filter(|l| !l.name.is_empty() && !l.name.starts_with('$'))
             .map(|l| (l.name.clone(), l.slot))
             .collect();
 

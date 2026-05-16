@@ -7,7 +7,12 @@
 //
 // `keys` / `values` / `entries` accumulate explicitly rather than via
 // `for[]` — a `for[]` body filters out `null`, which would silently
-// drop entries whose value is `null`.
+// drop entries whose value is `null`. They append in place with
+// `Array.push` (O(n) total) rather than `out + [x]` (which copies the
+// whole array each step — O(n^2)).
+
+_no := import '_NativeObject';
+_arr := import 'Array';
 
 ${
     // -------- destructuring --------
@@ -15,21 +20,21 @@ ${
     // Keys in insertion order.
     keys: fn(obj) {
         out := [];
-        for (k, v, obj) { out = out + [k] };
+        for (k, v, obj) { _arr.push(out, k) };
         out
     },
 
     // Values in insertion order.
     values: fn(obj) {
         out := [];
-        for (k, v, obj) { out = out + [v] };
+        for (k, v, obj) { _arr.push(out, v) };
         out
     },
 
     // Array of `[key, value]` pairs in insertion order.
     entries: fn(obj) {
         out := [];
-        for (k, v, obj) { out = out + [[k, v]] };
+        for (k, v, obj) { _arr.push(out, [k, v]) };
         out
     },
 
@@ -43,14 +48,9 @@ ${
 
     // -------- queries --------
 
-    // True if `obj` has `key`. Iterates keys — indexing can't tell a
-    // missing key from a present `null` value.
-    has: fn(obj, key) {
-        for (k, v, obj) {
-            if k == key { return true }
-        };
-        false
-    },
+    // True if `obj` has `key`. O(1) — distinguishes a missing key from
+    // a present `null` value, which `obj[key]` cannot.
+    has: _no.has,
 
     // -------- transformations --------
     // All return a fresh object; the inputs are never mutated.

@@ -456,7 +456,9 @@ fn write_value(
         Value::Function(_)
         | Value::NativeFn(_)
         | Value::Range(_)
-        | Value::Iter(_) => {
+        | Value::Iter(_)
+        | Value::Map(_)
+        | Value::Set(_) => {
             return Err(raise(format!(
                 "JSON.stringify: cannot serialize {}",
                 v.type_name()

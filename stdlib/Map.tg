@@ -1,0 +1,48 @@
+// Tigr stdlib — `import 'Map'`.
+//
+// `Map` is an arbitrary-keyed dictionary: unlike `Object` (string keys
+// only) its keys may be any null / bool / int / string value. Keys are
+// kept in insertion order. A `Float` or collection key raises
+// `invalid_key_type`.
+//
+// `m[key]` reads an entry (`null` when absent) and `m[key] = value`
+// writes one, so the `get`/`set` functions below are rarely needed
+// directly. `#m` is the entry count and `for (k, v, m) { ... }`
+// iterates entries in insertion order.
+//
+// Every operation is O(1) (amortized); the functions are thin
+// re-exports of the Rust `_NativeMap` backend.
+
+_nm := import '_NativeMap';
+
+${
+    // `new()` → empty Map. `new(obj)` copies an Object's entries.
+    // `new(pairs)` builds from an Array of `[key, value]` pairs.
+    new: _nm.new,
+
+    // `get(m, key)` → the value, or `null` if the key is absent.
+    get: _nm.get,
+
+    // `set(m, key, value)` → inserts in place; returns `m`.
+    set: _nm.set,
+
+    // `has(m, key)` → `true` if the key is present. O(1) — unlike
+    // `Object.has`-style scans, and unlike `m[key]` it tells a missing
+    // key apart from a present `null` value.
+    has: _nm.has,
+
+    // `delete(m, key)` → removes the key; returns `true` if it existed.
+    delete: _nm.delete,
+
+    // `keys` / `values` / `entries` → Arrays in insertion order.
+    // `entries` yields `[key, value]` pairs.
+    keys: _nm.keys,
+    values: _nm.values,
+    entries: _nm.entries,
+
+    // `size(m)` → entry count (same as `#m`).
+    size: _nm.size,
+
+    // `clear(m)` → empties `m` in place; returns `m`.
+    clear: _nm.clear,
+}

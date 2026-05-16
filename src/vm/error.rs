@@ -188,6 +188,8 @@ pub enum RuntimeErrorKind {
     NotCallable(String),
     IndexOutOfBounds(i64),
     InvalidIndexType(String),
+    /// A `Map`/`Set` key (or `m[k]` index) had an un-hashable type.
+    InvalidKeyType(String),
     ImmutableTarget(String),
     ImportFailed(String, String),
     /// Integer arithmetic (`+ - *`, unary `-`) overflowed `i64`.
@@ -217,6 +219,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::NotCallable(_) => "not_callable",
             RuntimeErrorKind::IndexOutOfBounds(_) => "index_out_of_bounds",
             RuntimeErrorKind::InvalidIndexType(_) => "invalid_index_type",
+            RuntimeErrorKind::InvalidKeyType(_) => "invalid_key_type",
             RuntimeErrorKind::ImmutableTarget(_) => "immutable_target",
             RuntimeErrorKind::ImportFailed(..) => "import_failed",
             RuntimeErrorKind::Overflow => "overflow",
@@ -239,6 +242,9 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::NotCallable(t) => write!(f, "value of type {t} is not callable"),
             RuntimeErrorKind::IndexOutOfBounds(i) => write!(f, "index {i} out of bounds"),
             RuntimeErrorKind::InvalidIndexType(t) => write!(f, "cannot index with {t}"),
+            RuntimeErrorKind::InvalidKeyType(t) => write!(
+                f, "invalid key type: {t} (Map/Set keys must be null, bool, int, or string)"
+            ),
             RuntimeErrorKind::ImmutableTarget(t) => write!(f, "{t} is immutable"),
             RuntimeErrorKind::ImportFailed(path, msg) => write!(
                 f, "import of {path:?} failed: {msg}"

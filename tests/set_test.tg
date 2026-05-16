@@ -1,0 +1,71 @@
+// tests/set_test.tg — v0.9 #6, the `Set` type.
+//
+// Run directly (`tigr tests/set_test.tg`) or via the discovery
+// subcommand (`tigr test`, which picks up everything under `tests/`).
+
+Test := import 'Test';
+Set := import 'Set';
+
+Test.suite('Set', [
+    Test.case('add and membership via s[x]', fn() {
+        s := Set.new();
+        Set.add(s, 5);
+        Test.assert(s[5]);
+        Test.assert(!s[6])
+    }),
+
+    Test.case('new from an array deduplicates', fn() {
+        Test.assert_eq(#Set.new([1, 2, 2, 3, 3, 3]), 3)
+    }),
+
+    Test.case('s[x] = v is an error', fn() {
+        Test.assert_raises(fn() { s := Set.new(); s[1] = true }, 'immutable_target')
+    }),
+
+    Test.case('a float element raises', fn() {
+        Test.assert_raises(fn() { Set.new([1.5]) }, 'invalid_key_type')
+    }),
+
+    Test.case('delete removes a member', fn() {
+        s := Set.new([1, 2]);
+        Test.assert_eq(Set.delete(s, 2), true);
+        Test.assert(!s[2]);
+        Test.assert_eq(#s, 1)
+    }),
+
+    Test.case('items keeps insertion order', fn() {
+        Test.assert_eq(Set.items(Set.new([3, 1, 2])), [3, 1, 2])
+    }),
+
+    Test.case('union', fn() {
+        a := Set.new([1, 2, 3]);
+        b := Set.new([2, 3, 4]);
+        Test.assert_eq(Set.items(Set.union(a, b)), [1, 2, 3, 4])
+    }),
+
+    Test.case('intersection', fn() {
+        a := Set.new([1, 2, 3]);
+        b := Set.new([2, 3, 4]);
+        Test.assert_eq(Set.items(Set.intersection(a, b)), [2, 3])
+    }),
+
+    Test.case('difference', fn() {
+        a := Set.new([1, 2, 3]);
+        b := Set.new([2, 3, 4]);
+        Test.assert_eq(Set.items(Set.difference(a, b)), [1])
+    }),
+
+    Test.case('for iterates elements', fn() {
+        total := 0;
+        for (x, Set.new([4, 5, 6])) { total = total + x };
+        Test.assert_eq(total, 15)
+    }),
+
+    Test.case('set algebra leaves inputs untouched', fn() {
+        a := Set.new([1, 2]);
+        b := Set.new([2, 3]);
+        Set.union(a, b);
+        Test.assert_eq(#a, 2);
+        Test.assert_eq(#b, 2)
+    }),
+])

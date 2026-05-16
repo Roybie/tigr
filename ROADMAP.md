@@ -10,6 +10,9 @@ Conventions for every release below:
 - Update `LANGUAGE.md` (new appendix) and `README.md`.
 - Add an `examples/vNN/` directory with runnable sample programs.
 - Land Rust tests in step with the feature (`cargo test` stays green).
+- Add tigr tests for new features in the repo-root `tests/` directory
+  (`tests/<feature>_test.tg`, using the `Test` module — `tigr test`
+  stays green). `examples/` is for demos only, not tests.
 - New opcodes are appended at the **end** of the `OpCode` enum (see
   `memory/v06-design-decisions.md` — mid-enum insertion desyncs
   `from_u8`).
@@ -39,7 +42,7 @@ existed to avoid. Close the seam:
 - No new opcode strictly required — can lower to the existing
   object-call path — but a dedicated iterator-loop setup is cleaner.
 
-### 2. Integer overflow raises a catchable error  *(BREAKING)*
+### 2. Integer overflow raises a catchable error  ✅ done  *(BREAKING)*
 
 `arith_add/sub/mul/neg/pow` in `vm.rs` use plain `i64` operators —
 undefined behavior (debug panic / release wraparound).
@@ -74,7 +77,7 @@ overflows the host stack and crashes.
   item adds the small `name` field to the closure value itself.
 - Render the trace beneath the existing source-snippet error report.
 
-### 13. `JSON.stringify` cycle detection  *(additive)*
+### 13. `JSON.stringify` cycle detection  ✅ done  *(additive)*
 
 `JSON.stringify` of a cyclic array/object recurses until the host
 stack overflows (`LANGUAGE.md` §15.1). This is a stringify-recursion
@@ -92,19 +95,30 @@ bug, *separate* from the GC (item 14) — a collector would not fix it.
 All additive. Lead with the test framework so every new module below
 ships with `.tg` tests written *in Tigr* — dogfooding the language.
 
-### 10. Test framework  *(tooling + source-stdlib)*
+### 10. Test framework  ✅ done  *(tooling + source-stdlib)*
 
 - A `Test` source-stdlib module: `suite`, `assert`, `assert_eq`,
   `assert_raises`, etc.
 - A `tigr test` CLI subcommand that discovers and runs `*_test.tg`
   (or a `tests/` directory) and reports pass/fail counts.
 
-### 6. `Set` and `Map`  *(library)*
+### 6. `Set` and `Map`  ✅ done  *(native value types)*
 
-Object keys are String-only — no way to key by Int/tuple, no dedup
-primitive. Add `Set` (membership, union/intersection/difference) and
-`Map` (arbitrary-typed keys). Initial implementation may stringify
-keys internally; revisit if it proves limiting.
+Object keys are String-only — no way to key by Int, no dedup
+primitive. Added `Set` (membership, union/intersection/difference) and
+`Map` (arbitrary-typed keys).
+
+- Shipped as **native value types** (`Value::Map` / `Value::Set` over
+  `IndexMap`/`IndexSet`), *not* the stringified-key library the
+  original sketch suggested: stringifying allocates on every op and
+  collides `1` with `'1'`. Distinct native types give true O(1) ops
+  and correct key identity.
+- Keys restricted to hashable primitives (null/bool/int/string); a
+  `Float` or collection key raises the new `invalid_key_type` error.
+- `m[k]`/`s[x]` indexing, `#` length, `for` iteration; not
+  JSON-serializable.
+- Also fixed `Object`: `has` is now O(1) (native `_NativeObject`),
+  `keys`/`values`/`entries` are O(n) (were O(n²)).
 
 ### 7. `Random` module  *(library)*
 

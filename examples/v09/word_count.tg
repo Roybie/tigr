@@ -1,0 +1,38 @@
+// v0.9 #6 — `Map` and `Set` in action.
+//
+// `Map` keys a count by word; `Set` collects the distinct vocabulary
+// of two texts and compares them with set algebra. Neither is
+// expressible with `Object` alone — `Object` keys are strings only,
+// and it has no membership/dedup primitive.
+
+Map := import 'Map';
+Set := import 'Set';
+String := import 'String';
+
+// -------- word frequency with a Map --------
+
+text := 'the cat sat on the mat the cat is fat';
+counts := Map.new();
+for (word, String.split(text, ' ')) {
+    counts[word] = (counts[word] || 0) + 1
+};
+
+print('word counts:');
+for (word, n, counts) {
+    print('  {word}: {n}')
+};
+print('distinct words:', #counts);
+print('"the" seen', counts['the'], 'times');
+
+// -------- vocabulary comparison with a Set --------
+
+vocab := fn(t) { Set.new(String.split(t, ' ')) };
+
+poem_a := vocab('the sea the sky the shore');
+poem_b := vocab('the hill the sky the wind');
+
+print('');
+print('shared words:', Set.items(Set.intersection(poem_a, poem_b)));
+print('only in A:   ', Set.items(Set.difference(poem_a, poem_b)));
+print('combined:    ', Set.items(Set.union(poem_a, poem_b)));
+print('is "sky" shared?', poem_a['sky'] && poem_b['sky']);

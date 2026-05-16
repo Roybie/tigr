@@ -11,9 +11,12 @@ pub mod array;
 pub mod datetime;
 pub mod io;
 pub mod json;
+pub mod map;
 pub mod math;
+pub mod object;
 pub mod os;
 pub mod path;
+pub mod set;
 pub mod string;
 pub mod time;
 
@@ -40,7 +43,10 @@ pub fn resolve(name: &str) -> Option<Value> {
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
         "_NativeArray" => Some(array::module()),
+        "_NativeMap" => Some(map::module()),
         "_NativeMath" => Some(math::module()),
+        "_NativeObject" => Some(object::module()),
+        "_NativeSet" => Some(set::module()),
         "_NativeString" => Some(string::module()),
         _ => None,
     }

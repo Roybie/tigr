@@ -25,7 +25,7 @@ use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
-use crate::vm::value::{Closure, Function, IterState, RangeData, Upvalue, Value};
+use crate::vm::value::{Closure, Function, IterState, MapKey, RangeData, Upvalue, Value};
 
 struct CallFrame {
     closure: Rc<Closure>,
@@ -424,6 +424,8 @@ impl Vm {
                         (7, Value::Null) => true,
                         (8, Value::Int(_) | Value::Float(_)) => true,
                         (9, Value::Function(_) | Value::NativeFn(_)) => true,
+                        (10, Value::Map(_)) => true,
+                        (11, Value::Set(_)) => true,
                         _ => false,
                     };
                     self.stack.push(Value::Bool(matched));
@@ -571,6 +573,8 @@ impl Vm {
                     let n = match &v {
                         Value::Array(a) => a.borrow().len() as i64,
                         Value::Object(o) => o.borrow().len() as i64,
+                        Value::Map(m) => m.borrow().len() as i64,
+                        Value::Set(s) => s.borrow().len() as i64,
                         Value::Str(s) => s.chars().count() as i64,
                         Value::Range(r) => r.length(),
                         other => return Err(RuntimeError::new(
@@ -1811,6 +1815,8 @@ fn make_iter(v: Value, line: u32) -> Result<IterState, RuntimeError> {
                 Ok(IterState::Object { object: o, index: 0 })
             }
         }
+        Value::Map(m) => Ok(IterState::Map { map: m, index: 0 }),
+        Value::Set(s) => Ok(IterState::Set { set: s, index: 0 }),
         Value::Str(s) => Ok(IterState::String { string: s, char_index: 0, byte_index: 0 }),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(
@@ -1854,6 +1860,14 @@ fn index_get(coll: &Value, key: &Value, line: u32) -> Result<Value, RuntimeError
                 )),
             };
             Ok(o.borrow().get(&key).cloned().unwrap_or(Value::Null))
+        }
+        Value::Map(m) => {
+            let key = MapKey::from_value(key, line)?;
+            Ok(m.borrow().get(&key).cloned().unwrap_or(Value::Null))
+        }
+        Value::Set(s) => {
+            let key = MapKey::from_value(key, line)?;
+            Ok(Value::Bool(s.borrow().contains(&key)))
         }
         Value::Str(s) => {
             let idx = match key {
@@ -1905,6 +1919,15 @@ fn index_set(coll: &Value, key: &Value, value: Value, line: u32) -> Result<(), R
             o.borrow_mut().insert(key, value);
             Ok(())
         }
+        Value::Map(m) => {
+            let key = MapKey::from_value(key, line)?;
+            m.borrow_mut().insert(key, value);
+            Ok(())
+        }
+        Value::Set(_) => Err(RuntimeError::new(
+            RuntimeErrorKind::ImmutableTarget("set (use Set.add)".into()),
+            line,
+        )),
         Value::Str(_) => Err(RuntimeError::new(
             RuntimeErrorKind::ImmutableTarget("string".into()),
             line,

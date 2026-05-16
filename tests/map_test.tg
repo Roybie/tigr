@@ -1,0 +1,85 @@
+// tests/map_test.tg — v0.9 #6, the `Map` type.
+//
+// Run directly (`tigr tests/map_test.tg`) or via the discovery
+// subcommand (`tigr test`, which picks up everything under `tests/`).
+
+Test := import 'Test';
+Map := import 'Map';
+
+Test.suite('Map', [
+    Test.case('m[k] get and set', fn() {
+        m := Map.new();
+        m['a'] = 1;
+        Test.assert_eq(m['a'], 1);
+        Test.assert_eq(m['missing'], null)
+    }),
+
+    Test.case('arbitrary key types stay distinct', fn() {
+        m := Map.new();
+        m[1] = 'int';
+        m['1'] = 'string';
+        m[true] = 'bool';
+        m[null] = 'null';
+        Test.assert_eq(#m, 4);
+        Test.assert_eq(m[1], 'int');
+        Test.assert_eq(m['1'], 'string')
+    }),
+
+    Test.case('a float key raises', fn() {
+        Test.assert_raises(fn() { Map.new()[1.5] }, 'invalid_key_type')
+    }),
+
+    Test.case('a collection key raises', fn() {
+        Test.assert_raises(fn() { m := Map.new(); m[[1]] = 1 }, 'invalid_key_type')
+    }),
+
+    Test.case('has tells a missing key from a null value', fn() {
+        m := Map.new();
+        m['k'] = null;
+        Test.assert(Map.has(m, 'k'));
+        Test.assert(!Map.has(m, 'gone'))
+    }),
+
+    Test.case('delete removes an entry', fn() {
+        m := Map.new();
+        m['k'] = 9;
+        Test.assert_eq(Map.delete(m, 'k'), true);
+        Test.assert_eq(Map.delete(m, 'k'), false);
+        Test.assert_eq(#m, 0)
+    }),
+
+    Test.case('keys / values / entries keep insertion order', fn() {
+        m := Map.new();
+        m['a'] = 1;
+        m['b'] = 2;
+        Test.assert_eq(Map.keys(m), ['a', 'b']);
+        Test.assert_eq(Map.values(m), [1, 2]);
+        Test.assert_eq(Map.entries(m), [['a', 1], ['b', 2]])
+    }),
+
+    Test.case('new from an object', fn() {
+        m := Map.new(${x: 7, y: 8});
+        Test.assert_eq(m['x'] + m['y'], 15)
+    }),
+
+    Test.case('new from an array of pairs', fn() {
+        m := Map.new([[1, 'one'], [2, 'two']]);
+        Test.assert_eq(m[2], 'two')
+    }),
+
+    Test.case('for iterates key and value', fn() {
+        m := Map.new();
+        m['a'] = 10;
+        m['b'] = 20;
+        total := 0;
+        for (k, v, m) { total = total + v };
+        Test.assert_eq(total, 30)
+    }),
+
+    Test.case('clear empties in place', fn() {
+        m := Map.new();
+        m['k'] = 1;
+        Map.clear(m);
+        Test.assert_eq(#m, 0)
+    }),
+])

@@ -13,9 +13,10 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::vm::chunk::Chunk;
+use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 
 #[derive(Clone)]
 pub enum Value {
@@ -28,6 +29,11 @@ pub enum Value {
     // Phase 3+
     Array(Rc<RefCell<Vec<Value>>>),
     Object(Rc<RefCell<IndexMap<Rc<str>, Value>>>),
+
+    // v0.9 — arbitrary-keyed dictionary / set. Keys are restricted to
+    // hashable primitives (see `MapKey`); insertion-ordered like Object.
+    Map(Rc<RefCell<IndexMap<MapKey, Value>>>),
+    Set(Rc<RefCell<IndexSet<MapKey>>>),
 
     // Phase 5+
     Range(Rc<RangeData>),
@@ -85,6 +91,50 @@ impl RangeData {
     }
 }
 
+/// A `Map`/`Set` key. Restricted to hashable primitives so the backing
+/// `IndexMap`/`IndexSet` can derive `Hash`/`Eq`: `Float` is excluded
+/// (NaN/`-0.0` hazards) and the mutable collection types are excluded
+/// (a key mutated after insertion would be lost). `Str` hashes by
+/// content, matching `Object` key behaviour.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum MapKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Str(Rc<str>),
+}
+
+impl MapKey {
+    /// Convert a runtime `Value` into a key, or raise `InvalidKeyType`
+    /// for an un-hashable type. `line` is stamped on the error (native
+    /// callers pass 0 — the VM backfills the call site).
+    pub fn from_value(v: &Value, line: u32) -> Result<MapKey, RuntimeError> {
+        match v {
+            Value::Null => Ok(MapKey::Null),
+            Value::Bool(b) => Ok(MapKey::Bool(*b)),
+            Value::Int(n) => Ok(MapKey::Int(*n)),
+            Value::Str(s) => Ok(MapKey::Str(s.clone())),
+            other => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidKeyType(other.type_name().into()),
+                line,
+            )),
+        }
+    }
+}
+
+/// Rehydrate a key back into a `Value` — used by iteration and the
+/// `keys`/`entries`/`items` accessors.
+impl From<MapKey> for Value {
+    fn from(k: MapKey) -> Value {
+        match k {
+            MapKey::Null => Value::Null,
+            MapKey::Bool(b) => Value::Bool(b),
+            MapKey::Int(n) => Value::Int(n),
+            MapKey::Str(s) => Value::Str(s),
+        }
+    }
+}
+
 /// Live iterator over one of the four iterable types. The compiler
 /// emits `OpCode::MakeIter` to wrap an iterable in an `Iter` value, and
 /// `OpCode::IterNext`/`IterNext2` to advance it inside a `for` loop.
@@ -103,6 +153,14 @@ pub enum IterState {
     },
     Object {
         object: Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        index: usize,
+    },
+    Map {
+        map: Rc<RefCell<IndexMap<MapKey, Value>>>,
+        index: usize,
+    },
+    Set {
+        set: Rc<RefCell<IndexSet<MapKey>>>,
         index: usize,
     },
     String {
@@ -165,6 +223,27 @@ impl IterState {
                 let value = v.clone();
                 *index += 1;
                 Some((key, value))
+            }
+            IterState::Map { map, index } => {
+                let m = map.borrow();
+                if *index >= m.len() {
+                    return None;
+                }
+                let (k, v) = m.get_index(*index).unwrap();
+                let key = Value::from(k.clone());
+                let value = v.clone();
+                *index += 1;
+                Some((key, value))
+            }
+            IterState::Set { set, index } => {
+                let s = set.borrow();
+                if *index >= s.len() {
+                    return None;
+                }
+                let elem = Value::from(s.get_index(*index).unwrap().clone());
+                let counter = Value::Int(*index as i64);
+                *index += 1;
+                Some((counter, elem))
             }
             IterState::String { string, char_index, byte_index } => {
                 let rest = &string[*byte_index..];
@@ -275,6 +354,8 @@ impl Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) => "object",
+            Value::Map(_) => "map",
+            Value::Set(_) => "set",
             Value::Range(_) => "range",
             Value::Iter(_) => "iterator",
             Value::Function(_) => "function",
@@ -292,6 +373,8 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::Array(a) => !a.borrow().is_empty(),
             Value::Object(o) => !o.borrow().is_empty(),
+            Value::Map(m) => !m.borrow().is_empty(),
+            Value::Set(s) => !s.borrow().is_empty(),
             // §5: "all non-empty ranges" are truthy → empty range falsy.
             Value::Range(r) => r.length() > 0,
             Value::Iter(_) => true,
@@ -313,6 +396,8 @@ impl PartialEq for Value {
             (Str(a), Str(b)) => a == b,
             (Array(a), Array(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
             (Object(a), Object(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
+            (Map(a), Map(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
+            (Set(a), Set(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
             (Range(a), Range(b)) => a == b,
             (Iter(a), Iter(b)) => Rc::ptr_eq(a, b),
             (Function(a), Function(b)) => Rc::ptr_eq(a, b),
@@ -367,6 +452,24 @@ impl fmt::Display for Value {
                 for (i, (k, v)) in obj.iter().enumerate() {
                     if i > 0 { f.write_str(", ")?; }
                     write!(f, "{k}: {v}")?;
+                }
+                f.write_str("}")
+            }
+            Value::Map(m) => {
+                f.write_str("Map{")?;
+                let map = m.borrow();
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 { f.write_str(", ")?; }
+                    write!(f, "{}: {v}", Value::from(k.clone()))?;
+                }
+                f.write_str("}")
+            }
+            Value::Set(s) => {
+                f.write_str("Set{")?;
+                let set = s.borrow();
+                for (i, k) in set.iter().enumerate() {
+                    if i > 0 { f.write_str(", ")?; }
+                    write!(f, "{}", Value::from(k.clone()))?;
                 }
                 f.write_str("}")
             }

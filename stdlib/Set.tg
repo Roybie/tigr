@@ -1,0 +1,47 @@
+// Tigr stdlib — `import 'Set'`.
+//
+// `Set` is an insertion-ordered collection of unique values. Elements
+// may be any null / bool / int / string value (the same restriction as
+// `Map` keys); a `Float` or collection element raises
+// `invalid_key_type`.
+//
+// `s[x]` tests membership (`true` / `false`); writing `s[x] = ...` is
+// an error — mutate with `add` / `delete`. `#s` is the element count
+// and `for (x, s) { ... }` iterates elements in insertion order.
+//
+// Every operation is O(1) (amortized; set algebra is O(n)); the
+// functions are thin re-exports of the Rust `_NativeSet` backend.
+
+_ns := import '_NativeSet';
+
+${
+    // `new()` → empty Set. `new(array)` builds from an Array's
+    // elements (duplicates collapse).
+    new: _ns.new,
+
+    // `add(s, x)` → inserts `x` in place; returns `s`.
+    add: _ns.add,
+
+    // `has(s, x)` → `true` if `x` is a member (same as `s[x]`).
+    has: _ns.has,
+
+    // `delete(s, x)` → removes `x`; returns `true` if it was present.
+    delete: _ns.delete,
+
+    // `items(s)` → Array of elements in insertion order.
+    items: _ns.items,
+
+    // `size(s)` → element count (same as `#s`).
+    size: _ns.size,
+
+    // `clear(s)` → empties `s` in place; returns `s`.
+    clear: _ns.clear,
+
+    // Set algebra — each returns a fresh Set, inputs untouched.
+    // `union(a, b)`        → every element of either.
+    // `intersection(a, b)` → elements in both.
+    // `difference(a, b)`   → `a`'s elements not in `b`.
+    union: _ns.union,
+    intersection: _ns.intersection,
+    difference: _ns.difference,
+}

@@ -214,7 +214,7 @@ pub enum OpCode {
     /// matches the operand tag, else `Bool(false)`. Does NOT pop the
     /// subject. Operand: u8 tag —
     /// 0=Int 1=Float 2=Bool 3=Str 4=Array 5=Object 6=Range 7=Null
-    /// 8=Number(Int|Float) 9=callable(Function|NativeFn).
+    /// 8=Number(Int|Float) 9=callable(Function|NativeFn) 10=Map 11=Set.
     TypeTest,
 
     // -- v0.6 — default parameters --

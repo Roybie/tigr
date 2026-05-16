@@ -150,16 +150,32 @@ impl fmt::Display for CompileError {
 
 // ---------------- Runtime ----------------
 
+/// One entry in an uncaught error's stack trace: the function that was
+/// executing and the source line it was at. Built innermost-first as
+/// `try_catch` unwinds frames (see `vm.rs`).
+#[derive(Debug)]
+pub struct TraceFrame {
+    /// Function name (inferred from the binding), `None` for an unbound
+    /// `fn` — rendered as `<anonymous>`.
+    pub name: Option<String>,
+    pub source: SourceId,
+    pub line: u32,
+}
+
 #[derive(Debug)]
 pub struct RuntimeError {
     pub kind: RuntimeErrorKind,
     pub line: u32,
     pub source: SourceId,
+    /// Call-frame stack captured while unwinding an uncaught error,
+    /// innermost frame first. Empty until `try_catch` records it; stays
+    /// empty for caught errors (the partial trace is simply discarded).
+    pub trace: Vec<TraceFrame>,
 }
 
 impl RuntimeError {
     pub fn new(kind: RuntimeErrorKind, line: u32) -> Self {
-        RuntimeError { kind, line, source: SourceId::UNKNOWN }
+        RuntimeError { kind, line, source: SourceId::UNKNOWN, trace: Vec::new() }
     }
 }
 
@@ -306,7 +322,25 @@ impl Error {
         let Some(file) = sources.get(self.source()) else {
             return format!("{self}");
         };
-        render_snippet(label, &file.name, &file.text, line, col_start, span_len, &body)
+        let mut out =
+            render_snippet(label, &file.name, &file.text, line, col_start, span_len, &body);
+        // Stack trace beneath the snippet for uncaught runtime errors.
+        // Skipped when there is a single frame — that would just repeat
+        // the snippet location above.
+        if let Error::Runtime(e) = self {
+            if e.trace.len() > 1 {
+                out.push_str("stack trace (most recent call first):\n");
+                for tf in &e.trace {
+                    let fname = tf.name.as_deref().unwrap_or("<anonymous>");
+                    let loc = sources
+                        .get(tf.source)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("<unknown>");
+                    out.push_str(&format!("  {fname} at {loc}:{}\n", tf.line));
+                }
+            }
+        }
+        out
     }
 }
 

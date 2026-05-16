@@ -645,6 +645,15 @@ same rules as `str()`. The error value handlers see is always a string.
 Unmatched `raise` exits the program with the message at the line of the
 `raise` (same shape as today's runtime panics).
 
+An uncaught error — a `raise` or a built-in runtime error that escapes
+every `try` — is rendered with a source snippet (Appendix C item 17)
+followed by a **stack trace** (v0.8): each active call frame, innermost
+first, as `<name> at <file>:<line>`. Function names come from the
+binding (`f := fn(){}` → `f`), falling back to `<anonymous>`; the
+top-level program shows as `<main>`. Because tail calls reuse their
+frame (§10.5), a tail-recursive function appears once. The trace is
+omitted for a single-frame error.
+
 ### 9.7 match (v0.5)
 
 ```
@@ -1525,3 +1534,14 @@ Additive changes:
     `stack_overflow` error (reified as
     `${kind: 'stack_overflow', message: 'call stack depth exceeded',
     line}`) instead of crashing the process.
+
+39. **Stack traces on uncaught errors** (§9.6). When a runtime error
+    escapes every `try` handler, the rendered report now prints a
+    `stack trace` block beneath the source snippet, listing each active
+    call frame innermost-first as `<name> at <file>:<line>`. Function
+    names are inferred from the binding (`f := fn(){}` → `f`), with
+    `<anonymous>` for an unbound `fn` and `<main>` for the top-level
+    program. Tail calls reuse their frame (item 38), so a tail-recursive
+    function appears once. The trace is omitted when there is a single
+    frame (it would only repeat the snippet) and for *caught* errors —
+    a value bound by `catch` still carries only `kind`/`message`/`line`.

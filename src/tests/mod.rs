@@ -4489,3 +4489,54 @@ fn v08_stack_overflow_uncaught_renders() {
     let msg = render_err("deep := fn(n) { 1 + deep(n + 1) }; deep(0)");
     assert!(msg.contains("call stack depth exceeded"), "got {msg}");
 }
+
+// ---- v0.8 item 11: stack traces on uncaught errors ----
+
+#[test]
+fn v08_stack_trace_uncaught_nested() {
+    // An uncaught error deep in a call chain lists every frame,
+    // innermost-first, ending at <main>. `f()` sits inside `g` as a
+    // non-tail call (`+ 0`) so `g`'s frame survives in the trace.
+    let msg = render_err("f := fn() { 1 / 0 };\ng := fn() { f() + 0 };\ng()");
+    assert!(msg.contains("stack trace (most recent call first):"), "got:\n{msg}");
+    let trace = &msg[msg.find("stack trace").unwrap()..];
+    let f = trace.find("f at").expect("no f frame");
+    let g = trace.find("g at").expect("no g frame");
+    let m = trace.find("<main> at").expect("no <main> frame");
+    assert!(f < g && g < m, "frames out of order:\n{msg}");
+}
+
+#[test]
+fn v08_stack_trace_anonymous_fallback() {
+    // An unbound `fn` reports <anonymous>.
+    let msg = render_err("(fn() { 1 / 0 })()");
+    assert!(msg.contains("<anonymous> at"), "got:\n{msg}");
+}
+
+#[test]
+fn v08_stack_trace_absent_when_caught() {
+    // A caught error renders no trace section — it never escaped.
+    let msg = render_err("f := fn() { 1 / 0 };\nx := try { f() } catch e { e.kind };\n1 / 0");
+    // The final `1 / 0` is at top level (single frame) — also no trace.
+    assert!(!msg.contains("stack trace"), "unexpected trace:\n{msg}");
+}
+
+#[test]
+fn v08_stack_trace_absent_for_single_frame() {
+    // A bare top-level error has one frame — the trace would only
+    // repeat the snippet, so it is suppressed.
+    let msg = render_err("x := 10;\nx / 0");
+    assert!(!msg.contains("stack trace"), "unexpected trace:\n{msg}");
+}
+
+#[test]
+fn v08_stack_trace_tail_calls_collapse() {
+    // Tail calls reuse the frame, so a tail-recursive function appears
+    // once in the trace, not once per recursive step.
+    let msg = render_err(
+        "loop := fn(n) { if (n == 0) { 1 / 0 } else { loop(n - 1) } };\nloop(50)",
+    );
+    assert!(msg.contains("stack trace"), "got:\n{msg}");
+    let trace = &msg[msg.find("stack trace").unwrap()..];
+    assert_eq!(trace.matches("loop at").count(), 1, "loop not collapsed:\n{msg}");
+}

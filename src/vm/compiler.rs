@@ -151,6 +151,11 @@ pub struct Compiler {
     /// Stamped on every chunk produced by this compiler so runtime and
     /// compile-time errors can be rendered against the right source.
     source: SourceId,
+    /// Name to attach to the next `fn` literal compiled, inferred from
+    /// the binding it initialises (`f := fn(){}` → `"f"`). Set by the
+    /// `Decl` handler; consumed (taken) by `compile_fn` so only the
+    /// outermost `fn` of the initialiser is named.
+    fn_name_hint: Option<String>,
 }
 
 impl Compiler {
@@ -187,6 +192,7 @@ impl Compiler {
                 globals: stdlib::names().to_vec(),
                 base_dir,
                 source,
+                fn_name_hint: None,
             };
             c.push_function(0, Some("<main>".to_string()));
             // slot 0 = main closure placeholder. The frame is set up so
@@ -254,6 +260,7 @@ impl Compiler {
             globals: stdlib::names().to_vec(),
             base_dir: None,
             source,
+            fn_name_hint: None,
         };
         c.push_function(0, Some("<repl>".to_string()));
         // Slot 0 = closure placeholder (the REPL frame holds the
@@ -916,6 +923,13 @@ impl Compiler {
                 // unconditionally declare-after.
                 match pat {
                     Pattern::Ident(name) => {
+                        // Name the function after the binding it
+                        // initialises, for stack traces. `compile_fn`
+                        // takes the hint; harmless if `init` is not a
+                        // bare `fn` literal.
+                        if matches!(init.expr, Expr::Fn { .. }) {
+                            self.fn_name_hint = Some(name.clone());
+                        }
                         if let Some(slot) = self.lookup_hoisted(name) {
                             // Hoisted: the local was pre-declared at
                             // scope entry. Just compile the init and
@@ -2078,7 +2092,10 @@ impl Compiler {
         span: Span,
     ) -> Result<(), CompileError> {
         let line = span.line;
-        self.push_function(params.len(), None);
+        // Take the binding-name hint set by the `Decl` handler, if any;
+        // an unbound `fn` (or a nested one) gets `None` → `<anonymous>`.
+        let name = self.fn_name_hint.take();
+        self.push_function(params.len(), name);
 
         // slot 0 = closure placeholder; slots 1..=arity = fixed
         // params; slot arity+1 = rest array (if any). The runtime

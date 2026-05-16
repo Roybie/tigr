@@ -924,6 +924,23 @@ error[parse]: unexpected token `:=`
 
 Errors inside an imported file render against THAT file's source — the import dispatcher registers each imported source so the renderer can find it. REPL lines register as `<repl:N>` so the same machinery works at the prompt.
 
+Since v0.8, an error that escapes every `try` also prints a **stack trace** beneath the snippet — each active call frame, innermost first:
+
+```
+$ tigr examples/v08/stack_trace.tg
+error[runtime]: integer overflow
+ --> examples/v08/stack_trace.tg:6
+  |
+6 |     n * n * n * n * n * n * n * n * n * n  // overflows i64 for big n
+  |
+stack trace (most recent call first):
+  inner at examples/v08/stack_trace.tg:6
+  compute at examples/v08/stack_trace.tg:10
+  <main> at examples/v08/stack_trace.tg:13
+```
+
+Frame names are inferred from the binding (`f := fn(){}` → `f`), with `<anonymous>` for an unbound `fn` and `<main>` for the top-level program. Tail calls reuse their frame, so a tail-recursive function appears once; a single-frame error prints no trace.
+
 ---
 
 ## REPL

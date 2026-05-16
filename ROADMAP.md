@@ -65,7 +65,7 @@ overflows the host stack and crashes.
 - Independently: a configurable max call depth that raises a
   catchable `stack_overflow` error instead of crashing the process.
 
-### 11. Stack traces on uncaught errors  *(additive)*
+### 11. Stack traces on uncaught errors  ✅ done  *(additive)*
 
 - Capture the call-frame stack when an error is raised; each frame
   records the function name and the call-site line.

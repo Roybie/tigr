@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
@@ -136,7 +136,7 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(0, &err) {
+                    if !self.try_catch(0, &mut err) {
                         return Err(err);
                     }
                     // Caught — frame state is now pointing at catch_pc
@@ -172,7 +172,7 @@ impl Vm {
     /// re-entrant [`call_value`] passes the frame depth it started at,
     /// so a raise the callee does not catch internally unwinds only the
     /// callee's own frames and then propagates to the caller.
-    fn try_catch(&mut self, floor: usize, err: &RuntimeError) -> bool {
+    fn try_catch(&mut self, floor: usize, err: &mut RuntimeError) -> bool {
         while self.frames.len() > floor {
             let frame = self.frames.last_mut().unwrap();
             if let Some(tf) = frame.try_frames.pop() {
@@ -210,6 +210,26 @@ impl Vm {
             // No try-frame in this frame — pop it and close upvalues
             // at its base before continuing the search outward.
             let popped = self.frames.pop().unwrap();
+            // Record this frame in the (innermost-first) stack trace.
+            // The first frame recorded is the faulting one — use the
+            // error's precise line; for callers use the call-site line
+            // (`ip` sits just past the `Call` operand). The trace rides
+            // on `err`; if a handler is found later it is discarded.
+            let func = &popped.closure.function;
+            let line = if err.trace.is_empty() {
+                err.line
+            } else {
+                func.chunk
+                    .lines
+                    .get(popped.ip.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            err.trace.push(TraceFrame {
+                name: func.name.clone(),
+                source: func.chunk.source,
+                line,
+            });
             self.close_upvalues(popped.base_slot);
             self.stack.truncate(popped.base_slot);
             // If we just abandoned an in-flight import, drop the
@@ -270,7 +290,7 @@ impl Vm {
                 Ok(v) => return Ok(v), // Halt exit
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(0, &err) {
+                    if !self.try_catch(0, &mut err) {
                         // Wall hit — restore stack to pre-line state.
                         self.close_upvalues(snapshot_len);
                         self.stack.truncate(snapshot_len);
@@ -1441,7 +1461,7 @@ impl Vm {
                         Ok(v) => return Ok(v),
                         Err(mut err) => {
                             self.stamp_error_source(&mut err);
-                            if self.try_catch(floor, &err) {
+                            if self.try_catch(floor, &mut err) {
                                 continue;
                             }
                             return Err(err);

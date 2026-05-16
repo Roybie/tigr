@@ -126,7 +126,7 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(&err) {
+                    if !self.try_catch(0, &err) {
                         return Err(err);
                     }
                     // Caught — frame state is now pointing at catch_pc
@@ -156,8 +156,15 @@ impl Vm {
     /// reified as a `${kind, message, line}` object), set the
     /// surviving frame's ip to the catch PC, and return `true`. If no
     /// try-frame anywhere, leave state untouched and return `false`.
-    fn try_catch(&mut self, err: &RuntimeError) -> bool {
-        while let Some(frame) = self.frames.last_mut() {
+    ///
+    /// `floor` bounds the search: frames at index `< floor` are never
+    /// inspected or popped. The top-level driver passes `0`; a
+    /// re-entrant [`call_value`] passes the frame depth it started at,
+    /// so a raise the callee does not catch internally unwinds only the
+    /// callee's own frames and then propagates to the caller.
+    fn try_catch(&mut self, floor: usize, err: &RuntimeError) -> bool {
+        while self.frames.len() > floor {
+            let frame = self.frames.last_mut().unwrap();
             if let Some(tf) = frame.try_frames.pop() {
                 let catch_pc = tf.catch_pc;
                 let stack_len = tf.stack_len;
@@ -253,7 +260,7 @@ impl Vm {
                 Ok(v) => return Ok(v), // Halt exit
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(&err) {
+                    if !self.try_catch(0, &err) {
                         // Wall hit — restore stack to pre-line state.
                         self.close_upvalues(snapshot_len);
                         self.stack.truncate(snapshot_len);
@@ -267,6 +274,18 @@ impl Vm {
     }
 
     fn exec(&mut self) -> Result<Value, RuntimeError> {
+        self.run_until(0)
+    }
+
+    /// The bytecode dispatch loop. Runs until the frame stack drops to
+    /// `floor` frames (a `Return` from the frame at index `floor`) or a
+    /// `Halt`, returning the produced value; an uncaught error returns
+    /// `Err` with the frames left in place for the caller to unwind.
+    ///
+    /// `floor == 0` is the whole-program run. A re-entrant
+    /// [`call_value`] passes the depth it started at so the nested run
+    /// returns once its callee frame has returned.
+    fn run_until(&mut self, floor: usize) -> Result<Value, RuntimeError> {
         loop {
             // Snapshot the current frame's chunk for this iteration.
             // Cloning the Rc<Closure> is cheap and lets us read from
@@ -393,7 +412,7 @@ impl Vm {
                         self.module_cache.insert(path.clone(), result.clone());
                         self.in_flight.remove(&path);
                     }
-                    if self.frames.is_empty() {
+                    if self.frames.len() == floor {
                         return Ok(result);
                     }
                     self.stack.push(result);
@@ -706,39 +725,115 @@ impl Vm {
                     let dist = chunk.read_u16(ip);
                     ip += 2;
                     let iter_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
-                    let next = match &iter_val {
-                        Value::Iter(it) => it.borrow_mut().next(),
-                        _ => return Err(RuntimeError::new(
+                    let Value::Iter(it) = &iter_val else {
+                        return Err(RuntimeError::new(
                             RuntimeErrorKind::TypeMismatch(
                                 "internal: IterNext on non-iter".into()
                             ),
                             line,
-                        )),
+                        ));
                     };
-                    match next {
-                        Some((_counter, value)) => self.stack.push(value),
-                        None => ip += dist as usize,
+                    // Classify without holding the RefCell borrow across
+                    // the (possibly re-entrant) `next()` call below.
+                    // `None` = built-in iterator; `Some(None)` = an
+                    // iterator object already exhausted; `Some(Some(o))`
+                    // = an iterator object to pull from.
+                    let pull = match &*it.borrow() {
+                        IterState::IterObject { object, done, .. } => {
+                            Some(if *done { None } else { Some(object.clone()) })
+                        }
+                        _ => None,
+                    };
+                    match pull {
+                        None => match it.borrow_mut().next() {
+                            Some((_counter, value)) => self.stack.push(value),
+                            None => ip += dist as usize,
+                        },
+                        Some(None) => ip += dist as usize,
+                        Some(Some(obj)) => {
+                            self.frames.last_mut().unwrap().ip = ip;
+                            match self.iter_object_pull(&obj, line)? {
+                                Some(value) => {
+                                    if let IterState::IterObject { index, .. } =
+                                        &mut *it.borrow_mut()
+                                    {
+                                        *index += 1;
+                                    }
+                                    self.stack.push(value);
+                                }
+                                None => {
+                                    if let IterState::IterObject { done, .. } =
+                                        &mut *it.borrow_mut()
+                                    {
+                                        *done = true;
+                                    }
+                                    ip += dist as usize;
+                                }
+                            }
+                            self.frames.last_mut().unwrap().ip = ip;
+                            continue;
+                        }
                     }
                 }
                 OpCode::IterNext2 => {
                     let dist = chunk.read_u16(ip);
                     ip += 2;
                     let iter_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
-                    let next = match &iter_val {
-                        Value::Iter(it) => it.borrow_mut().next(),
-                        _ => return Err(RuntimeError::new(
+                    let Value::Iter(it) = &iter_val else {
+                        return Err(RuntimeError::new(
                             RuntimeErrorKind::TypeMismatch(
                                 "internal: IterNext2 on non-iter".into()
                             ),
                             line,
-                        )),
+                        ));
                     };
-                    match next {
-                        Some((counter, value)) => {
-                            self.stack.push(counter);
-                            self.stack.push(value);
+                    let pull = match &*it.borrow() {
+                        IterState::IterObject { object, done, .. } => {
+                            Some(if *done { None } else { Some(object.clone()) })
                         }
-                        None => ip += dist as usize,
+                        _ => None,
+                    };
+                    match pull {
+                        None => match it.borrow_mut().next() {
+                            Some((counter, value)) => {
+                                self.stack.push(counter);
+                                self.stack.push(value);
+                            }
+                            None => ip += dist as usize,
+                        },
+                        Some(None) => ip += dist as usize,
+                        Some(Some(obj)) => {
+                            self.frames.last_mut().unwrap().ip = ip;
+                            match self.iter_object_pull(&obj, line)? {
+                                Some(value) => {
+                                    // Synthetic counter (0, 1, 2, ...).
+                                    let counter = {
+                                        let mut st = it.borrow_mut();
+                                        if let IterState::IterObject { index, .. } =
+                                            &mut *st
+                                        {
+                                            let c = *index;
+                                            *index += 1;
+                                            c
+                                        } else {
+                                            0
+                                        }
+                                    };
+                                    self.stack.push(Value::Int(counter));
+                                    self.stack.push(value);
+                                }
+                                None => {
+                                    if let IterState::IterObject { done, .. } =
+                                        &mut *it.borrow_mut()
+                                    {
+                                        *done = true;
+                                    }
+                                    ip += dist as usize;
+                                }
+                            }
+                            self.frames.last_mut().unwrap().ip = ip;
+                            continue;
+                        }
                     }
                 }
                 OpCode::IterAppend => {
@@ -792,6 +887,23 @@ impl Vm {
                             line,
                         )),
                     };
+                    // Spread of an iterator object — drive its `next()`
+                    // protocol. Covers `[...it]` and `f(...it)` (call
+                    // spread builds its arg array with `ArrayExtend`).
+                    if let Value::Object(o) = &src {
+                        let is_iter = matches!(
+                            o.borrow().get("next"),
+                            Some(Value::Function(_)) | Some(Value::NativeFn(_))
+                        );
+                        if is_iter {
+                            let o = o.clone();
+                            self.frames.last_mut().unwrap().ip = ip;
+                            while let Some(v) = self.iter_object_pull(&o, line)? {
+                                target_arr.borrow_mut().push(v);
+                            }
+                            continue;
+                        }
+                    }
                     extend_array(&target_arr, src, line)?;
                 }
                 OpCode::ObjectMerge => {
@@ -1182,6 +1294,137 @@ impl Vm {
         }
     }
 
+    /// Invoke `callee` with `args` re-entrantly — from inside opcode
+    /// execution — and return its result. A `NativeFn` runs directly; a
+    /// tigr closure gets a fresh frame and a nested [`run_until`] down
+    /// to the current frame depth. A raise the callee catches with its
+    /// own `try` is handled here and the call resumes; one it does not
+    /// catch unwinds the callee's frames and propagates as `Err`.
+    fn call_value(
+        &mut self,
+        callee: Value,
+        args: Vec<Value>,
+        line: u32,
+    ) -> Result<Value, RuntimeError> {
+        match callee {
+            Value::NativeFn(nf) => {
+                if !nf.arity.check(args.len()) {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::ArityMismatch {
+                            name: nf.name.into(),
+                            expected: nf.arity.describe(),
+                            got: args.len(),
+                        },
+                        line,
+                    ));
+                }
+                (nf.func)(&args).map_err(|mut e| {
+                    if e.line == 0 { e.line = line; }
+                    e
+                })
+            }
+            Value::Function(c) => {
+                let floor = self.frames.len();
+                let arity = c.function.arity;
+                let has_rest = c.function.has_rest;
+                let n = args.len();
+                // Mirror the `Call` opcode's stack layout: callee slot
+                // followed by the arity-adjusted args.
+                let base_slot = self.stack.len();
+                self.stack.push(Value::Function(c.clone()));
+                let args_start = self.stack.len();
+                for a in args {
+                    self.stack.push(a);
+                }
+                if has_rest {
+                    self.pack_rest(args_start, n, arity);
+                } else if n < arity {
+                    for _ in n..arity {
+                        self.stack.push(Value::Null);
+                    }
+                } else if n > arity {
+                    self.stack.truncate(self.stack.len() - (n - arity));
+                }
+                self.frames.push(CallFrame {
+                    closure: c,
+                    ip: 0,
+                    base_slot,
+                    try_frames: Vec::new(),
+                    kind: FrameKind::Function,
+                });
+                loop {
+                    match self.run_until(floor) {
+                        Ok(v) => return Ok(v),
+                        Err(mut err) => {
+                            self.stamp_error_source(&mut err);
+                            if self.try_catch(floor, &err) {
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+            other => Err(RuntimeError::new(
+                RuntimeErrorKind::NotCallable(other.type_name().into()),
+                line,
+            )),
+        }
+    }
+
+    /// Pull one element from an iterator object (`${ next: fn() }`).
+    /// `Ok(None)` means the iterator reported `done: true`;
+    /// `Ok(Some(v))` is the next `value`. Used by `for` loops and
+    /// spread over iterator objects.
+    fn iter_object_pull(
+        &mut self,
+        obj: &Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        line: u32,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let next_fn = obj.borrow().get("next").cloned();
+        let next_fn = match next_fn {
+            Some(v @ (Value::Function(_) | Value::NativeFn(_))) => v,
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(
+                        "iterator object's `next` field is not callable".into(),
+                    ),
+                    line,
+                ))
+            }
+        };
+        let result = self.call_value(next_fn, Vec::new(), line)?;
+        let result_obj = match result {
+            Value::Object(o) => o,
+            other => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(format!(
+                        "iterator next() must return an object, got {}",
+                        other.type_name()
+                    )),
+                    line,
+                ))
+            }
+        };
+        let ro = result_obj.borrow();
+        let done = match ro.get("done") {
+            Some(d) => d.is_truthy(),
+            None => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(
+                        "iterator next() result is missing a `done` field".into(),
+                    ),
+                    line,
+                ))
+            }
+        };
+        if done {
+            Ok(None)
+        } else {
+            Ok(Some(ro.get("value").cloned().unwrap_or(Value::Null)))
+        }
+    }
+
     fn capture_upvalue(&mut self, stack_slot: usize) -> Rc<RefCell<Upvalue>> {
         for up in &self.open_upvalues {
             if let Upvalue::Open(slot) = *up.borrow() {
@@ -1451,7 +1694,19 @@ fn make_iter(v: Value, line: u32) -> Result<IterState, RuntimeError> {
             index: 0,
         }),
         Value::Array(a) => Ok(IterState::Array { array: a, index: 0 }),
-        Value::Object(o) => Ok(IterState::Object { object: o, index: 0 }),
+        Value::Object(o) => {
+            // An object whose `next` field is callable is an iterator
+            // object (the `Iter` protocol); otherwise iterate entries.
+            let is_iter = matches!(
+                o.borrow().get("next"),
+                Some(Value::Function(_)) | Some(Value::NativeFn(_))
+            );
+            if is_iter {
+                Ok(IterState::IterObject { object: o, index: 0, done: false })
+            } else {
+                Ok(IterState::Object { object: o, index: 0 })
+            }
+        }
         Value::Str(s) => Ok(IterState::String { string: s, char_index: 0, byte_index: 0 }),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(

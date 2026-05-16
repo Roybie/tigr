@@ -1,0 +1,41 @@
+// v0.8 #1 — `for` and spread consume iterator objects directly.
+// An iterator object is `${ next: fn() }`; the Iter module builds them.
+
+Iter := import 'Iter';
+Array := import 'Array';
+
+// `for` over an Iter pipeline — no Iter.collect() needed.
+print('squares:');
+for (sq, [1, 2, 3, 4, 5] |> Iter.from() |> Iter.map(fn(n){ n * n })) {
+    print('  ', sq)
+};
+
+// `for[]` collects per-iteration values from an iterator.
+evens := for[] (n, Iter.from([1, 2, 3, 4, 5, 6])) {
+    if n % 2 == 0 { n }
+};
+print('evens:', evens);
+
+// Two-var `for` supplies a synthetic 0,1,2,... counter.
+for (i, name, Iter.from(['ada', 'grace', 'edsger'])) {
+    print('  [{i}] {name}')
+};
+
+// A bounded slice of an *infinite* iterator terminates fine.
+total := 0;
+for (v, Iter.take(Iter.count(1), 10)) { total = total + v };
+print('sum 1..=10:', total);
+
+// Spread an iterator into an array literal...
+print('spread:', [0, ...Iter.from([1, 2, 3]), 99]);
+
+// ...and into a function call.
+sum3 := fn(a, b, c) { a + b + c };
+print('call spread:', sum3(...Iter.from([10, 20, 30])));
+
+// A full lazy pipeline, materialized once by spread.
+pipeline := [...(1 |> Iter.count()
+                   |> Iter.map(fn(n){ n * n })
+                   |> Iter.filter(fn(n){ n % 2 != 0 })
+                   |> Iter.take(5))];
+print('odd squares:', pipeline);

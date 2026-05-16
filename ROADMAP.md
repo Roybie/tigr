@@ -23,7 +23,7 @@ Items 4 and 11 share the call-frame and error machinery, so they ship
 together. This is the heaviest release; do it first while the core is
 still small.
 
-### 1. `for` and spread iterate `Iter` objects  *(additive)*
+### 1. `for` and spread iterate `Iter` objects  ✅ done  *(additive)*
 
 `for` and `[...x]` currently can't consume a v0.7 lazy iterator —
 you must `Iter.collect()` first, materializing the array the iterator

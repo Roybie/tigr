@@ -4160,3 +4160,177 @@ fn v07b_err_uncaught_builtin_unchanged() {
     let msg = run_err("1 / 0");
     assert!(msg.contains("division by zero"), "got {msg}");
 }
+
+// ---- v0.8 #1: `for` and spread over iterator objects ----
+
+#[test]
+fn v08_for_iter_object_one_var() {
+    let src = "
+        Iter := import 'Iter';
+        sum := 0;
+        for (v, Iter.from([10, 20, 30])) { sum = sum + v };
+        sum
+    ";
+    assert_eq!(run(src), Value::Int(60));
+}
+
+#[test]
+fn v08_for_iter_object_array_form() {
+    let src = "
+        Iter := import 'Iter';
+        for[] (v, Iter.from([1, 2, 3])) { v * v }
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 4, 9]);
+}
+
+#[test]
+fn v08_for_iter_object_two_var_synthetic_counter() {
+    // The two-var form supplies a synthetic 0,1,2,... counter.
+    let src = "
+        Iter := import 'Iter';
+        for[] (i, v, Iter.from([10, 20, 30])) { i * 100 + v }
+    ";
+    assert_eq!(int_vec(&run(src)), vec![10, 120, 230]);
+}
+
+#[test]
+fn v08_for_iter_object_infinite_with_take() {
+    // A `for` over a bounded slice of an infinite iterator terminates.
+    let src = "
+        Iter := import 'Iter';
+        sum := 0;
+        for (v, Iter.take(Iter.count(0), 5)) { sum = sum + v };
+        sum
+    ";
+    assert_eq!(run(src), Value::Int(10));
+}
+
+#[test]
+fn v08_spread_iter_object_array() {
+    let src = "
+        Iter := import 'Iter';
+        [...Iter.from([1, 2, 3])]
+    ";
+    assert_eq!(int_vec(&run(src)), vec![1, 2, 3]);
+}
+
+#[test]
+fn v08_spread_iter_object_mixed() {
+    let src = "
+        Iter := import 'Iter';
+        [0, ...Iter.from([1, 2]), 9]
+    ";
+    assert_eq!(int_vec(&run(src)), vec![0, 1, 2, 9]);
+}
+
+#[test]
+fn v08_spread_iter_object_call_rest() {
+    let src = "
+        Iter := import 'Iter';
+        f := fn(...xs) { xs };
+        f(...Iter.from([7, 8, 9]))
+    ";
+    assert_eq!(int_vec(&run(src)), vec![7, 8, 9]);
+}
+
+#[test]
+fn v08_spread_iter_object_call_fixed_arity() {
+    let src = "
+        Iter := import 'Iter';
+        add := fn(a, b, c) { a + b + c };
+        add(...Iter.from([1, 2, 3]))
+    ";
+    assert_eq!(run(src), Value::Int(6));
+}
+
+#[test]
+fn v08_spread_lazy_pipeline() {
+    // A full lazy pipeline never materializes an intermediate array.
+    let src = "
+        Iter := import 'Iter';
+        [...(0 |> Iter.count() |> Iter.map(fn(n){ n * n }) |> Iter.take(5))]
+    ";
+    assert_eq!(int_vec(&run(src)), vec![0, 1, 4, 9, 16]);
+}
+
+#[test]
+fn v08_for_plain_object_still_iterates_entries() {
+    // An object with no callable `next` still iterates key/value pairs.
+    let src = "for (v, ${a: 1, b: 2, c: 3}) { v }";
+    assert_eq!(run(src), Value::Int(3));
+}
+
+#[test]
+fn v08_for_object_noncallable_next_still_entries() {
+    // A `next` field that is not callable does NOT make it an iterator.
+    let src = "for (v, ${next: 7, x: 9}) { v }";
+    assert_eq!(run(src), Value::Int(9));
+}
+
+#[test]
+fn v08_nested_for_two_iterators() {
+    let src = "
+        Iter := import 'Iter';
+        for[] (a, Iter.from([1, 2])) {
+            for (b, Iter.from([10, 20])) { a + b }
+        }
+    ";
+    // inner `for` yields its last iteration value
+    assert_eq!(int_vec(&run(src)), vec![21, 22]);
+}
+
+#[test]
+fn v08_err_next_returns_non_object() {
+    let src = "
+        try (for (v, ${next: fn(){ 5 }}) { v }) catch (e) { e.kind }
+    ";
+    assert_eq!(run(src), Value::Str("type_mismatch".into()));
+}
+
+#[test]
+fn v08_err_next_missing_done() {
+    let src = "
+        try (for (v, ${next: fn(){ ${value: 1} }}) { v }) catch (e) { e.kind }
+    ";
+    assert_eq!(run(src), Value::Str("type_mismatch".into()));
+}
+
+#[test]
+fn v08_err_next_raise_caught_around_for() {
+    // A raise inside next() with no internal try propagates to a `try`
+    // wrapping the whole `for`.
+    let src = "
+        try (for (v, ${next: fn(){ raise 'boom' }}) { v }) catch (e) { e }
+    ";
+    assert_eq!(run(src), Value::Str("boom".into()));
+}
+
+#[test]
+fn v08_iter_next_internal_try_is_isolated() {
+    // A `try` *inside* next() catches its own raise; the re-entrant
+    // call resumes and the loop sees the recovered values.
+    let src = "
+        Iter := import 'Iter';
+        src := ${
+            next: fn() {
+                r := try raise 'inner' catch (e) { 'recovered' };
+                ${ done: false, value: r }
+            }
+        };
+        for[] (v, Iter.take(src, 2)) { v }
+    ";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            assert_eq!(b.len(), 2);
+            assert!(b.iter().all(|v| matches!(v, Value::Str(s) if &**s == "recovered")));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn v08_err_next_raise_uncaught_propagates() {
+    let msg = run_err("for (v, ${next: fn(){ raise 'kaboom' }}) { v }");
+    assert!(msg.contains("kaboom"), "got {msg}");
+}

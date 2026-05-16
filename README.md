@@ -298,7 +298,7 @@ last := while i < 5 { i = i + 1; i * 10 };   // last == 50
 
 ### `for` and `for[]`
 
-Iterates a Range, Array, Object, or String. One-variable or two-variable form:
+Iterates a Range, Array, Object, String, or iterator object. One-variable or two-variable form:
 
 | Iterable | One-var          | Two-var                              |
 |----------|------------------|--------------------------------------|
@@ -306,11 +306,14 @@ Iterates a Range, Array, Object, or String. One-variable or two-variable form:
 | Array    | `for (x, arr)`   | `for (i, x, arr)`                    |
 | Object   | `for (v, obj)`   | `for (k, v, obj)`                    |
 | String   | `for (ch, str)`  | `for (i, ch, str)`                   |
+| Iterator | `for (v, it)`    | `for (i, v, it)`      (`i` = 0,1,2…) |
 
 ```
 last := for (x, [10, 20, 30]) { x };       // 30
 all  := for[] (i, 1..=5) { i * i };        // [1, 4, 9, 16, 25]
 ```
+
+An **iterator object** (an object with a callable `next` field — the `Iter` protocol) is driven by calling `next()`; a `for` can consume an `Iter` pipeline directly, no `Iter.collect()` needed (v0.8). The same applies to array and call spread: `[...it]` and `f(...it)` expand an iterator. An object *without* a callable `next` still iterates as key/value entries.
 
 Each iteration opens a **fresh scope** for the loop variables — closures capture each iteration's `i` independently:
 
@@ -683,6 +686,8 @@ Array.sort_by(['ccc', 'a', 'bb'], fn(w) { #w })       // ['a', 'bb', 'ccc']
 A tigr-source module of **lazy, pull-based iterators**. Where `Array.map` followed by `Array.filter` builds a complete intermediate array at every step, an `Iter` pipeline carries one element through the whole chain at a time and never materializes the in-between arrays — which also makes infinite sequences and short-circuiting possible.
 
 An iterator is an object `${next: fn()}`; each `next()` call returns `${done: true}` or `${done: false, value: v}`. The **adapters** create an iterator, the **combinators** wrap one lazily (no work runs until the result is pulled), and the **consumers** drive the pulling and force evaluation. Callback parameters (`func`, `pred`) are invoked as `callback(value)`.
+
+Since v0.8, `for` and spread (`[...it]`, `f(...it)`) consume an iterator object directly — `collect` is only needed when you specifically want an `Array` value.
 
 `count` and `repeat` are infinite — only pair them with a bounding combinator (`take`) or a short-circuiting consumer (`find` / `nth`).
 

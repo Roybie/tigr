@@ -110,6 +110,16 @@ pub enum IterState {
         char_index: usize,
         byte_index: usize,
     },
+    /// An iterator object — `${ next: fn() }`. Unlike the other
+    /// variants this cannot be advanced by `next()` (advancing it means
+    /// calling a tigr closure); the VM drives it directly. `index` is a
+    /// synthetic counter for the two-var `for` form; `done` is sticky
+    /// once the object has reported exhaustion.
+    IterObject {
+        object: Rc<RefCell<IndexMap<Rc<str>, Value>>>,
+        index: i64,
+        done: bool,
+    },
 }
 
 impl IterState {
@@ -165,6 +175,9 @@ impl IterState {
                 *byte_index += c.len_utf8();
                 *char_index += 1;
                 Some((counter, value))
+            }
+            IterState::IterObject { .. } => {
+                unreachable!("IterObject is advanced by the VM, not IterState::next()")
             }
         }
     }

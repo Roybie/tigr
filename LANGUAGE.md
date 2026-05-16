@@ -327,7 +327,10 @@ ${...defaults, color: 'r'}  // object literal (later keys win)
 f(x, ...args, y)            // function call
 ```
 
-In a binding pattern, `...` is the **rest** form; see §11.
+Array-literal and function-call spread accept an Array, Range, String,
+or — since v0.8 — an iterator object (§7.4); object-literal spread
+requires an Object. In a binding pattern, `...` is the **rest** form;
+see §11.
 
 ---
 
@@ -413,7 +416,7 @@ indexed.
 ### 7.4 Iteration
 
 `for (vars, iterable) scope` — the iterable can be a Range, Array, Object,
-or String:
+String, or iterator object:
 
 | Iterable | One-var form          | Two-var form                          |
 |----------|-----------------------|---------------------------------------|
@@ -421,10 +424,31 @@ or String:
 | Array    | `for (x, arr)`        | `for (i, x, arr)`                     |
 | Object   | `for (v, obj)`        | `for (k, v, obj)`                     |
 | String   | `for (ch, str)`       | `for (i, ch, str)`                    |
+| Iterator | `for (v, it)`         | `for (i, v, it)` (i = 0,1,2,...)      |
 
 (Change from 0.1: previously `for` only iterated ranges, written as
 `for (en?, it?, range)` with a special sub-syntax. The range form is
 preserved for back-compat; the new collection forms are added.)
+
+**Iterator objects (v0.8).** An *iterator object* is an Object whose
+`next` field is a function — the pull-based protocol of the `Iter`
+module (§13.3): `next()` returns `${done: true}` or `${done: false,
+value: v}`. `for` drives such an object by calling `next()` until it
+reports `done`; the two-var form supplies a synthetic `0, 1, 2, …`
+counter. So an `Iter` pipeline can be consumed directly, without
+`Iter.collect()`:
+
+```
+for (sq, 0..=4 |> Array.from() |> Iter.from() |> Iter.map(fn(n){n*n})) {
+    print(sq)
+}
+```
+
+The presence of a **callable `next` field** is what distinguishes an
+iterator object from a plain object. An object that has a `next` field
+that is *not* a function (or no `next` at all) iterates as key/value
+entries, exactly as before. A `next()` that returns a non-object, or an
+object with no `done` field, raises a catchable error.
 
 Iteration variables are scoped to the loop body and not visible after.
 
@@ -1410,3 +1434,20 @@ User-visible breaking change:
     operations on a caught built-in error must adapt (read
     `e.message`, or branch on `e.kind`). `raise` of a string, and the
     string messages raised by native stdlib modules, are unaffected.
+
+## Appendix H — Changes in v0.8
+
+User-visible breaking change:
+
+36. **`for` and spread consume iterator objects** (§7.4, §6.6). An
+    Object whose `next` field is callable is now treated as an
+    *iterator object* — `for` drives its `next()` protocol, and
+    array-literal / function-call spread (`[...it]`, `f(...it)`)
+    expand it. This unifies the v0.7 `Iter` module with the language:
+    an `Iter` pipeline can be consumed directly, without
+    `Iter.collect()`. **Breaking** only for code that iterated a plain
+    object which happened to have a callable `next` field — it now
+    follows the iterator protocol instead of yielding key/value
+    entries. Objects without a callable `next` are unaffected.
+    Object-literal spread (`${...x}`) is unchanged and still requires
+    an Object.

@@ -4540,3 +4540,69 @@ fn v08_stack_trace_tail_calls_collapse() {
     let trace = &msg[msg.find("stack trace").unwrap()..];
     assert_eq!(trace.matches("loop at").count(), 1, "loop not collapsed:\n{msg}");
 }
+
+// ---- v0.8 #13: JSON.stringify cycle detection ----
+
+#[test]
+fn v08_json_stringify_direct_array_cycle() {
+    // An array holding itself raises `kind: 'cycle'` instead of
+    // overflowing the host call stack.
+    let v = run(
+        r#"JSON := import 'JSON';
+           a := [1, 2]; a[1] = a;
+           try JSON.stringify(a) catch (e) { e.kind }"#,
+    );
+    assert_eq!(v, Value::Str("cycle".into()));
+}
+
+#[test]
+fn v08_json_stringify_direct_object_cycle() {
+    let v = run(
+        r#"JSON := import 'JSON';
+           o := ${name: 'o'}; o.self = o;
+           try JSON.stringify(o) catch (e) { e.kind }"#,
+    );
+    assert_eq!(v, Value::Str("cycle".into()));
+}
+
+#[test]
+fn v08_json_stringify_indirect_cycle() {
+    // outer -> inner -> outer.
+    let v = run(
+        r#"JSON := import 'JSON';
+           outer := ${n: 'outer'}; inner := ${n: 'inner'};
+           outer.child = inner; inner.child = outer;
+           try JSON.stringify(outer) catch (e) { e.kind }"#,
+    );
+    assert_eq!(v, Value::Str("cycle".into()));
+}
+
+#[test]
+fn v08_json_stringify_cycle_message() {
+    let v = run(
+        r#"JSON := import 'JSON';
+           a := [0]; a[0] = a;
+           try JSON.stringify(a) catch (e) { e.message }"#,
+    );
+    assert_eq!(v, Value::Str("circular reference".into()));
+}
+
+#[test]
+fn v08_json_stringify_dag_not_a_cycle() {
+    // The same array referenced twice is a non-cyclic shared subtree —
+    // it must still serialize, not be flagged as a cycle.
+    let v = run(
+        "JSON := import 'JSON'; \
+         shared := [1, 2]; JSON.stringify([shared, shared])",
+    );
+    assert_eq!(v, Value::Str("[[1,2],[1,2]]".into()));
+}
+
+#[test]
+fn v08_json_stringify_cycle_uncaught_renders() {
+    // Uncaught: a clean rendered error, not a host stack overflow.
+    let msg = render_err(
+        "JSON := import 'JSON'; a := [1]; a[0] = a; JSON.stringify(a)",
+    );
+    assert!(msg.contains("circular reference"), "got:\n{msg}");
+}

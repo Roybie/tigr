@@ -397,7 +397,7 @@ result := try risky() catch (e) {
 raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
-`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings. An uncaught raised value is rendered via `str()` in the error report.
+`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`, `cycle`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings — except `JSON.stringify` of a circular structure, which raises a structured `cycle` error. An uncaught raised value is rendered via `str()` in the error report.
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 
@@ -895,7 +895,7 @@ JSON.stringify(${name: 'tigr', v: 0.6}, 2)
 // '{\n  "name": "tigr",\n  "v": 0.6\n}'
 ```
 
-JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and an integer-valued `Float` keeps a `.0` suffix. Cycles in arrays/objects aren't detected and will overflow the call stack — same posture as the wider Rc-cycle story.
+JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and an integer-valued `Float` keeps a `.0` suffix. `JSON.stringify` of a circular structure raises a catchable `cycle` error; a non-cyclic shared subtree still serializes fine.
 
 ---
 
@@ -1074,6 +1074,5 @@ See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walki
 Known limitations / candidates for later:
 
 - No tracing GC — collections use `Rc<RefCell<...>>`, so reference cycles leak. Acceptable for hobby-scale data.
-- `JSON.stringify` doesn't detect cyclic arrays/objects — they overflow the call stack.
 - Runtime error spans are line-only (no column information). Lex/parse/compile errors carry full spans.
 - No regex; `String.contains` / `split` / `replace` cover the 80%.

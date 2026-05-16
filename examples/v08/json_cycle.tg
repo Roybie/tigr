@@ -1,0 +1,44 @@
+// v0.8 #13 — JSON.stringify detects circular references.
+// A structure reachable from itself raises `${kind: 'cycle', message,
+// line}` instead of recursing until the host call stack overflows.
+
+JSON := import 'JSON';
+
+// A non-cyclic shared subtree (DAG) — the same array referenced twice —
+// still serializes fine. Cycle detection tracks the ancestor path, not
+// every value ever visited.
+shared := [1, 2, 3];
+dag := [shared, shared];
+print('dag:', JSON.stringify(dag));
+
+// Direct self-cycle: an array holding itself.
+a := [1, 2];
+a[1] = a;
+result := try JSON.stringify(a) catch (e) {
+    print('caught:', e.kind, '-', e.message, '(line {e.line})');
+    'cyclic'
+};
+print('result:', result);
+
+// Indirect cycle through objects: outer -> inner -> outer.
+outer := ${name: 'outer'};
+inner := ${name: 'inner'};
+outer.child = inner;
+inner.child = outer;
+try JSON.stringify(outer) catch (e) {
+    print('caught:', e.kind)
+};
+
+// `match` on the kind to branch handling.
+classify := fn(value) {
+    try (JSON.stringify(value)) catch (e) {
+        match e.kind {
+            'cycle' => 'circular — cannot serialize',
+            _       => 'other error',
+        }
+    }
+};
+print(classify(a));
+
+// Ordinary acyclic data is unaffected.
+print('plain:', JSON.stringify(${x: 1, items: [true, null, 'hi']}));

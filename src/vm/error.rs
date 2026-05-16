@@ -194,6 +194,8 @@ pub enum RuntimeErrorKind {
     Overflow,
     /// Recursion exceeded the VM's configured maximum call depth.
     StackOverflow,
+    /// `JSON.stringify` hit a circular reference in the value graph.
+    Cycle,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -219,6 +221,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::ImportFailed(..) => "import_failed",
             RuntimeErrorKind::Overflow => "overflow",
             RuntimeErrorKind::StackOverflow => "stack_overflow",
+            RuntimeErrorKind::Cycle => "cycle",
             RuntimeErrorKind::Raised(_) => "raised",
         }
     }
@@ -242,6 +245,7 @@ impl fmt::Display for RuntimeError {
             ),
             RuntimeErrorKind::Overflow => f.write_str("integer overflow"),
             RuntimeErrorKind::StackOverflow => f.write_str("call stack depth exceeded"),
+            RuntimeErrorKind::Cycle => f.write_str("circular reference"),
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }

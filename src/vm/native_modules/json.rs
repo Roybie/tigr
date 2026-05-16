@@ -6,9 +6,10 @@
 //! decimal; `Float(n)` keeps a `.0` suffix when integer-valued so the
 //! reader can distinguish.
 //!
-//! Cycles in arrays/objects are not detected — they will stack-
-//! overflow. Acceptable for v0.4 (same posture as the wider tracing-
-//! GC story, spec §15.1).
+//! Circular references in arrays/objects are detected during
+//! `stringify` (v0.8): `write_value` carries an ancestor-path set of
+//! `Rc` pointers and raises a catchable `cycle` error on a repeat. A
+//! non-cyclic shared subtree (DAG) still serializes fine.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -374,8 +375,15 @@ fn stringify(args: &[Value]) -> Result<Value, RuntimeError> {
         None
     };
     let mut out = String::new();
-    write_value(&mut out, &args[0], indent.as_deref(), 0)?;
+    let mut seen: Vec<*const ()> = Vec::new();
+    write_value(&mut out, &args[0], indent.as_deref(), 0, &mut seen)?;
     Ok(Value::Str(out.into()))
+}
+
+/// Raise the catchable `cycle` error. Line `0` — the VM stamps the
+/// `JSON.stringify` call-site line for native errors.
+fn cycle_err() -> RuntimeError {
+    RuntimeError::new(RuntimeErrorKind::Cycle, 0)
 }
 
 fn write_value(
@@ -383,6 +391,7 @@ fn write_value(
     v: &Value,
     indent: Option<&str>,
     depth: usize,
+    seen: &mut Vec<*const ()>,
 ) -> Result<(), RuntimeError> {
     match v {
         Value::Null => out.push_str("null"),
@@ -397,16 +406,23 @@ fn write_value(
                 out.push_str("[]");
                 return Ok(());
             }
+            // Cycle guard: a node already on the ancestor path → cycle.
+            let p = Rc::as_ptr(a) as *const ();
+            if seen.contains(&p) {
+                return Err(cycle_err());
+            }
+            seen.push(p);
             out.push('[');
             for (i, item) in arr.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
                 write_indent(out, indent, depth + 1);
-                write_value(out, item, indent, depth + 1)?;
+                write_value(out, item, indent, depth + 1, seen)?;
             }
             write_indent(out, indent, depth);
             out.push(']');
+            seen.pop();
         }
         Value::Object(o) => {
             let obj = o.borrow();
@@ -414,6 +430,11 @@ fn write_value(
                 out.push_str("{}");
                 return Ok(());
             }
+            let p = Rc::as_ptr(o) as *const ();
+            if seen.contains(&p) {
+                return Err(cycle_err());
+            }
+            seen.push(p);
             out.push('{');
             for (i, (k, val)) in obj.iter().enumerate() {
                 if i > 0 {
@@ -425,10 +446,11 @@ fn write_value(
                 if indent.is_some() {
                     out.push(' ');
                 }
-                write_value(out, val, indent, depth + 1)?;
+                write_value(out, val, indent, depth + 1, seen)?;
             }
             write_indent(out, indent, depth);
             out.push('}');
+            seen.pop();
         }
         // Non-serializable value types — raise so the caller can `try`.
         Value::Function(_)

@@ -608,7 +608,7 @@ can `match` on it (v0.7b):
 - `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
   `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
   `invalid_index_type`, `immutable_target`, `import_failed`,
-  `overflow`, `stack_overflow`, `stack_underflow`.
+  `overflow`, `stack_overflow`, `stack_underflow`, `cycle`.
 - `message` — the human-readable text an uncaught error would show
   (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
 - `line` — the source line the error occurred on.
@@ -637,7 +637,10 @@ the try body.
 
 Native stdlib modules (`Math`, `IO`, `JSON`, `Path`, ...) raise plain
 **string** messages, so `catch` binds those as strings. An uncaught
-raised value is rendered via `str()` in the error report.
+raised value is rendered via `str()` in the error report. One
+exception: `JSON.stringify` of a circular structure raises a
+structured built-in error (`kind: 'cycle'`), reified like the others
+above.
 
 `raise` does not require a string; non-string values stringify via the
 same rules as `str()`. The error value handlers see is always a string.
@@ -1121,8 +1124,10 @@ Both calls raise on the failure cases — catchable via `try`:
 - `JSON.stringify`: non-serializable types (`Function`, `Range`,
   `Iter`, `NativeFn`), `NaN`/`Infinity`.
 
-Cycles in arrays/objects are not detected and will overflow the call
-stack — same posture as the wider Rc-cycle story (§15.1).
+A circular structure passed to `JSON.stringify` (an array or object
+reachable from itself) raises a catchable `cycle` error (v0.8) rather
+than overflowing the call stack. A non-cyclic shared subtree — the
+same array referenced from two places — still serializes fine.
 
 `str` rules:
 
@@ -1545,3 +1550,13 @@ Additive changes:
     function appears once. The trace is omitted when there is a single
     frame (it would only repeat the snippet) and for *caught* errors —
     a value bound by `catch` still carries only `kind`/`message`/`line`.
+
+40. **`JSON.stringify` cycle detection** (§13.4, §9.6). `JSON.stringify`
+    of a circular structure — an array or object reachable from itself —
+    now raises a catchable error with `kind: 'cycle'` (reified as
+    `${kind: 'cycle', message: 'circular reference', line}`) instead of
+    recursing until the host call stack overflows and crashes the
+    process. A non-cyclic shared subtree (the same array referenced from
+    two places) still serializes normally. This is the one native
+    stdlib error that is a structured built-in error rather than a plain
+    string message.

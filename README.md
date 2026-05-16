@@ -397,7 +397,7 @@ result := try risky() catch (e) {
 raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
-`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `overflow`, `stack_underflow`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings. An uncaught raised value is rendered via `str()` in the error report.
+`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings. An uncaught raised value is rendered via `str()` in the error report.
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 

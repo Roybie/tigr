@@ -4402,3 +4402,90 @@ fn v08_no_overflow_normal_arith_unchanged() {
     let src = "a := 1000000 * 1000000; b := a + 1 - 2; -b";
     assert_eq!(run(src), Value::Int(-999999999999));
 }
+
+// ---- v0.8 #4: tail calls + bounded recursion ----
+
+#[test]
+fn v08_tailcall_basic() {
+    // A call in the function-body tail position returns its result
+    // correctly through the reused frame.
+    let src = "
+        add := fn(a, b) { a + b };
+        apply := fn(x) { add(x, 1) };
+        apply(41)
+    ";
+    assert_eq!(run(src), Value::Int(42));
+}
+
+#[test]
+fn v08_tailcall_deep_self_recursion() {
+    // 100k deep — well past the 10k call-depth limit. Only completes
+    // because the self-recursive tail call reuses the frame.
+    let src = "
+        countdown := fn(n) { if n <= 0 { 'done' } else { countdown(n - 1) } };
+        countdown(100000)
+    ";
+    assert_eq!(run(src), Value::Str("done".into()));
+}
+
+#[test]
+fn v08_tailcall_accumulator_sum() {
+    // Accumulator-style sum is genuinely tail-recursive; verifies args
+    // are passed correctly across 100k frame reuses.
+    let src = "
+        sum := fn(n, acc) { if n <= 0 { acc } else { sum(n - 1, acc + n) } };
+        sum(100000, 0)
+    ";
+    assert_eq!(run(src), Value::Int(5000050000));
+}
+
+#[test]
+fn v08_tailcall_through_match_arm() {
+    // Tail position propagates into `match` arm bodies.
+    let src = "
+        f := fn(n) { match n { 0 => 'base', _ => f(n - 1) } };
+        f(100000)
+    ";
+    assert_eq!(run(src), Value::Str("base".into()));
+}
+
+#[test]
+fn v08_tailcall_mutual_recursion() {
+    // General TCO: mutually-recursive tail calls (not just self) reuse
+    // the frame. Uses the forward-declaration idiom.
+    let src = "
+        is_odd := null;
+        is_even := fn(n) { if n == 0 { true } else { is_odd(n - 1) } };
+        is_odd = fn(n) { if n == 0 { false } else { is_even(n - 1) } };
+        is_even(100000)
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+#[test]
+fn v08_tailcall_to_native_fn() {
+    // A native function in tail position behaves as an ordinary call.
+    let src = "
+        g := fn(x) { str(x) };
+        g(7)
+    ";
+    assert_eq!(run(src), Value::Str("7".into()));
+}
+
+#[test]
+fn v08_deep_non_tail_recursion_is_catchable() {
+    // `1 + deep(...)` is NOT a tail call, so frames accumulate until
+    // the depth limit raises a catchable `stack_overflow`.
+    let src = "
+        deep := fn(n) { 1 + deep(n + 1) };
+        try deep(0) catch (e) { e.kind }
+    ";
+    assert_eq!(run(src), Value::Str("stack_overflow".into()));
+}
+
+#[test]
+fn v08_stack_overflow_uncaught_renders() {
+    // An uncaught stack overflow renders cleanly — no host panic.
+    let msg = render_err("deep := fn(n) { 1 + deep(n + 1) }; deep(0)");
+    assert!(msg.contains("call stack depth exceeded"), "got {msg}");
+}

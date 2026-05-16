@@ -608,7 +608,7 @@ can `match` on it (v0.7b):
 - `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
   `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
   `invalid_index_type`, `immutable_target`, `import_failed`,
-  `overflow`, `stack_underflow`.
+  `overflow`, `stack_overflow`, `stack_underflow`.
 - `message` — the human-readable text an uncaught error would show
   (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
 - `line` — the source line the error occurred on.
@@ -767,6 +767,43 @@ adders[2](10);              // 12
 (Note: this works because each iteration of `for` opens a fresh scope for
 `i`. The closure captures *that* scope's `i`. Implementation must preserve
 this — see §15.)
+
+### 10.5 Recursion and tail calls (v0.8)
+
+A function may call itself — a `fn` initialiser sees its own binding
+name, so `fact := fn(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }`
+works directly. Mutual recursion uses the forward-declaration idiom:
+declare the name first (`g := null`), then assign the function once the
+other is in scope.
+
+A call in **tail position** reuses the current call frame instead of
+pushing a new one, so a tail-recursive function runs in constant frame
+space, to any depth. A call is in tail position when its result is
+*directly* the result of the enclosing function — including through the
+branches of an `if`, the arms of a `match`, and the tail expression of
+a block, when those are themselves the function's result.
+
+```
+sum := fn(n, acc) {
+    if n <= 0 { acc } else { sum(n - 1, acc + n) }   // tail call
+};
+sum(1000000, 0)                                      // runs in O(1) frames
+```
+
+A call is **not** in tail position if its result is used further — e.g.
+`n * fact(n - 1)` (the call feeds `*`) or `1 + sum(n - 1)` (feeds `+`).
+Such a call still pushes a frame. To make deep recursion of that shape
+work, rewrite it in the accumulator style above. Calls inside a `try`
+body, a `&&`/`||` operand, or a loop body are likewise never tail
+calls.
+
+Call depth is bounded: recursion that genuinely nests past the VM's
+limit raises a catchable `stack_overflow` error (§9.6) rather than
+crashing the process.
+
+```
+try deepNonTailRecursion() catch (e) { e.kind }      // 'stack_overflow'
+```
 
 ---
 
@@ -1475,3 +1512,16 @@ User-visible breaking change:
     `Float`. **Breaking** only for code that relied on silent
     two's-complement wraparound, expected to be effectively no existing
     Tigr programs.
+
+Additive changes:
+
+38. **Tail calls and bounded recursion** (§10.5). A call in tail
+    position now reuses the current call frame instead of pushing a new
+    one, so tail-recursive functions — including mutually-recursive
+    ones — run in constant frame space, to any depth. Tail position
+    propagates through `if`/`else` branches, `match` arms, and block
+    tail expressions. Independently, call depth is now bounded:
+    recursion that genuinely nests past the limit raises a catchable
+    `stack_overflow` error (reified as
+    `${kind: 'stack_overflow', message: 'call stack depth exceeded',
+    line}`) instead of crashing the process.

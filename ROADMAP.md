@@ -52,46 +52,27 @@ undefined behavior (debug panic / release wraparound).
 - Breaking only for code that relied on silent wraparound — expected
   to be effectively no existing Tigr programs.
 
-### 3. Named function expressions  *(additive)*
+### 3. Named function expressions  — dropped, see Deferred.
 
-Recursion currently leans on `f := fn() { f() }` working by binding
-order — subtle and fragile.
-
-- New form `fn name(params) { body }`: an expression that evaluates
-  to the closure (everything-is-an-expression preserved), so
-  `f := fn g() { ... }` works and binds `f` in the enclosing scope.
-- The name (`g`) is visible **only inside `body`**, for
-  self-recursion — JS named-function-expression semantics. It does
-  not leak to the enclosing scope; the outer name, if any, comes from
-  the binding (`f`).
-- Implementation: the closure occupies its own frame's slot 0
-  (Crafting Interpreters technique); the self-name resolves there, so
-  recursion has no binding-order dependency.
-- Edge cases to settle: self-name colliding with a parameter name
-  (error, or param shadows); a bare unbound `fn g(){}` drops its
-  value like any unused expression.
-- Mutual recursion still uses the existing forward-declaration idiom;
-  not in scope here.
-
-### 4. Tail calls + bounded recursion  *(additive)*
+### 4. Tail calls + bounded recursion  ✅ done  *(additive)*
 
 The spec teaches recursion (`sum([head, ...tl])`), but a deep input
 overflows the host stack and crashes.
 
 - New `TailCall` opcode: a call in tail position reuses the current
-  frame instead of pushing. Minimum bar — self-recursive tail calls;
-  general tail-position calls if feasible.
+  frame instead of pushing. Implemented for general tail-position
+  calls (not just self-recursive) — `if`/`match`/block tails included.
 - Independently: a configurable max call depth that raises a
   catchable `stack_overflow` error instead of crashing the process.
 
 ### 11. Stack traces on uncaught errors  *(additive)*
 
 - Capture the call-frame stack when an error is raised; each frame
-  records the function name (now available from item 3) and the
-  call-site line.
+  records the function name and the call-site line.
+- Function names come from inference on the binding (`f := fn(){}` →
+  `"f"`), with an `<anonymous>` fallback for unbound functions. This
+  item adds the small `name` field to the closure value itself.
 - Render the trace beneath the existing source-snippet error report.
-- Synergy with item 3: named functions make traces readable; do them
-  in the same release.
 
 ### 13. `JSON.stringify` cycle detection  *(additive)*
 
@@ -188,6 +169,13 @@ sound (v0.10) — v0.11 is the editor-support milestone.
 - **`match` exhaustiveness** (item 5) — falling through to `null` is
   a deliberate design choice; revisit only if it proves a real
   footgun.
+- **Named function expressions** (item 3) — self-recursion of a bound
+  function already works (`:=` declares a `fn` initialiser before
+  compiling its body, so `f := fn(){ f() }` resolves `f`). The form
+  would only add inline-lambda recursion and decoupling of the
+  recursive call from the binding name — largely redundant with a
+  future block-level hoisting of `fn` bindings, which would also give
+  ergonomic *mutual* recursion. Revisit hoisting if it proves needed.
 - **Language server (LSP)** — unlocks semantic autocomplete, go-to-
   definition, and editor support beyond Vim.
 - **Formatter** (`tigr fmt`).

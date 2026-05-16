@@ -203,7 +203,7 @@ impl Compiler {
             c.visit_block_for_hoist(program, &mut hoisted);
             c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
 
-            c.compile_block_value(program)?;
+            c.compile_block_value(program, false)?;
             let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
             c.current_chunk_mut().write_op(OpCode::Return, last_line);
 
@@ -281,7 +281,7 @@ impl Compiler {
         c.visit_block_for_hoist(program, &mut hoisted);
         c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
 
-        c.compile_block_value(program)?;
+        c.compile_block_value(program, false)?;
         let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
         c.current_chunk_mut().write_op(OpCode::Halt, last_line);
 
@@ -335,18 +335,82 @@ impl Compiler {
 
     // -- block / scope -----------------------------------------------
 
-    fn compile_block_value(&mut self, block: &Block) -> Result<(), CompileError> {
+    fn compile_block_value(
+        &mut self,
+        block: &Block,
+        tail: bool,
+    ) -> Result<(), CompileError> {
         for stmt in &block.stmts {
             self.compile_expr(stmt)?;
             self.emit_op(OpCode::Pop, stmt.span.line);
         }
-        if let Some(tail) = &block.tail {
-            self.compile_expr(tail)?;
+        if let Some(t) = &block.tail {
+            self.compile_maybe_tail(t, tail)?;
         } else {
             let line = block.stmts.last().map(|s| s.span.line).unwrap_or(1);
             self.emit_op(OpCode::PushNull, line);
         }
         Ok(())
+    }
+
+    /// Compile `e` in tail position. A non-spread `Call` here is
+    /// emitted as `TailCall` — the VM reuses the current frame instead
+    /// of pushing one, so tail recursion runs in O(1) frames. Tail-ness
+    /// propagates through `if`/`else`, `match` arms and block tail
+    /// expressions; any other form — and a spread call — is compiled
+    /// normally (an ordinary `Call`).
+    fn compile_tail(&mut self, e: &SpannedExpr) -> Result<(), CompileError> {
+        let line = e.span.line;
+        match &e.expr {
+            Expr::Call(callee, args)
+                if !args.iter().any(|a| matches!(a.expr, Expr::Spread(_))) =>
+            {
+                if args.len() > 255 {
+                    return Err(CompileError::new(
+                        CompileErrorKind::TooManyConstants,
+                        e.span,
+                    ));
+                }
+                self.compile_expr(callee)?;
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                self.emit_op(OpCode::TailCall, line);
+                self.emit_byte(args.len() as u8, line);
+                // Same net stack effect as `Call`: pops callee + n args,
+                // leaves one result.
+                self.adjust_stack(-(args.len() as i32 + 1) + 1);
+            }
+            Expr::If(cond, then_branch, else_branch) => {
+                self.compile_if(cond, then_branch, else_branch, line, true)?;
+            }
+            Expr::Match { subject, arms } => {
+                self.compile_match(subject, arms, e.span, true)?;
+            }
+            Expr::Block(b) => self.compile_block_value(b, true)?,
+            Expr::Scope(b) => {
+                self.begin_scope();
+                let mut hoisted = Vec::new();
+                self.visit_block_for_hoist(b, &mut hoisted);
+                self.emit_hoist_prologue(hoisted, e.span)?;
+                self.compile_block_value(b, true)?;
+                self.end_scope(line)?;
+            }
+            _ => self.compile_expr(e)?,
+        }
+        Ok(())
+    }
+
+    fn compile_maybe_tail(
+        &mut self,
+        e: &SpannedExpr,
+        tail: bool,
+    ) -> Result<(), CompileError> {
+        if tail {
+            self.compile_tail(e)
+        } else {
+            self.compile_expr(e)
+        }
     }
 
     fn begin_scope(&mut self) {
@@ -544,6 +608,7 @@ impl Compiler {
             OpCode::IndexSet => -2,
             // Operand-dependent: caller adjusts.
             OpCode::MakeArray | OpCode::MakeObject | OpCode::Call
+            | OpCode::TailCall
             | OpCode::ConcatN | OpCode::MakeRange
             | OpCode::IterNext | OpCode::IterNext2
             | OpCode::CloseScope | OpCode::Unwind
@@ -795,19 +860,19 @@ impl Compiler {
                 self.emit_op(opcode, line);
             }
 
-            Expr::Block(b) => self.compile_block_value(b)?,
+            Expr::Block(b) => self.compile_block_value(b, false)?,
 
             Expr::Scope(b) => {
                 self.begin_scope();
                 let mut hoisted = Vec::new();
                 self.visit_block_for_hoist(b, &mut hoisted);
                 self.emit_hoist_prologue(hoisted, e.span)?;
-                self.compile_block_value(b)?;
+                self.compile_block_value(b, false)?;
                 self.end_scope(line)?;
             }
 
             Expr::If(cond, then_branch, else_branch) => {
-                self.compile_if(cond, then_branch, else_branch, line)?;
+                self.compile_if(cond, then_branch, else_branch, line, false)?;
             }
 
             Expr::While { is_array, cond, body } => {
@@ -839,7 +904,7 @@ impl Compiler {
             }
 
             Expr::Match { subject, arms } => {
-                self.compile_match(subject, arms, e.span)?;
+                self.compile_match(subject, arms, e.span, false)?;
             }
 
             Expr::Decl(pat, init) => {
@@ -1253,6 +1318,7 @@ impl Compiler {
         then_branch: &SpannedExpr,
         else_branch: &SpannedExpr,
         line: u32,
+        tail: bool,
     ) -> Result<(), CompileError> {
         self.compile_expr(cond)?;
         // Height with cond on top — this is also the height at the
@@ -1260,13 +1326,14 @@ impl Compiler {
         let cond_height = self.current().stack_height;
         let to_else = self.emit_jump(OpCode::JumpIfFalse, line);
         self.emit_op(OpCode::Pop, line);
-        self.compile_expr(then_branch)?;
+        // When the `if` is itself in tail position, each branch is too.
+        self.compile_maybe_tail(then_branch, tail)?;
         let to_end = self.emit_jump(OpCode::Jump, line);
         // Reset tracker for the else-path entry.
         self.set_stack_height(cond_height);
         self.patch_jump(to_else)?;
         self.emit_op(OpCode::Pop, line);
-        self.compile_expr(else_branch)?;
+        self.compile_maybe_tail(else_branch, tail)?;
         self.patch_jump(to_end)?;
         Ok(())
     }
@@ -1283,6 +1350,7 @@ impl Compiler {
         subject: &SpannedExpr,
         arms: &[MatchArm],
         span: Span,
+        tail: bool,
     ) -> Result<(), CompileError> {
         let line = span.line;
         self.begin_scope();
@@ -1327,8 +1395,11 @@ impl Compiler {
                 self.emit_op(OpCode::Pop, line);
             }
 
-            // Body → result slot.
-            self.compile_expr(&arm.body)?;
+            // Body → result slot. When the `match` is in tail position
+            // each arm body is too; a `TailCall` there reuses the frame
+            // and never reaches the store/unwind below (dead but
+            // harmless bytecode).
+            self.compile_maybe_tail(&arm.body, tail)?;
             self.emit_op(OpCode::StoreLocal, line);
             self.emit_byte(result_slot, line);
             self.emit_op(OpCode::Pop, line);
@@ -2064,10 +2135,13 @@ impl Compiler {
             }
         }
 
-        // body is always a Scope (per parser)
-        self.compile_expr(body)?;
+        // body is always a Scope (per parser). Compile it in tail
+        // position so a call as the function's result becomes a
+        // frame-reusing `TailCall`.
+        self.compile_tail(body)?;
 
-        // implicit Return at the end
+        // implicit Return at the end (dead code when the body ends in a
+        // TailCall, but harmless)
         self.emit_op(OpCode::Return, line);
 
         let fc = self.funcs.pop().unwrap();

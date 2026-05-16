@@ -64,8 +64,17 @@ struct TryFrame {
     stack_len: usize,
 }
 
+/// Default ceiling on call-frame depth. Recursion past this raises a
+/// catchable `stack_overflow` error rather than crashing the process.
+/// Bounds both the heap `frames` Vec and — since `call_value` re-entry
+/// also pushes frames — the rare deep re-entrant Rust-stack case.
+pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
+
 pub struct Vm {
     frames: Vec<CallFrame>,
+    /// Ceiling on `frames.len()`; see [`DEFAULT_MAX_CALL_DEPTH`]. Public
+    /// so a driver can tune it.
+    pub max_call_depth: usize,
     stack: Vec<Value>,
     globals: Vec<Value>,
     open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
@@ -91,6 +100,7 @@ impl Vm {
     pub fn with_source_map(source_map: Rc<RefCell<SourceMap>>) -> Self {
         Vm {
             frames: Vec::with_capacity(64),
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             stack: Vec::with_capacity(256),
             globals: stdlib::builtins(),
             open_upvalues: Vec::new(),
@@ -563,6 +573,9 @@ impl Vm {
                     let callee = self.stack[args_start - 1].clone();
                     match callee {
                         Value::Function(c) => {
+                            if self.frames.len() >= self.max_call_depth {
+                                return Err(stack_overflow_err(line));
+                            }
                             let arity = c.function.arity;
                             let has_rest = c.function.has_rest;
                             if has_rest {
@@ -603,6 +616,74 @@ impl Vm {
                                 // where it was *called*, not the
                                 // useless line 0 the builtin defaulted
                                 // to.
+                                if e.line == 0 { e.line = line; }
+                                e
+                            })?;
+                            self.stack.push(result);
+                            continue;
+                        }
+                        other => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::NotCallable(other.type_name().into()),
+                                line,
+                            ));
+                        }
+                    }
+                }
+                OpCode::TailCall => {
+                    let n = chunk.code[ip] as usize;
+                    ip += 1;
+                    // commit ip — the native-fn arm below falls through
+                    // to the `Return` that the compiler emits after a
+                    // tail call, so the current frame's ip must be live.
+                    self.frames.last_mut().unwrap().ip = ip;
+
+                    let args_start = self.stack.len() - n;
+                    let callee = self.stack[args_start - 1].clone();
+                    match callee {
+                        Value::Function(c) => {
+                            let arity = c.function.arity;
+                            let has_rest = c.function.has_rest;
+                            if has_rest {
+                                self.pack_rest(args_start, n, arity);
+                            } else if n < arity {
+                                for _ in n..arity {
+                                    self.stack.push(Value::Null);
+                                }
+                            } else if n > arity {
+                                let drop_n = n - arity;
+                                self.stack.truncate(self.stack.len() - drop_n);
+                            }
+                            // Reuse the current frame: lift its captured
+                            // locals to the heap, then discard them so
+                            // the callee + arity-adjusted args slide down
+                            // onto its base slot. No frame is pushed, so
+                            // recursion stays O(1) in `frames`.
+                            let base = self.frames.last().unwrap().base_slot;
+                            self.close_upvalues(base);
+                            self.stack.drain(base..args_start - 1);
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.closure = c;
+                            frame.ip = 0;
+                            // base_slot unchanged; try_frames is empty —
+                            // the compiler never emits TailCall inside a
+                            // `try`.
+                            continue;
+                        }
+                        Value::NativeFn(nf) => {
+                            let args: Vec<Value> = self.stack.drain(args_start..).collect();
+                            self.stack.pop(); // remove callee
+                            if !nf.arity.check(args.len()) {
+                                return Err(RuntimeError::new(
+                                    RuntimeErrorKind::ArityMismatch {
+                                        name: nf.name.into(),
+                                        expected: nf.arity.describe(),
+                                        got: args.len(),
+                                    },
+                                    line,
+                                ));
+                            }
+                            let result = (nf.func)(&args).map_err(|mut e| {
                                 if e.line == 0 { e.line = line; }
                                 e
                             })?;
@@ -1325,6 +1406,9 @@ impl Vm {
             }
             Value::Function(c) => {
                 let floor = self.frames.len();
+                if floor >= self.max_call_depth {
+                    return Err(stack_overflow_err(line));
+                }
                 let arity = c.function.arity;
                 let has_rest = c.function.has_rest;
                 let n = args.len();
@@ -1831,4 +1915,8 @@ fn type_err(op: &str, a: &Value, b: &Value, line: u32) -> RuntimeError {
 
 fn overflow_err(line: u32) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::Overflow, line)
+}
+
+fn stack_overflow_err(line: u32) -> RuntimeError {
+    RuntimeError::new(RuntimeErrorKind::StackOverflow, line)
 }

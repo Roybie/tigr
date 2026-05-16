@@ -229,6 +229,13 @@ pub enum OpCode {
     /// Array. Otherwise behaves like `Add`. Emitted only for `+=`, so
     /// plain `a + b` stays non-mutating.
     AddAssign,
+
+    // -- v0.8 — tail calls --
+    /// Like `Call`, but the callee is in tail position: instead of
+    /// pushing a new frame, the current frame is reused (its locals
+    /// discarded, callee + args shifted down to its base slot). Runs
+    /// recursion in O(1) frames. Operand: u8 arg count.
+    TailCall,
 }
 
 impl OpCode {
@@ -299,6 +306,7 @@ impl OpCode {
             61 => TypeTest,
             62 => JumpIfNotNull,
             63 => AddAssign,
+            64 => TailCall,
             _ => return None,
         })
     }
@@ -309,7 +317,7 @@ impl OpCode {
         use OpCode::*;
         match self {
             LoadConst | LoadLocal | StoreLocal | CloseScope
-            | MakeArray | MakeObject | Call
+            | MakeArray | MakeObject | Call | TailCall
             | GetUpvalue | SetUpvalue | LoadGlobal
             | MakeRange | IterAppend | Unwind | ConcatN | TypeTest => 1,
             // Closure has variable-length operands (1 byte fn_idx

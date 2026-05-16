@@ -176,6 +176,8 @@ pub enum RuntimeErrorKind {
     ImportFailed(String, String),
     /// Integer arithmetic (`+ - *`, unary `-`) overflowed `i64`.
     Overflow,
+    /// Recursion exceeded the VM's configured maximum call depth.
+    StackOverflow,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -200,6 +202,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::ImmutableTarget(_) => "immutable_target",
             RuntimeErrorKind::ImportFailed(..) => "import_failed",
             RuntimeErrorKind::Overflow => "overflow",
+            RuntimeErrorKind::StackOverflow => "stack_overflow",
             RuntimeErrorKind::Raised(_) => "raised",
         }
     }
@@ -222,6 +225,7 @@ impl fmt::Display for RuntimeError {
                 f, "import of {path:?} failed: {msg}"
             ),
             RuntimeErrorKind::Overflow => f.write_str("integer overflow"),
+            RuntimeErrorKind::StackOverflow => f.write_str("call stack depth exceeded"),
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }

@@ -1,7 +1,0 @@
-// Deliberately broken — demonstrates v0.4 error rendering.
-// Running this prints a rustc-style error block pointing at line 4.
-
-x := 10;
-y := 0;
-result := x / y;
-result

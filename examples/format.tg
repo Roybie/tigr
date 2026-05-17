@@ -1,0 +1,53 @@
+// String formatting.
+//
+// `String.format(value, spec)` renders one value through a spec
+// mini-language; `String.printf(template, args)` substitutes `%(SPEC)`
+// placeholders in a template (the SPEC is that same mini-language).
+// The placeholder marker is `%(...)`, not `{}`, because tigr already
+// interpolates `{}` in every string literal.
+
+String := import 'String';
+
+// -------- padded numbers --------
+
+print('zero-padded ids:');
+for (_, n, [1, 42, 707, 9999]) {
+    print('  id-' + String.format(n, '05'))
+};
+
+// -------- an aligned table --------
+
+print('');
+print('an aligned table:');
+
+rows := [
+    ['apple',  3,  0.50],
+    ['banana', 12, 0.25],
+    ['cherry', 144, 0.05],
+];
+
+print(String.printf('  %(<10)%(>6)%(>9)', ['item', 'qty', 'price']));
+for (_, row, rows) {
+    print(String.printf('  %(<10)%(>6d)%(>9.2f)', row))
+};
+
+// -------- number bases --------
+
+print('');
+print(String.printf('255 is %(d) = %(#x) = %(#o) = %(#b)', [255, 255, 255, 255]));
+
+// -------- sign, grouping, alignment, fill --------
+
+print('');
+print('a signed change:    ' + String.format(1280, '+,d'));
+print('a signed change:    ' + String.format(-940, '+,d'));
+print('centred in a field: [' + String.format('hi', '^10') + ']');
+print('dotted leader:      ' + String.format('total', '.<20') + String.format(42.5, '>8.2f'));
+
+// -------- formatting inside interpolation --------
+
+pi := 3.14159265;
+pi4 := String.format(pi, '.4f');
+hex := String.format(65536, '#x');
+print('');
+print('pi to 4 places is {pi4}, and 2^16 in hex is {hex}');

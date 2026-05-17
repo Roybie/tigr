@@ -1,0 +1,41 @@
+// JSON module + IO round-trip.
+//
+// Builds a tigr value, writes it as JSON, reads it back, mutates,
+// writes it again — the JSON and IO modules working together.
+
+JSON := import 'JSON';
+IO   := import 'IO';
+
+// Build initial data structure.
+data := ${
+    name: 'tigr',
+    tags: ['small', 'dynamic', 'expression-oriented'],
+    counts: ${tests: 542, files: 16}
+};
+
+// Pretty-print to stderr first to show what we're saving.
+print('initial:');
+print(JSON.stringify(data, 2));
+
+// Write, read, parse.
+path := '/tmp/tigr_json_demo.json';
+IO.write_file(path, JSON.stringify(data));
+
+raw := IO.read_file(path);
+back := JSON.parse(raw);
+
+// Mutate via destructure + reassign.
+${counts} := back;
+counts.tests = counts.tests + 1;
+back.counts = counts;
+
+// Write back, pretty-printed this time.
+IO.write_file(path, JSON.stringify(back, 2));
+print('round-tripped + mutated → ' + path);
+print(IO.read_file(path));
+
+// Catch a malformed-JSON parse.
+err := try JSON.parse('not valid json') catch (e) { 'caught: ' + e };
+print(err);
+
+'done'

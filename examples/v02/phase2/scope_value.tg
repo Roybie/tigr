@@ -1,5 +1,0 @@
-// adapted from spec §4.3
-// after this: a == 10, b == 200, and `c` is undeclared outside the scope
-a := 9;
-b := { c := 20; c * (a = a + 1) };
-b

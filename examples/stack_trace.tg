@@ -1,0 +1,13 @@
+// Deliberately broken — demonstrates stack traces.
+// Running this prints the rustc-style error snippet followed by a
+// `stack trace` block: inner -> compute -> <main>.
+
+inner := fn(n) {
+    n * n * n * n * n * n * n * n * n * n  // overflows i64 for big n
+};
+
+compute := fn(n) {
+    inner(n) + 1
+};
+
+compute(999999999);

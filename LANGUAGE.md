@@ -889,17 +889,27 @@ ${user: ${id, name}} := response;
 ```
 Array := import 'Array';
 util  := import './lib/util';
+mod   := import './plugins/{name}';   // any expression
 ```
 
-`import` evaluates the named module and returns its final expression's
-value. There are two flavors:
+`import` takes an **arbitrary expression**, evaluates it, and expects
+the result to be a string path. The whole expression up to the end of
+the statement is consumed, so concatenation needs no parentheses
+(`import base + '/' + name`). Path resolution and the string check
+happen at runtime; a path that does not evaluate to a string raises a
+catchable `type_mismatch` error.
 
-- **Bare names** (no `/`, `\`, or `.` in the string) — resolved against
-  the native-module registry built into the interpreter (e.g. `IO`,
-  `Os`, `Time` in v0.3 Phase 3+). An unknown bare name raises a
-  catchable error.
+The resolved string has two flavors:
+
+- **Bare names** (no `/`, `\`, or `.`) — resolved against the
+  native-module registry built into the interpreter (e.g. `IO`, `Os`,
+  `Time` in v0.3 Phase 3+). An unknown bare name raises a catchable
+  error.
 - **Path-shaped strings** — resolved against the importing file's
   directory (per spec §12). `.tg` is appended automatically if absent.
+  A missing file raises a catchable `import_failed` error.
+
+`import` returns the imported module's final expression value.
 
 A module typically returns an object:
 
@@ -1361,7 +1371,7 @@ Primary     ::= Literal
               | 'break' BreakValue?
               | 'continue'
               | 'return' ReturnValue?
-              | 'import' String
+              | 'import' Expr
               | Try | Raise | Match
 
 Try         ::= 'try' LogicAnd ('catch' '(' Identifier ')' Scope)?

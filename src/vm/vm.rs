@@ -1218,7 +1218,7 @@ impl Vm {
                         Value::Str(s) => s,
                         other => return Err(RuntimeError::new(
                             RuntimeErrorKind::TypeMismatch(format!(
-                                "internal: Import path not string: {}",
+                                "import path must be a string, got {}",
                                 other.type_name()
                             )),
                             line,
@@ -1294,11 +1294,25 @@ impl Vm {
                         ));
                     }
 
-                    // File path: cache → in-flight check → compile and
-                    // push as a new frame on this same Vm. The frame
-                    // is tagged `Import(path)` so the Return opcode
-                    // can write the cache entry.
-                    let path = PathBuf::from(&*path_str);
+                    // File path: resolve → cache → in-flight check →
+                    // compile and push as a new frame on this same Vm.
+                    // The frame is tagged `Import(path)` so the Return
+                    // opcode can write the cache entry. Relative paths
+                    // resolve against the importing chunk's base dir
+                    // (absent for string-compiled source — then they
+                    // resolve against the process cwd). `.tg` is
+                    // appended when the path carries no extension.
+                    let mut path = if std::path::Path::new(&*path_str).is_absolute() {
+                        PathBuf::from(&*path_str)
+                    } else {
+                        match &chunk.base_dir {
+                            Some(d) => d.join(&*path_str),
+                            None => PathBuf::from(&*path_str),
+                        }
+                    };
+                    if path.extension().is_none() {
+                        path.set_extension("tg");
+                    }
                     if let Some(cached) = self.module_cache.get(&path) {
                         self.stack.push(cached.clone());
                         self.frames.last_mut().unwrap().ip = ip;

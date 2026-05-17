@@ -371,11 +371,12 @@ pub enum Expr {
     // `return` (None) or `return value` / `return (expr)` (Some).
     Return(Option<Box<SpannedExpr>>),
 
-    // `import 'path'` (spec §12). Path is a string literal; compile
-    // resolves it relative to the importing file. Disabled inside
-    // top-level expressions other than the immediate decl initialiser,
-    // though we don't strictly enforce that.
-    Import(String),
+    // `import expr` (spec §12). The operand is an arbitrary expression
+    // evaluated at runtime to a string path; the VM resolves it
+    // relative to the importing file. Disabled inside top-level
+    // expressions other than the immediate decl initialiser, though we
+    // don't strictly enforce that.
+    Import(Box<SpannedExpr>),
 
     // `try expr` (catch = None) or `try expr catch (param) { handler }`
     // (catch = Some). The try expression evaluates to `body`'s value on

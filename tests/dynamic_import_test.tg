@@ -1,0 +1,31 @@
+// tests/dynamic_import_test.tg — `import` accepting an arbitrary
+// expression (not just a string literal). The operand is evaluated at
+// runtime to a string path; a non-string or a missing file raises a
+// catchable error.
+//
+// Run directly (`tigr tests/dynamic_import_test.tg`) or via discovery
+// (`tigr test`).
+
+Test := import 'Test';
+
+Test.suite('import — dynamic path expressions', [
+    Test.case('a variable evaluates to a bare module name', fn() {
+        name := 'Array';
+        A    := import name;
+        Test.assert_eq(A.pop([1, 2, 3]), 3)
+    }),
+
+    Test.case('a concatenation expression resolves a bare name', fn() {
+        A := import 'Arr' + 'ay';
+        Test.assert_eq(A.pop([9, 8]), 8)
+    }),
+
+    Test.case('a non-string path raises type_mismatch', fn() {
+        Test.assert_raises(fn() { import 42 }, 'type_mismatch')
+    }),
+
+    Test.case('a missing file path raises import_failed', fn() {
+        name := 'no_such_module_xyz';
+        Test.assert_raises(fn() { import './{name}' }, 'import_failed')
+    }),
+])

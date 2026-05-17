@@ -117,9 +117,15 @@ struct FuncCompiler {
 }
 
 impl FuncCompiler {
-    fn new(arity: usize, name: Option<String>, source: SourceId) -> Self {
+    fn new(
+        arity: usize,
+        name: Option<String>,
+        source: SourceId,
+        base_dir: Option<PathBuf>,
+    ) -> Self {
         let mut chunk = Chunk::new();
         chunk.source = source;
+        chunk.base_dir = base_dir;
         FuncCompiler {
             chunk,
             locals: Vec::new(),
@@ -344,7 +350,12 @@ impl Compiler {
     }
 
     fn push_function(&mut self, arity: usize, name: Option<String>) {
-        self.funcs.push(FuncCompiler::new(arity, name, self.source));
+        self.funcs.push(FuncCompiler::new(
+            arity,
+            name,
+            self.source,
+            self.base_dir.clone(),
+        ));
     }
 
     // -- block / scope -----------------------------------------------
@@ -772,9 +783,10 @@ impl Compiler {
                 self.visit_for_hoist(callee, out);
                 for a in args { self.visit_for_hoist(a, out); }
             }
+            Expr::Import(inner) => self.visit_for_hoist(inner, out),
             // Leaves
             Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_)
-            | Expr::Null | Expr::Ident(_) | Expr::Import(_) | Expr::Continue => {}
+            | Expr::Null | Expr::Ident(_) | Expr::Continue => {}
         }
     }
 
@@ -1241,7 +1253,7 @@ impl Compiler {
                 self.compile_fn(params, defaults, rest.as_deref(), body, e.span)?
             }
 
-            Expr::Import(path) => self.compile_import(path, line, e.span)?,
+            Expr::Import(path) => self.compile_import(path, line)?,
 
             Expr::Return(value) => {
                 if let Some(v) = value {
@@ -2438,40 +2450,17 @@ impl Compiler {
         Ok(())
     }
 
-    /// Resolve an `import 'path'` to a constant the runtime can use,
-    /// then emit `Import`. Two flavors:
-    ///
-    /// - **Bare name** (no `/`, `\`, or `.`): emit the raw name. The
-    ///   VM tries the native-module registry first; if nothing
-    ///   matches, the import raises a catchable error. This is what
-    ///   `import 'IO'` / `import 'Array'` uses.
-    /// - **Path-shaped**: absolutize relative to the importing file
-    ///   (per spec §12), append `.tg` if no extension. The VM caches
-    ///   the result so a second import of the same path is free.
+    /// Compile an `import expr`: evaluate the operand, then emit
+    /// `Import`. The operand must produce a string at runtime; the VM
+    /// resolves it (bare module name vs. file path, relative to the
+    /// importing chunk's `base_dir`) and reports a catchable error if
+    /// it is not a string or the file is missing.
     fn compile_import(
         &mut self,
-        path: &str,
+        path_expr: &SpannedExpr,
         line: u32,
-        span: Span,
     ) -> Result<(), CompileError> {
-        let is_bare = !path.contains('/') && !path.contains('\\') && !path.contains('.');
-        let emitted = if is_bare {
-            path.to_string()
-        } else {
-            let mut resolved = if std::path::Path::new(path).is_absolute() {
-                PathBuf::from(path)
-            } else {
-                match &self.base_dir {
-                    Some(d) => d.join(path),
-                    None => PathBuf::from(path),
-                }
-            };
-            if resolved.extension().is_none() {
-                resolved.set_extension("tg");
-            }
-            resolved.to_string_lossy().to_string()
-        };
-        self.emit_constant(Value::Str(emitted.into()), line, span)?;
+        self.compile_expr(path_expr)?;
         self.emit_op(OpCode::Import, line);
         Ok(())
     }

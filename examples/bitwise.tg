@@ -1,0 +1,23 @@
+// Bitwise operators (Int-only)
+//
+// Note: `^` is bitwise XOR; exponentiation is the separate `^^`.
+
+print('and  ', 0b1100 & 0b1010);   // 8
+print('or   ', 0b1100 | 0b1010);   // 14
+print('xor  ', 0b1100 ^ 0b1010);   // 6
+print('not  ', ~0);                // -1
+print('shl  ', 1 << 8);            // 256
+print('shr  ', 1024 >> 3);         // 128
+print('ashr ', -16 >> 2);          // -4   (arithmetic, sign-preserving)
+print('pow  ', 2 ^^ 10);           // 1024.0
+
+// Pack an RGB colour into one int, then unpack it.
+rgb := fn(r, g, b) { (r << 16) | (g << 8) | b };
+c := rgb(0xFF, 0x80, 0x00);
+print('packed ', c, ' = ', str(c, 16, true));   // str() radix form
+print('r ', (c >> 16) & 0xFF, ' g ', (c >> 8) & 0xFF, ' b ', c & 0xFF);
+
+// str(n, radix [, prefix]) renders an Int in another base.
+print(str(255, 2), '/', str(255, 8), '/', str(255, 16));
+print(str(255, 2, true), '/', str(255, 8, true), '/', str(255, 16, true));
+'done'

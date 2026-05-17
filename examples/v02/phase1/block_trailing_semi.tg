@@ -1,2 +1,0 @@
-// trailing `;` makes the block evaluate to null
-(a := 1; b := 2;)

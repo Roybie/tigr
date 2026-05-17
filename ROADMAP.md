@@ -211,13 +211,17 @@ Three fixes make it an ordinary value again:
   truthy. This also fixes the `x || default` idiom for legitimate
   zero/empty values.
 
-### 12. Vim support  *(tooling)*
+### 12. Vim support  ✅ done  *(tooling)*
 
-- **Syntax highlighting** — `editors/vim/syntax/tigr.vim` +
-  `ftdetect/tigr.vim`. Fully achievable; no language server needed.
-- **Autocomplete, tier 1** — an `omnifunc` / `completefunc` over a
-  static set: keywords, built-ins, and stdlib module symbols. Ships
-  in v0.11.
+Shipped as a standalone plugin repo —
+[`Roybie/vim-tigr`](https://github.com/Roybie/vim-tigr).
+
+- **Syntax highlighting** — `syntax/tigr.vim` + `ftdetect/tigr.vim`;
+  no language server needed. `ftplugin/tigr.vim` also sets
+  `commentstring` to `// %s`.
+- **Autocomplete, tier 1** — done — an `omnifunc` (`autoload/tigr.vim`)
+  over a static set: keywords, built-ins, and stdlib module symbols
+  (including `Module.` members).
 - **Autocomplete, tier 2 (scope-aware locals, `obj.` members)** —
   needs a language server; see Deferred below.
 

@@ -1,8 +1,8 @@
-//! Integration tests for the v0.2 VM.
+//! Integration tests for the VM.
 //!
-//! Each phase has a directory under `examples/v02/phaseN/`. Each `.tg`
-//! file there has an expected final value listed below. The tests run
-//! the program through the full pipeline and compare.
+//! Each test runs a tigr program through the full pipeline (lex, parse,
+//! compile, execute) and compares its final value against an expected
+//! result.
 
 use crate::vm::run_source;
 use crate::vm::run_source_with_map;
@@ -2336,6 +2336,70 @@ fn phase7_import_file() {
     assert_eq!(value, Value::Int(42));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Helper: write a `test_mod.tg` (exporting `double`) plus a `main.tg`
+/// with the given body under a uniquely-named temp dir, run main, and
+/// return the result.
+fn run_dynamic_import_main(prefix: &str, main_body: &str) -> Value {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("{prefix}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let mut f = std::fs::File::create(dir.join("test_mod.tg")).unwrap();
+        writeln!(f, "${{double: fn(x) {{ x * 2 }}, name: 'mod'}}").unwrap();
+    }
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f, "{main_body}").unwrap();
+    }
+    let value = crate::vm::run_file(&main_path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    value
+}
+
+#[test]
+fn dynamic_import_template_path() {
+    // An interpolated path resolves at runtime relative to the
+    // importing file's directory.
+    let v = run_dynamic_import_main(
+        "tigr_dynimp_tmpl",
+        "name := 'test_mod'; m := import './{name}'; m.double(21)",
+    );
+    assert_eq!(v, Value::Int(42));
+}
+
+#[test]
+fn dynamic_import_concat_path() {
+    let v = run_dynamic_import_main(
+        "tigr_dynimp_concat",
+        "dir := '.'; m := import dir + '/test_mod'; m.double(10)",
+    );
+    assert_eq!(v, Value::Int(20));
+}
+
+#[test]
+fn dynamic_import_var_path() {
+    let v = run_dynamic_import_main(
+        "tigr_dynimp_var",
+        "p := './test_mod'; m := import p; m.double(5)",
+    );
+    assert_eq!(v, Value::Int(10));
+}
+
+#[test]
+fn dynamic_import_non_string_is_catchable() {
+    // A path expression that does not evaluate to a string raises a
+    // catchable error rather than panicking.
+    let src = "try import 42 catch (e) { 'bad' }";
+    assert_eq!(run(src), Value::Str("bad".into()));
+}
+
+#[test]
+fn dynamic_import_missing_resolved_file_is_catchable() {
+    let src = "name := 'nope'; try import './{name}' catch (e) { 'missing' }";
+    assert_eq!(run(src), Value::Str("missing".into()));
 }
 
 // ---- v0.4 Phase 1: rendered errors ----

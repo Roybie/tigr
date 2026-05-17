@@ -1,6 +1,7 @@
 //! Bytecode container with a constant pool and a per-byte line table
 //! for runtime error reporting.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::vm::opcode::OpCode;
@@ -21,6 +22,10 @@ pub struct Chunk {
     /// post-compile by the entry function (and recursively for every
     /// nested function chunk). `SourceId::UNKNOWN` until stamped.
     pub source: SourceId,
+    /// Directory of the source file this chunk was compiled from, if
+    /// known. The VM resolves runtime `import` paths relative to it.
+    /// `None` for source compiled from a string (no file context).
+    pub base_dir: Option<PathBuf>,
 }
 
 impl Chunk {

@@ -1,0 +1,49 @@
+// run_examples.tg — run every `.tg` example in this folder.
+//
+// The file list is discovered at runtime: `IO.list_dir` enumerates
+// this folder, and `IO.is_file` / `Path.ext` keep only sibling `.tg`
+// files — subfolders (like `v01/`) are skipped.
+//
+//   usage: tigr examples/run_examples.tg
+
+IO     := import 'IO';
+Os     := import 'Os';
+Path   := import 'Path';
+Array  := import 'Array';
+String := import 'String';
+
+interpreter := Os.args[0];          // the tigr binary that launched us
+self        := Os.args[1];          // path to this script
+dir         := Path.dirname(self);  // the examples folder
+me          := Path.basename(self); // this file's name — never run ourselves
+
+// Collect sibling `.tg` files. `is_file` is false for directories, so
+// `v01/` and any other subfolder is excluded without naming it.
+files := for[] (name, Array.sort(IO.list_dir(dir))) {
+    if !IO.is_file(Path.join(dir, name)) { continue };
+    if Path.ext(name) != 'tg'            { continue };
+    if name == me                        { continue };
+    name
+};
+
+// for (f,files) {
+//   print('\n{String.format(' {f} ', '-^40')}\n');
+//   try import './{f}' catch (e) { print(e); };
+//   print('\n{String.repeat('-', 40)}\n');
+// };
+
+print('running {#files} example(s) from {dir}/');
+print('');
+
+for (name, files) {
+  print('\n{String.format(' {name} ', '-^40')}\n');
+  result := Os.run(interpreter, Path.join(dir, name));
+  if result.code == 0 {
+      print(result.stdout);
+  } else {
+      print(result.stderr);
+  };
+};
+
+print({String.format(' End of examples ', '-^40')});
+0

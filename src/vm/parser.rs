@@ -1058,29 +1058,13 @@ impl Parser {
         ))
     }
 
-    /// `import 'path'` — the path must be a single literal string
-    /// (no interpolation). Compile-time path resolution happens later
-    /// in the compiler.
+    /// `import expr` — the path is an arbitrary expression evaluated at
+    /// runtime to a string. Path resolution happens in the VM.
     fn parse_import(&mut self) -> Result<SpannedExpr, ParseError> {
         let kw_span = self.expect(&Token::Import)?;
-        let path_span = self.peek_span();
-        let path = match self.peek().clone() {
-            Token::Str(s) => {
-                self.advance();
-                s
-            }
-            Token::StrTemplate(_) => {
-                return Err(ParseError::new(
-                    ParseErrorKind::InvalidPattern(
-                        "`import` path must be a plain string literal".into(),
-                    ),
-                    path_span,
-                ));
-            }
-            other => return Err(self.err(ParseErrorKind::UnexpectedToken(other))),
-        };
-        let span = kw_span.join(path_span);
-        Ok(SpannedExpr::new(Expr::Import(path), span))
+        let path_expr = self.parse_expr()?;
+        let span = kw_span.join(path_expr.span);
+        Ok(SpannedExpr::new(Expr::Import(Box::new(path_expr)), span))
     }
 
     fn parse_break(&mut self) -> Result<SpannedExpr, ParseError> {

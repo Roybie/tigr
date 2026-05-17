@@ -1,0 +1,49 @@
+// The tracing garbage collector.
+//
+// A reference count alone leaks any structure that points back at
+// itself: the count never reaches zero. tigr uses a mark-sweep
+// collector instead, so cyclic garbage is reclaimed like anything
+// else. This program builds plenty of it.
+
+// A doubly-linked ring — every node points at the next, and the last
+// points back at the first. A pure reference count would never free
+// a single node of this.
+make_ring := fn(n) {
+    nodes := for[] (i, 0..n) { ${value: i, next: null} };
+    for (i, 0..n) {
+        nodes[i].next = nodes[(i + 1) % n];
+    };
+    nodes[0]
+};
+
+// Walk `steps` links from a ring node, summing the values.
+walk := fn(node, steps) {
+    total := 0;
+    cur := node;
+    for (i, 0..steps) {
+        total = total + cur.value;
+        cur = cur.next;
+    };
+    total
+};
+
+ring := make_ring(5);
+print('walk 12 steps of a 5-node ring:', walk(ring, 12));  // 0+1+2+3+4 + 0+1+2+3+4 + 0+1 = 21
+
+// Now churn: build and drop ten thousand throw-away rings. None of
+// them are reachable afterwards, and every one is a cycle — so this
+// loop's peak live-set stays flat instead of growing without bound.
+for (i, 0..10000) {
+    make_ring(8);
+};
+
+stats := gc();
+print('after churning 10000 rings:');
+print('  collections run:', stats.collections);
+print('  objects allocated:', stats.allocated);
+print('  objects reclaimed:', stats.freed);
+print('  still live:', stats.live);
+
+// The original `ring` is still in scope, so it (and all five nodes)
+// survived every collection above.
+print('the original ring still walks:', walk(ring, 5));  // 0+1+2+3+4 = 10

@@ -1,7 +1,0 @@
-// Spec §10.4: each iteration of `for` opens a fresh scope, so closures
-// from different iterations capture distinct `i` cells.
-
-adders := for[] (i, 0..3) { fn(x) { x + i } };
-print(adders[0](10));   // 10
-print(adders[1](10));   // 11
-print(adders[2](10));   // 12

@@ -2,7 +2,7 @@
 
 A small dynamic language where **everything is an expression**. Tigr is built around the idea that every construct — assignments, blocks, conditionals, loops, even `break`, `return`, and `raise` — produces a value. There are no statements.
 
-This README documents **v0.10**: the v0.9 standard-library release plus a tracing **garbage collector** that replaces the reference-counted memory model, so reference cycles are reclaimed instead of leaked. The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour. See [Status](#status) for the per-release history.
+The complete language spec lives in [`LANGUAGE.md`](LANGUAGE.md); this is the friendlier tour.
 
 ```
 double := fn(x) { x * 2 };
@@ -25,9 +25,9 @@ cargo build --release
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
-`tigr test` discovers test files — any `*_test.tg` file, plus every `.tg` file under a `tests/` directory — runs them, and reports pass/fail counts. See the [`Test`](#test-v09) module for writing tests.
+`tigr test` discovers test files — any `*_test.tg` file, plus every `.tg` file under a `tests/` directory — runs them, and reports pass/fail counts. See the [`Test`](#test) module for writing tests.
 
-There are working examples under [`examples/v02/`](examples/v02/) organised by build phase, plus Project Euler solutions in [`examples/v02/euler/`](examples/v02/euler/). v0.3 demos are in [`examples/v03/`](examples/v03/), v0.4 demos in [`examples/v04/`](examples/v04/), v0.5 demos in [`examples/v05/`](examples/v05/), v0.7 demos in [`examples/v07/`](examples/v07/), v0.8 demos in [`examples/v08/`](examples/v08/), v0.9 demos in [`examples/v09/`](examples/v09/), and v0.10 demos in [`examples/v10/`](examples/v10/).
+Working examples live in [`examples/`](examples/) — a curated `.tg` file per interesting language feature or standard-library module. The original v0.1 tree-walking interpreter keeps its own examples under [`examples/v01/`](examples/v01/); the language has changed since, so those use older syntax.
 
 ---
 
@@ -64,8 +64,8 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `Null`   | `null`                                        |                                          |
 | `Array`  | `[1, 'two', true]`                            | Heterogeneous, reference type            |
 | `Object` | `${name: 'a', age: 1}`                        | String keys, reference type              |
-| `Map`    | `Map.new()` *(v0.9)*                          | Arbitrary-keyed dictionary, reference type |
-| `Set`    | `Set.new([1, 2, 3])` *(v0.9)*                 | Collection of unique values, reference type |
+| `Map`    | `Map.new()`                          | Arbitrary-keyed dictionary, reference type |
+| `Set`    | `Set.new([1, 2, 3])`                 | Collection of unique values, reference type |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
 
@@ -324,7 +324,7 @@ all  := for[] (i, 1..=5) { i * i };        // [1, 4, 9, 16, 25]
 
 A `for[]` / `while[]` collects **every** body value verbatim, including `null` — `continue` is the only way to omit an item.
 
-An **iterator object** (an object with a callable `next` field — the `Iter` protocol) is driven by calling `next()`; a `for` can consume an `Iter` pipeline directly, no `Iter.collect()` needed (v0.8). The same applies to array and call spread: `[...it]` and `f(...it)` expand an iterator. An object *without* a callable `next` still iterates as key/value entries.
+An **iterator object** (an object with a callable `next` field — the `Iter` protocol) is driven by calling `next()`; a `for` can consume an `Iter` pipeline directly, no `Iter.collect()` needed. The same applies to array and call spread: `[...it]` and `f(...it)` expand an iterator. An object *without* a callable `next` still iterates as key/value entries.
 
 Each iteration opens a **fresh scope** for the loop variables — closures capture each iteration's `i` independently:
 
@@ -625,7 +625,7 @@ These are ordinary bindings in the root environment. They can be shadowed, passe
 | `ceil`  | `ceil(x) -> Int`           | Round up                                   |
 | `rand`  | `rand() -> Float`          | Uniform in `[0, 1)`; seed it via `Random.seed` |
 | `type`  | `type(x) -> String`        | Name of the value's type (`'int'`, `'array'`, `'function'`, ...) |
-| `gc`    | `gc() -> Object` *(v0.10)* | Garbage-collector counters: `${live, collections, allocated, freed}` |
+| `gc`    | `gc() -> Object` | Garbage-collector counters: `${live, collections, allocated, freed}` |
 
 `str` rules (in brief): `null` → `'null'`, numbers → decimal (Int has no point, Float always does), strings unchanged, arrays/objects bracketed with elements `str`-ed, ranges as `'a..b'` (or `'a..=b'`, with `:step` if non-default), functions as `'fn(...)'`.
 
@@ -706,13 +706,13 @@ Array.sort_by(people, fn(p) { p.age })
 Array.sort_by(['ccc', 'a', 'bb'], fn(w) { #w })       // ['a', 'bb', 'ccc']
 ```
 
-### `Iter` (v0.7)
+### `Iter`
 
 A tigr-source module of **lazy, pull-based iterators**. Where `Array.map` followed by `Array.filter` builds a complete intermediate array at every step, an `Iter` pipeline carries one element through the whole chain at a time and never materializes the in-between arrays — which also makes infinite sequences and short-circuiting possible.
 
 An iterator is an object `${next: fn()}`; each `next()` call returns `${done: true}` or `${done: false, value: v}`. The **adapters** create an iterator, the **combinators** wrap one lazily (no work runs until the result is pulled), and the **consumers** drive the pulling and force evaluation. Callback parameters (`func`, `pred`) are invoked as `callback(value)`.
 
-Since v0.8, `for` and spread (`[...it]`, `f(...it)`) consume an iterator object directly — `collect` is only needed when you specifically want an `Array` value.
+`for` and spread (`[...it]`, `f(...it)`) consume an iterator object directly — `collect` is only needed when you specifically want an `Array` value.
 
 `count` and `repeat` are infinite — only pair them with a bounding combinator (`take`) or a short-circuiting consumer (`find` / `nth`).
 
@@ -775,12 +775,12 @@ A tigr-source module wrapping native primitives. Every entry raises on a non-`St
 | `chars(s)` | `Array<String>` | One-character strings, one per Unicode character |
 | `pad_start(s, len, ch)` | `String` | Left-pad `s` with `ch` until it reaches length `len` |
 | `pad_end(s, len, ch)` | `String` | Right-pad `s` with `ch` until it reaches length `len` |
-| `format(value, spec)` *(v0.9)* | `String` | Render `value` through the spec mini-language (see below) |
-| `printf(template, args)` *(v0.9)* | `String` | Fill `%(SPEC)` placeholders in `template` from `args` |
+| `format(value, spec)` | `String` | Render `value` through the spec mini-language (see below) |
+| `printf(template, args)` | `String` | Fill `%(SPEC)` placeholders in `template` from `args` |
 
 #### The format spec mini-language
 
-`format` and `printf` (v0.9) share one spec mini-language. Every part is
+`format` and `printf` share one spec mini-language. Every part is
 optional; they must appear in this order:
 
 ```
@@ -876,7 +876,7 @@ A tigr-source module; trig / log / exp are backed by native code. Numeric functi
 | `max(a, b)` | value | The larger of `a` and `b` |
 | `clamp(x, lo, hi)` | value | `x` constrained to `[lo, hi]` |
 
-### `Object` (v0.6)
+### `Object`
 
 A tigr-source module. `map` and `filter` take a **callback** as their second argument — the parameters named `func` and `pred` in the table below. A callback is a function value the module calls for you; here it is invoked as `callback(value, key, whole_object)`, so declare it with as many parameters as you need (extras are dropped). `merge` / `map` / `filter` return fresh objects — they never mutate their input.
 
@@ -897,9 +897,9 @@ Object.entries(${a: 1, b: 2})                  // [['a', 1], ['b', 2]]
 Object.map(${a: 1, b: 2}, fn(v) { v * 10 })    // ${a: 10, b: 20}  — fn is the callback
 ```
 
-As of v0.9 `has` is O(1) (it was an O(n) key scan), and `keys` / `values` / `entries` build their result in O(n) rather than O(n²).
+`has` is O(1); `keys` / `values` / `entries` build their result in O(n).
 
-### `Map` (v0.9)
+### `Map`
 
 A tigr-source module (backed by native `_NativeMap` primitives) exposing the `Map` type — an arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`, whose keys are strings only, a `Map` key may be any `null` / `bool` / `int` / `string` value; a `Float` or collection key raises `invalid_key_type`. Read and write entries with `m[key]` / `m[key] = value`, take the count with `#m`, and iterate with `for (k, v, m)`. `type(m)` is `'map'`. A `Map` is not JSON-serializable.
 
@@ -922,7 +922,7 @@ m['1'] = 'string';             // distinct string key
 [m[1], m['1'], Map.has(m, 2)]  // ['one', 'string', false]
 ```
 
-### `Set` (v0.9)
+### `Set`
 
 A tigr-source module (backed by native `_NativeSet` primitives) exposing the `Set` type — an insertion-ordered collection of unique values. Elements share `Map`'s key restriction (`null` / `bool` / `int` / `string`). Test membership with `s[x]` (writing `s[x] = ...` is an error); take the count with `#s`; iterate with `for (x, s)`. `type(s)` is `'set'`. Not JSON-serializable.
 
@@ -946,7 +946,7 @@ b := Set.new([2, 3, 4]);
 Set.items(Set.intersection(a, b))   // [2, 3]
 ```
 
-### `Test` (v0.9)
+### `Test`
 
 A tigr-source module — a small test framework written in tigr itself. The **assertions** `raise` on failure (so they work standalone, anywhere), and `case` / `suite` group tests as plain data. `assert_eq` compares with `==`, which is structural for arrays and objects. `assert_raises` runs `thunk` and fails unless it raised; pass a `kind` to also require a specific error — a reified built-in error's `kind` field, or the raised value itself otherwise — and it returns the caught error.
 
@@ -983,16 +983,16 @@ A native module. File operations raise a catchable error on failure; the predica
 | `write_file(path, text)` | `null` | Overwrite the file with `text`; raises on error |
 | `append_file(path, text)` | `null` | Append `text`, creating the file if missing; raises on error |
 | `exists(path)` | `Bool` | True if the path exists; never raises |
-| `list_dir(path)` | `Array<String>` | Names of the directory's entries; raises on error *(v0.6)* |
-| `mkdir(path)` | `null` | Create the directory and any missing parents; raises on error *(v0.6)* |
-| `remove(path)` | `null` | Delete a file, or a directory and its contents; raises on error *(v0.6)* |
-| `is_dir(path)` | `Bool` | True if the path is a directory; never raises *(v0.6)* |
-| `is_file(path)` | `Bool` | True if the path is a regular file; never raises *(v0.6)* |
-| `stat(path)` | `Object` | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing *(v0.6)* |
+| `list_dir(path)` | `Array<String>` | Names of the directory's entries; raises on error |
+| `mkdir(path)` | `null` | Create the directory and any missing parents; raises on error |
+| `remove(path)` | `null` | Delete a file, or a directory and its contents; raises on error |
+| `is_dir(path)` | `Bool` | True if the path is a directory; never raises |
+| `is_file(path)` | `Bool` | True if the path is a regular file; never raises |
+| `stat(path)` | `Object` | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing |
 | `read_line()` | `String \| null` | One line from stdin without the trailing newline; `null` on EOF |
 | `eprint(...args)` | last arg | Like `print`, but writes to stderr |
 
-### `Path` (v0.6)
+### `Path`
 
 A native module for path-string manipulation — nothing here touches the filesystem. Every entry raises on a non-`String` argument.
 
@@ -1013,7 +1013,7 @@ A native module for process and environment access.
 | `args` | `Array<String>` | Command-line arguments `[interpreter, script, user_args...]` — a value, not a function |
 | `env(name)` | `String \| null` | Value of environment variable `name`, or `null` if unset |
 | `cwd()` | `String` | Current working directory; raises on error |
-| `run(cmd, ...args)` | `Object` | Run a subprocess *(v0.6)* — see below |
+| `run(cmd, ...args)` | `Object` | Run a subprocess — see below |
 | `exit(code)` | never returns | Exit the process immediately with `code`; bypasses `try` |
 
 `Os.run(cmd, ...args)` runs `cmd` with the given string arguments and returns `${code, stdout, stderr}` — `code` is the exit status (`-1` if the process was killed by a signal), `stdout` / `stderr` are the captured output streams as strings. A non-zero exit is a normal result, not an error; `run` raises only when the process cannot be spawned (e.g. command not found).
@@ -1035,7 +1035,7 @@ A native module for wall-clock access.
 | `now_ns()` | `Int` | Nanoseconds since the UNIX epoch |
 | `sleep_ms(n)` | `null` | Block the thread for `n` milliseconds; a negative `n` raises |
 
-### `DateTime` (v0.6)
+### `DateTime`
 
 A native module for calendar date/time, **UTC only** (no timezone support). A *components object* has the fields `${year, month, day, hour, minute, second, ms, weekday, yearday}` — `month` is 1–12, `weekday` is 0=Sunday, `yearday` is the 1-based day of the year.
 
@@ -1054,7 +1054,7 @@ DateTime := import 'DateTime';
 DateTime.format(DateTime.to_ms(DateTime.now()), '%Y-%m-%d')   // '2026-05-15'
 ```
 
-### `JSON` (v0.4)
+### `JSON`
 
 A native module.
 
@@ -1066,13 +1066,13 @@ A native module.
 
 ```
 JSON := import 'JSON';
-JSON.stringify(${name: 'tigr', v: 0.6}, 2)
-// '{\n  "name": "tigr",\n  "v": 0.6\n}'
+JSON.stringify(${name: 'tigr', stars: 5}, 2)
+// '{\n  "name": "tigr",\n  "stars": 5\n}'
 ```
 
 JSON's number model is "all numbers are IEEE 754 doubles", so `JSON.parse(JSON.stringify(123))` returns `Float(123.0)`, not `Int(123)`. On the way out, `Int` writes plain digits and an integer-valued `Float` keeps a `.0` suffix. `JSON.stringify` of a circular structure raises a catchable `cycle` error; a non-cyclic shared subtree still serializes fine.
 
-### `Random` (v0.9)
+### `Random`
 
 A native module for seedable pseudo-random numbers. `Random` and the bare `rand()` built-in draw from a single per-thread PRNG stream, so `Random.seed(n)` makes `rand()` reproducible too — pin a seed in a test and the draws are deterministic. Until `seed` is called the stream is auto-seeded from the wall clock.
 
@@ -1095,14 +1095,14 @@ roll := fn() { Random.int(1, 6) };
 
 ---
 
-## Error rendering (v0.4)
+## Error rendering
 
 When an error escapes the program (or a REPL line), tigr prints a rustc-style block: filename, source line, and a caret/underline pointing at the offending span:
 
 ```
-$ tigr examples/v04/errors.tg
+$ tigr examples/error_rendering.tg
 error[runtime]: division by zero
- --> examples/v04/errors.tg:6
+ --> examples/error_rendering.tg:6
   |
 6 | result := x / y;
   |
@@ -1120,19 +1120,19 @@ error[parse]: unexpected token `:=`
 
 Errors inside an imported file render against THAT file's source — the import dispatcher registers each imported source so the renderer can find it. REPL lines register as `<repl:N>` so the same machinery works at the prompt.
 
-Since v0.8, an error that escapes every `try` also prints a **stack trace** beneath the snippet — each active call frame, innermost first:
+An error that escapes every `try` also prints a **stack trace** beneath the snippet — each active call frame, innermost first:
 
 ```
-$ tigr examples/v08/stack_trace.tg
+$ tigr examples/stack_trace.tg
 error[runtime]: integer overflow
- --> examples/v08/stack_trace.tg:6
+ --> examples/stack_trace.tg:6
   |
 6 |     n * n * n * n * n * n * n * n * n * n  // overflows i64 for big n
   |
 stack trace (most recent call first):
-  inner at examples/v08/stack_trace.tg:6
-  compute at examples/v08/stack_trace.tg:10
-  <main> at examples/v08/stack_trace.tg:13
+  inner at examples/stack_trace.tg:6
+  compute at examples/stack_trace.tg:10
+  <main> at examples/stack_trace.tg:13
 ```
 
 Frame names are inferred from the binding (`f := fn(){}` → `f`), with `<anonymous>` for an unbound `fn` and `<main>` for the top-level program. Tail calls reuse their frame, so a tail-recursive function appears once; a single-frame error prints no trace.
@@ -1174,7 +1174,7 @@ The REPL uses [`rustyline`](https://github.com/kkawakam/rustyline) for input, so
 
 ## Worked examples
 
-A real v0.3 script — count word frequencies in a file:
+A real script — count word frequencies in a file:
 
 ```
 IO := import 'IO';
@@ -1221,7 +1221,7 @@ for (i, 999..=900) {
 }
 ```
 
-More examples in [`examples/v02/`](examples/v02/) (v0.2 features) and [`examples/v03/`](examples/v03/) (errors, modules, stdlib).
+More examples in [`examples/`](examples/) — one curated `.tg` file per language feature and standard-library module.
 
 ---
 
@@ -1253,10 +1253,9 @@ Low to high, with associativity:
 
 The mutable, potentially-cyclic value types — `Array`, `Object`, `Map`,
 `Set`, iterators, and the cells closures capture — live on a heap
-managed by a tracing **mark-sweep** garbage collector (v0.10). Earlier
-releases reference-counted these, which leaks any structure that points
-back at itself; a tracing collector reclaims cycles like any other
-garbage:
+managed by a tracing **mark-sweep** garbage collector. A plain
+reference count leaks any structure that points back at itself; a
+tracing collector reclaims cycles like any other garbage:
 
 ```
 node := ${value: 1, next: null};
@@ -1282,21 +1281,16 @@ need not trace them.
 
 ## Status
 
-**v0.10 is feature-complete.** 542 tests pass. v0.10 replaces the reference-counted memory model with a tracing **garbage collector**:
+**tigr is feature-complete.** 542 tests pass. It runs on a bytecode VM with:
 
-- **Tracing mark-sweep GC** — the mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a mark-sweep collector over a per-thread heap; a `Value` holds a small generation-tagged handle into it. Reference cycles — a self-referential object (`o.link = o`), two closures capturing each other — are now **reclaimed** rather than leaked forever, which a reference count could never do. Collection is automatic, running at VM safepoints once the heap crosses a size threshold; the `gc()` built-in returns the collector's counters as `${live, collections, allocated, freed}`.
-
-Earlier releases:
-
-- **v0.9**: a `Test` framework + `tigr test` runner (written in tigr itself), the `Map` / `Set` collection types, the seedable `Random` module, more `Array` combinators (`group_by`/`chunk`/`windows`/`partition`/`flat_map`, in-place removal), and `String` formatting (`format` / `printf` with a width/precision/alignment spec mini-language).
-
-- **v0.8**: integer-overflow checks (a catchable `overflow` error), tail calls + bounded recursion, stack traces on uncaught errors, `JSON.stringify` cycle detection, and `for` / spread consuming iterator objects directly.
-- **v0.7 / v0.7b**: lazy `Iter` iterators (pipelines that never materialize intermediate arrays), in-place array growth (`Array.push` / `extend`, and a mutating `+=`), and structured errors — `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object.
-- **v0.6**: `continue` keyword, default parameter values (`fn(a, b = 10)`), and a wider standard library — `IO` filesystem ops, a `Path` module, `Os.run` subprocesses, an `Object` module, and a UTC `DateTime` module.
-- **v0.5**: `type()` built-in, bitwise operators (`& | ^ ~ << >>`; `^` became XOR, `^^` is power), `match` expression with refutable patterns.
-- **v0.4**: rendered errors with source snippets, extended number literals (`0xFF`/`1e6`/`.5`/`_`), patterns on `=` + mid-expression decls, `JSON` module.
-- **v0.3**: `try`/`catch`/`raise`, module caching + bare-name dispatch, native modules (`IO`/`Os`/`Time`), source-stdlib (`Array`/`String`/`Math`), interactive REPL.
-- **v0.2**: bytecode VM, closures with Lox-style upvalues, first-class ranges, destructuring patterns, pipe `|>`, spread `...`, string interpolation.
+- closures with Lox-style upvalues, first-class lazy ranges, destructuring patterns, pipe `|>`, spread `...`, and string interpolation;
+- `try` / `catch` / `raise` with structured errors — `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object;
+- rendered errors with source snippets, plus stack traces on uncaught errors;
+- a `match` expression with refutable patterns, bitwise operators, and extended number literals (`0xFF` / `1e6` / `.5` / `_`);
+- lazy `Iter` iterators (pipelines that never materialize intermediate arrays), in-place array growth, and `for` / spread consuming iterator objects directly;
+- integer-overflow checks, tail-call optimization, and bounded recursion;
+- a tracing mark-sweep **garbage collector** — the mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a collector over a per-thread heap, so reference cycles are reclaimed rather than leaked. Collection is automatic, running at VM safepoints once the heap crosses a size threshold; the `gc()` built-in exposes the collector's counters;
+- a standard library spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and a `Test` framework + `tigr test` runner (all written in tigr itself), plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and seedable `Random` modules.
 
 See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
 

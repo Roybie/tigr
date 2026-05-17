@@ -1,4 +1,0 @@
-// float arithmetic
-pi := 3.14;
-r := 5;
-pi * r ^^ 2

@@ -1,0 +1,45 @@
+// Patterns / destructuring.
+
+// Array patterns
+[a, b, c] := [1, 2, 3];
+print('a={a} b={b} c={c}');                   // a=1 b=2 c=3
+
+[head, ...rest] := [10, 20, 30, 40];
+print('head={head} #rest={#rest}');           // head=10 #rest=3
+
+[x, _, z] := [1, 2, 3];
+print('x={x} z={z}');                         // x=1 z=3
+
+[m, n] := [99];                                // missing → null
+print('m={m} n={n}');                         // m=99 n=null
+
+
+// Object patterns
+${name, age} := ${name: 'tigr', age: 0, extra: true};
+print('name={name} age={age}');               // name=tigr age=0
+
+${name: nn} := ${name: 'rename me'};           // rename
+print('nn={nn}');                             // nn=rename me
+
+${name: who, ...others} := ${name: 'tigr', a: 1, b: 2};
+print('who={who} others={others}');           // others is ${a:1, b:2}
+
+
+// Nested
+${user: ${id, name: uname}} := ${user: ${id: 7, name: 'tigr'}};
+print('id={id} uname={uname}');               // id=7 uname=tigr
+
+
+// Function param patterns + rest
+sum_first_and_rest := fn([first, ...tail], multiplier) {
+    s := first;
+    for (x, tail) { s = s + x };
+    s * multiplier
+};
+print('result =', sum_first_and_rest([1, 2, 3, 4], 10));   // 100
+
+
+// `fn(...args)` collects all
+length := fn(...args) { #args };
+print('length() =', length());                // 0
+print('length(1,2,3) =', length(1, 2, 3));    // 3

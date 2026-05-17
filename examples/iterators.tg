@@ -1,0 +1,56 @@
+// The Iter module: lazy, pull-based iterators
+//
+// An Iter pipeline carries one element through the whole chain at a
+// time. It never builds the intermediate arrays that a
+// `Array.map |> Array.filter` chain would.
+
+Iter := import 'Iter';
+
+// A lazy pipeline. map() and filter() run no work until collect()
+// pulls — and nothing in between is ever materialized.
+squares := [1, 2, 3, 4, 5]
+    |> Iter.from()
+    |> Iter.map(fn(n) { n * n })
+    |> Iter.filter(fn(n) { n > 4 })
+    |> Iter.collect();
+print('squares > 4:', squares);              // [9, 16, 25]
+
+// count() is an infinite source; take() bounds it.
+first5 := 0 |> Iter.count()
+    |> Iter.map(fn(n) { n * n })
+    |> Iter.take(5)
+    |> Iter.collect();
+print('first 5 squares:', first5);            // [0, 1, 4, 9, 16]
+
+// repeat() is infinite too.
+print('repeat:', 7 |> Iter.repeat() |> Iter.take(3) |> Iter.collect());
+
+// Consumers that short-circuit terminate even on an infinite source.
+print('first n > 100:', 0 |> Iter.count() |> Iter.find(fn(n) { n > 100 }));
+print('10th counted: ', 0 |> Iter.count() |> Iter.nth(10));
+
+// drop / enumerate / zip / chain.
+print('drop 2:', [1, 2, 3, 4, 5] |> Iter.from() |> Iter.drop(2) |> Iter.collect());
+
+labelled := ['a', 'b', 'c']
+    |> Iter.from()
+    |> Iter.enumerate()
+    |> Iter.collect();
+print('enumerate:', labelled);                // [[0,'a'], [1,'b'], [2,'c']]
+
+pairs := Iter.zip(Iter.from([1, 2, 3]), Iter.from([10, 20]))
+    |> Iter.collect();
+print('zip:', pairs);                          // [[1,10], [2,20]]
+
+joined := Iter.chain(Iter.from([1, 2]), Iter.from([3, 4]))
+    |> Iter.collect();
+print('chain:', joined);                       // [1, 2, 3, 4]
+
+// reduce / for_each / count_of.
+total := [1, 2, 3, 4] |> Iter.from() |> Iter.reduce(fn(a, b) { a + b }, 0);
+print('reduce sum:', total);                   // 10
+
+evens := [1, 2, 3, 4, 5, 6] |> Iter.from() |> Iter.filter(fn(n) { n % 2 == 0 });
+print('even count:', Iter.count_of(evens));    // 3
+
+'done'

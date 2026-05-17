@@ -1,0 +1,62 @@
+// The `match` expression
+//
+// match is an expression: it yields the body of the first matching
+// arm, or `null` if no arm matches (non-exhaustive, like `if`).
+
+// Literal arms + a catch-all binding.
+describe := fn(n) {
+    match n {
+        0 => 'zero',
+        1 => 'one',
+        x => 'many ({x})',
+    }
+};
+print(describe(0), '/', describe(1), '/', describe(42));
+
+// Range patterns — first-class ranges shine here.
+grade := fn(score) {
+    match score {
+        90..=100 => 'A',
+        80..=89  => 'B',
+        70..=79  => 'C',
+        _        => 'F',
+    }
+};
+print('grades:', grade(95), grade(83), grade(71), grade(40));
+
+// Or-patterns for value sets.
+kind := fn(ch) {
+    match ch {
+        'a' | 'e' | 'i' | 'o' | 'u' => 'vowel',
+        _                           => 'consonant',
+    }
+};
+print(kind('e'), kind('z'));
+
+// Structural patterns: objects-as-variants.
+area := fn(shape) {
+    match shape {
+        ${kind: 'circle', r}       => 3.14159 * r ^^ 2,
+        ${kind: 'rect', w, h}      => w * h,
+        ${kind: 'square', side: s} => s * s,
+        _                          => raise 'unknown shape',
+    }
+};
+print('areas:', area(${kind: 'rect', w: 3, h: 4}),
+                 area(${kind: 'square', side: 5}));
+
+// Array patterns + a guard.
+classify := fn(xs) {
+    match xs {
+        []                  => 'empty',
+        [only]              => 'one: {only}',
+        [a, b] if a == b    => 'pair of {a}',
+        [head, ...tail]     => 'head {head}, {#tail} more',
+    }
+};
+print(classify([]));
+print(classify([9]));
+print(classify([4, 4]));
+print(classify([1, 2, 3, 4]));
+
+'done'

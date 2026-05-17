@@ -2,8 +2,7 @@
 
 Planned work beyond v0.7b. Four releases, all in the `v0.N` line — no
 jump to 1.0. Each numbered item keeps the reference number from the
-design discussion that produced this roadmap (no item 5 — `match`
-exhaustiveness was considered and deferred).
+design discussion that produced this roadmap.
 
 Conventions for every release below:
 
@@ -189,10 +188,28 @@ tracing collector.
 
 ---
 
-## v0.11 — Editor tooling
+## v0.11 — null-conflation cleanup & editor tooling
 
 Language core stable (v0.8), stdlib filled out (v0.9), memory model
-sound (v0.10) — v0.11 is the editor-support milestone.
+sound (v0.10) — v0.11 bundles the editor-support milestone with a set
+of breaking semantic fixes that stop overloading `null`.
+
+### 5. null-conflation cleanup  ✅ done  *(BREAKING)*
+
+`null` was overloaded as a value, "missing", "skip", and "no result".
+Three fixes make it an ordinary value again:
+
+- **Collecting loops** — `for[]` / `while[]` collect every body value
+  verbatim, including `null`. `continue` is the only way to omit an
+  item. `break <value>` appends its value (even `null`); a bare
+  `break` appends nothing.
+- **`match`** — a non-exhaustive `match` that matches no arm raises a
+  catchable `no_match` error instead of yielding `null`. An unguarded
+  wildcard / binding last arm is provably exhaustive and never raises.
+- **Truthiness** — Lua-style: only `false` and `null` are falsy.
+  `0`, `0.0`, `''`, `[]`, `${}`, and empty ranges/maps/sets are
+  truthy. This also fixes the `x || default` idiom for legitimate
+  zero/empty values.
 
 ### 12. Vim support  *(tooling)*
 
@@ -208,9 +225,6 @@ sound (v0.10) — v0.11 is the editor-support milestone.
 
 ## Deferred
 
-- **`match` exhaustiveness** (item 5) — falling through to `null` is
-  a deliberate design choice; revisit only if it proves a real
-  footgun.
 - **Named function expressions** (item 3) — self-recursion of a bound
   function already works (`:=` declares a `fn` initialiser before
   compiling its body, so `f := fn(){ f() }` resolves `f`). The form

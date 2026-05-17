@@ -597,7 +597,10 @@ impl Compiler {
             | OpCode::Jump | OpCode::Loop
             | OpCode::Negate | OpCode::Not | OpCode::Len | OpCode::BitNot
             | OpCode::Import | OpCode::MakeIter
-            | OpCode::PushTry | OpCode::PopTry => 0,
+            | OpCode::PushTry | OpCode::PopTry
+            // NoMatchError pops nothing and always raises; the runtime
+            // never reaches code after it. Tracked as 0.
+            | OpCode::NoMatchError => 0,
             // Raise pops its message. The runtime never reaches code
             // after Raise; the compiler still tracks -1 here for
             // consistency, and the surrounding `raise` compilation
@@ -1366,6 +1369,21 @@ impl Compiler {
     /// `Unwind base_height` clears any partial pattern slots before the
     /// next arm. A matched arm stores its body value into `R` and
     /// jumps to the end. If no arm matches, `R` is still `null`.
+    /// A `match` is provably exhaustive iff its last arm is an
+    /// unguarded irrefutable pattern — a bare `Wildcard` or `Binding`.
+    /// A guard can fail, so a guarded arm never makes the match
+    /// exhaustive. Conservative: an `Or` of wildcards is not treated
+    /// as exhaustive here (it would only suppress a dead opcode).
+    fn match_is_exhaustive(arms: &[MatchArm]) -> bool {
+        match arms.last() {
+            Some(arm) if arm.guard.is_none() => matches!(
+                arm.pattern,
+                MatchPattern::Wildcard | MatchPattern::Binding(_)
+            ),
+            _ => false,
+        }
+    }
+
     fn compile_match(
         &mut self,
         subject: &SpannedExpr,
@@ -1451,6 +1469,14 @@ impl Compiler {
             self.emit_op(OpCode::Unwind, line);
             self.emit_byte(base_height as u8, line);
             self.set_stack_height(base_height);
+        }
+
+        // Fall-through: no arm matched. Unless the match is provably
+        // exhaustive (an unguarded wildcard / binding last arm), raise
+        // a catchable `no_match` error rather than yielding `null`.
+        // A successful arm jumps past this point straight to match_end.
+        if !Self::match_is_exhaustive(arms) {
+            self.emit_op(OpCode::NoMatchError, line);
         }
 
         // match_end: every successful arm lands here.
@@ -1929,24 +1955,35 @@ impl Compiler {
                 CompileError::new(CompileErrorKind::BreakOutsideLoop, span)
             })?;
 
+        // Read `is_array_form` up front: a bare `break` in an array
+        // loop must emit nothing at all (it appends no item), so we
+        // need this before deciding whether to push a value.
+        let is_array_form = self.current().loop_stack[target].is_array_form;
+        let has_value = value.is_some();
+
         // While we compile the value, mark target as skipped so any
         // nested break inside the value redirects past this loop.
         self.current_mut().loop_stack[target].skip = true;
         if let Some(v) = value {
             self.compile_expr(v)?;
-        } else {
+        } else if !is_array_form {
+            // Plain-form bare `break`: the loop's value is `null`.
             self.emit_op(OpCode::PushNull, line);
         }
+        // Array-form bare `break`: nothing pushed, nothing appended.
         self.current_mut().loop_stack[target].skip = false;
 
         let ctx = &self.current().loop_stack[target];
         let result_slot = ctx.result_slot;
         let base_stack_height = ctx.base_stack_height;
-        let is_array_form = ctx.is_array_form;
 
         if is_array_form {
-            self.emit_op(OpCode::IterAppend, line);
-            self.emit_byte(result_slot, line);
+            // `break <value>` appends the value verbatim (incl. `null`);
+            // bare `break` appends nothing.
+            if has_value {
+                self.emit_op(OpCode::IterAppend, line);
+                self.emit_byte(result_slot, line);
+            }
         } else {
             self.emit_op(OpCode::StoreLocal, line);
             self.emit_byte(result_slot, line);
@@ -1966,10 +2003,11 @@ impl Compiler {
         Ok(())
     }
 
-    /// `continue` lowering. Mirrors `compile_break` up to the jump: the
-    /// current iteration contributes `null` (stored into / appended to
-    /// the result slot), nested locals are unwound, then control jumps
-    /// *backward* to the loop head rather than forward to the exit. For
+    /// `continue` lowering. In an array-collecting loop the iteration
+    /// contributes nothing to the result; in a plain loop its value
+    /// becomes `null`. Either way nested locals are unwound, then
+    /// control jumps *backward* to the loop head rather than forward
+    /// to the exit. For
     /// `for` the head is `IterNext` (which re-reads the still-live
     /// `$for_iter` IterState below `base_stack_height`); for `while` it
     /// is the condition re-evaluation.
@@ -1990,11 +2028,13 @@ impl Compiler {
         let is_array_form = ctx.is_array_form;
         let loop_start = ctx.loop_start;
 
-        self.emit_op(OpCode::PushNull, line);
         if is_array_form {
-            self.emit_op(OpCode::IterAppend, line);
-            self.emit_byte(result_slot, line);
+            // Array form: `continue` contributes nothing to the result
+            // array — it is the only way to omit an item from a
+            // `for[]` / `while[]`.
         } else {
+            // Plain form: this iteration's value becomes `null`.
+            self.emit_op(OpCode::PushNull, line);
             self.emit_op(OpCode::StoreLocal, line);
             self.emit_byte(result_slot, line);
             self.emit_op(OpCode::Pop, line);

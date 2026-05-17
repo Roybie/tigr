@@ -5,11 +5,9 @@
 // `(element, index, whole_array)`; tigr drops extra args, so a
 // 1-arg `fn(v) { ... }` still works.
 //
-// `keys` / `values` / `entries` accumulate explicitly rather than via
-// `for[]` — a `for[]` body filters out `null`, which would silently
-// drop entries whose value is `null`. They append in place with
-// `Array.push` (O(n) total) rather than `out + [x]` (which copies the
-// whole array each step — O(n^2)).
+// `keys` / `values` / `entries` append in place with `Array.push`
+// (O(n) total) rather than `out + [x]` (which copies the whole array
+// each step — O(n^2)).
 
 _no := import '_NativeObject';
 _arr := import 'Array';

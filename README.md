@@ -75,14 +75,15 @@ Underscores are allowed only between digits — `_5`, `5_`, `5__5`, and `0x_FF` 
 
 ### Truthiness
 
-The following are **falsy**: `false`, `null`, `0`, `0.0`, `''`, `[]`, `${}`. Everything else (including non-empty ranges and all functions) is truthy.
+Lua-style: only `false` and `null` are **falsy**. Everything else is truthy — including `0`, `0.0`, `''`, `[]`, `${}`, empty ranges, and all functions. Test emptiness explicitly with `#x == 0`, and zero with `n == 0`.
 
 `&&` and `||` short-circuit and return **the value that decided the result** (not coerced to bool):
 
 ```
-0 || 'fallback'      // 'fallback'
+0 || 'fallback'      // 0          — 0 is truthy
+null || 'fallback'   // 'fallback' — null is falsy
 'a' && 'b'           // 'b'
-null || []           // []
+false && 'b'         // false
 ```
 
 ---
@@ -294,7 +295,7 @@ label := if score > 90 { 'A' } else if score > 80 { 'B' } else { 'C' };
 
 ```
 while cond { body }                  // evaluates to last iteration's value (or null)
-while[] cond { body }                // collects each body value into an array (nulls filtered)
+while[] cond { body }                // collects every body value into an array; `continue` skips one
 ```
 
 ```
@@ -321,6 +322,8 @@ last := for (x, [10, 20, 30]) { x };       // 30
 all  := for[] (i, 1..=5) { i * i };        // [1, 4, 9, 16, 25]
 ```
 
+A `for[]` / `while[]` collects **every** body value verbatim, including `null` — `continue` is the only way to omit an item.
+
 An **iterator object** (an object with a callable `next` field — the `Iter` protocol) is driven by calling `next()`; a `for` can consume an `Iter` pipeline directly, no `Iter.collect()` needed (v0.8). The same applies to array and call spread: `[...it]` and `f(...it)` expand an iterator. An object *without* a callable `next` still iterates as key/value entries.
 
 Each iteration opens a **fresh scope** for the loop variables — closures capture each iteration's `i` independently:
@@ -342,7 +345,7 @@ break 5                              // 5
 break (x + y)                        // expression form needs parens
 ```
 
-In a `for[]` / `while[]`, the break value is appended to the result array (unless `null`, which is filtered).
+In a `for[]` / `while[]`, `break <value>` appends the value (even `null`); a bare `break` appends nothing.
 
 `break` is itself an expression — pass it to another `break` to propagate out:
 
@@ -358,7 +361,7 @@ for (i, 0..10) {
 
 ### `continue`
 
-`continue` skips the rest of the current loop iteration and moves to the next. The skipped iteration contributes `null` — so in a `for[]` / `while[]` nothing is appended, and in a plain `for` / `while` that iteration's value becomes `null`. Unlike `break`, `continue` carries no value. Using it outside a loop is a compile-time error.
+`continue` skips the rest of the current loop iteration and moves to the next. In a `for[]` / `while[]` the skipped iteration contributes **nothing** to the result array — `continue` is the only way to omit an item. In a plain `for` / `while` that iteration's value becomes `null`. Unlike `break`, `continue` carries no value. Using it outside a loop is a compile-time error.
 
 ```
 evens := for[] (n, 0..10) {
@@ -411,7 +414,7 @@ The body of `try` binds tighter than `||` so `try f(x) || default` is the natura
 
 ### `match`
 
-`match` evaluates a subject once and tries each comma-separated arm top-to-bottom, yielding the body of the first arm whose pattern (and optional `if` guard) matches. With no matching arm it evaluates to `null` — non-exhaustive, like an `if` with no `else`. It's an expression.
+`match` evaluates a subject once and tries each comma-separated arm top-to-bottom, yielding the body of the first arm whose pattern (and optional `if` guard) matches. With no matching arm it raises a catchable `no_match` error — end the `match` with a `_` wildcard arm to make it total. It's an expression.
 
 ```
 grade := match score {
@@ -501,7 +504,7 @@ scale(10, 5);                        // 50
 scale(10, null);                     // 20  — explicit null also triggers it
 ```
 
-A default is only allowed on a plain identifier parameter (not a destructuring pattern, not the rest parameter). Defaults may reference earlier parameters (`fn(a, b = a + 1)`), evaluate left-to-right, and run only when needed. Note a falsy-but-not-null value like `0` does **not** trigger the default — only `null` does.
+A default is only allowed on a plain identifier parameter (not a destructuring pattern, not the rest parameter). Defaults may reference earlier parameters (`fn(a, b = a + 1)`), evaluate left-to-right, and run only when needed. Note a default is triggered only by `null` — a `0`, `false`, or `''` argument is kept as-is.
 
 ### Method-style calls
 
@@ -597,7 +600,7 @@ A user module is typically just an object literal:
 // lib/util.tg
 ${
     map: fn(arr, f) { for[] (x, arr) { f(x) } },
-    filter: fn(arr, f) { for[] (x, arr) { if f(x) { x } } },
+    filter: fn(arr, f) { for[] (x, arr) { if !f(x) { continue }; x } },
     // ...
 }
 ```

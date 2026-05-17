@@ -364,24 +364,11 @@ impl Value {
         }
     }
 
-    /// Truthiness per spec §5.
+    /// Truthiness per spec §5. Lua-style: only `null` and `false` are
+    /// falsy. Everything else — including `0`, `0.0`, `''`, `[]`, `${}`,
+    /// empty ranges/maps/sets — is truthy. Test emptiness with `#x`.
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Null => false,
-            Value::Bool(b) => *b,
-            Value::Int(n) => *n != 0,
-            Value::Float(x) => *x != 0.0,
-            Value::Str(s) => !s.is_empty(),
-            Value::Array(a) => !a.borrow().is_empty(),
-            Value::Object(o) => !o.borrow().is_empty(),
-            Value::Map(m) => !m.borrow().is_empty(),
-            Value::Set(s) => !s.borrow().is_empty(),
-            // §5: "all non-empty ranges" are truthy → empty range falsy.
-            Value::Range(r) => r.length() > 0,
-            Value::Iter(_) => true,
-            Value::Function(_) => true,
-            Value::NativeFn(_) => true,
-        }
+        !matches!(self, Value::Null | Value::Bool(false))
     }
 }
 

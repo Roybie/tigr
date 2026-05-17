@@ -10,9 +10,11 @@ for (sq, [1, 2, 3, 4, 5] |> Iter.from() |> Iter.map(fn(n){ n * n })) {
     print('  ', sq)
 };
 
-// `for[]` collects per-iteration values from an iterator.
+// `for[]` collects per-iteration values from an iterator; `continue`
+// skips an item.
 evens := for[] (n, Iter.from([1, 2, 3, 4, 5, 6])) {
-    if n % 2 == 0 { n }
+    if n % 2 != 0 { continue };
+    n
 };
 print('evens:', evens);
 

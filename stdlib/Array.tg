@@ -67,7 +67,8 @@ ${
 
     filter: fn(arr, pred) {
         for[] (i, x, arr) {
-            if pred(x, i, arr) { x }
+            if !pred(x, i, arr) { continue };
+            x
         }
     },
 

@@ -957,18 +957,18 @@ impl Vm {
                 OpCode::IterAppend => {
                     let slot = chunk.code[ip] as usize;
                     ip += 1;
+                    // Every body value is collected verbatim, including
+                    // `null` — `continue` is the only way to skip an item.
                     let v = self.pop(line)?;
-                    if !matches!(v, Value::Null) {
-                        let target = self.stack[base_slot + slot].clone();
-                        match target {
-                            Value::Array(a) => a.borrow_mut().push(v),
-                            other => return Err(RuntimeError::new(
-                                RuntimeErrorKind::TypeMismatch(format!(
-                                    "internal: IterAppend target is {}", other.type_name()
-                                )),
-                                line,
+                    let target = self.stack[base_slot + slot].clone();
+                    match target {
+                        Value::Array(a) => a.borrow_mut().push(v),
+                        other => return Err(RuntimeError::new(
+                            RuntimeErrorKind::TypeMismatch(format!(
+                                "internal: IterAppend target is {}", other.type_name()
                             )),
-                        }
+                            line,
+                        )),
                     }
                 }
                 OpCode::Unwind => {
@@ -1387,6 +1387,15 @@ impl Vm {
                     let value = self.stack.pop().ok_or_else(|| underflow(line))?;
                     self.frames.last_mut().unwrap().ip = ip;
                     return Ok(value);
+                }
+                OpCode::NoMatchError => {
+                    // A `match` fell through every arm. Raise a catchable
+                    // built-in error rather than yielding `null`.
+                    self.frames.last_mut().unwrap().ip = ip;
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::NoMatch,
+                        line,
+                    ));
                 }
             }
 

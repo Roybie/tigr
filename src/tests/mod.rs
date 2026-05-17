@@ -195,8 +195,11 @@ fn phase2_else_if_chain() {
 
 #[test]
 fn phase2_short_circuit_or_returns_operand() {
-    // 0 is falsy → `||` returns the right operand
-    assert_eq!(run("0 || 'fallback'"), Value::Str("fallback".into()));
+    // Lua-style truthiness: `0` is truthy → `||` returns the left operand.
+    assert_eq!(run("0 || 'fallback'"), Value::Int(0));
+    // Only `null` / `false` are falsy → `||` then returns the right operand.
+    assert_eq!(run("null || 'fallback'"), Value::Str("fallback".into()));
+    assert_eq!(run("false || 'fallback'"), Value::Str("fallback".into()));
 }
 
 #[test]
@@ -213,8 +216,10 @@ fn phase2_short_circuit_or_returns_left_when_truthy() {
 #[test]
 fn phase2_not_unary() {
     assert_eq!(run("!false"), Value::Bool(true));
-    assert_eq!(run("!0"), Value::Bool(true));
-    assert_eq!(run("!''"), Value::Bool(true));
+    assert_eq!(run("!null"), Value::Bool(true));
+    // Lua-style: `0` and `''` are truthy.
+    assert_eq!(run("!0"), Value::Bool(false));
+    assert_eq!(run("!''"), Value::Bool(false));
     assert_eq!(run("!1"), Value::Bool(false));
     assert_eq!(run("!'x'"), Value::Bool(false));
 }
@@ -267,13 +272,15 @@ fn phase2_nested_if_in_while() {
 #[test]
 fn phase2_truthy_int_in_if() {
     assert_eq!(run("if 7 { 'yes' } else { 'no' }"), Value::Str("yes".into()));
-    assert_eq!(run("if 0 { 'yes' } else { 'no' }"), Value::Str("no".into()));
+    // Lua-style: `0` is truthy.
+    assert_eq!(run("if 0 { 'yes' } else { 'no' }"), Value::Str("yes".into()));
 }
 
 #[test]
 fn phase2_truthy_string_in_if() {
     assert_eq!(run("if 'x' { 1 } else { 2 }"), Value::Int(1));
-    assert_eq!(run("if '' { 1 } else { 2 }"), Value::Int(2));
+    // Lua-style: `''` is truthy.
+    assert_eq!(run("if '' { 1 } else { 2 }"), Value::Int(1));
 }
 
 // ---- Phase 3: collections, indexing, references, built-ins ----
@@ -332,11 +339,35 @@ fn phase3_object_reference_semantics() {
 }
 
 #[test]
-fn phase3_empty_collections_are_falsy() {
-    assert_eq!(run("if [] { 'no' } else { 'yes' }"), Value::Str("yes".into()));
-    assert_eq!(run("if ${} { 'no' } else { 'yes' }"), Value::Str("yes".into()));
+fn phase3_empty_collections_are_truthy() {
+    // Lua-style: empty `[]` / `${}` are truthy — test emptiness with `#x`.
+    assert_eq!(run("if [] { 'yes' } else { 'no' }"), Value::Str("yes".into()));
+    assert_eq!(run("if ${} { 'yes' } else { 'no' }"), Value::Str("yes".into()));
     assert_eq!(run("if [1] { 'yes' } else { 'no' }"), Value::Str("yes".into()));
     assert_eq!(run("if ${a:1} { 'yes' } else { 'no' }"), Value::Str("yes".into()));
+}
+
+#[test]
+fn v11_only_null_and_false_are_falsy() {
+    // The complete falsy set under Lua-style truthiness.
+    for falsy in ["null", "false"] {
+        assert_eq!(
+            run(&format!("if {falsy} {{ 'T' }} else {{ 'F' }}")),
+            Value::Str("F".into()),
+            "{falsy} should be falsy",
+        );
+    }
+    // Everything else is truthy — notably the old falsy values.
+    for truthy in ["0", "0.0", "''", "[]", "${}", "0..0", "true", "1"] {
+        assert_eq!(
+            run(&format!("if {truthy} {{ 'T' }} else {{ 'F' }}")),
+            Value::Str("T".into()),
+            "{truthy} should be truthy",
+        );
+    }
+    // `x || default` now defaults only on null/false, not on a real 0.
+    assert_eq!(run("0 || 99"), Value::Int(0));
+    assert_eq!(run("null || 99"), Value::Int(99));
 }
 
 #[test]
@@ -704,7 +735,8 @@ fn phase5_range_index() {
 
 #[test]
 fn phase5_range_truthiness() {
-    assert_eq!(run("if 0..0 { 1 } else { 2 }"), Value::Int(2)); // empty → falsy
+    // Lua-style: every range — even an empty one — is truthy.
+    assert_eq!(run("if 0..0 { 1 } else { 2 }"), Value::Int(1));
     assert_eq!(run("if 0..1 { 1 } else { 2 }"), Value::Int(1));
 }
 
@@ -741,9 +773,28 @@ fn phase5_for_array_collect() {
 }
 
 #[test]
-fn phase5_for_array_collect_filters_null() {
-    // for[] drops null values (spec §9.2/§9.4)
+fn phase5_for_array_collects_null_verbatim() {
+    // for[] collects every body value, including `null` (spec §9.2/§9.3).
+    // An `if` with no `else` yields `null` on the odd iterations.
     let src = "for[] (i, 0..5) { if i % 2 == 0 { i } }";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            let v: Vec<Option<i64>> = b.iter().map(|x| match x {
+                Value::Int(n) => Some(*n),
+                Value::Null => None,
+                _ => panic!("unexpected element: {x:?}"),
+            }).collect();
+            assert_eq!(v, vec![Some(0), None, Some(2), None, Some(4)]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn phase5_for_array_continue_is_the_only_skip() {
+    // `continue` is now the only way to omit an item from a `for[]`.
+    let src = "for[] (i, 0..5) { if i % 2 != 0 { continue }; i }";
     match run(src) {
         Value::Array(a) => {
             let v: Vec<i64> = a.borrow().iter().map(|x| match x {
@@ -911,7 +962,7 @@ fn phase5_chained_break_breaks_two_loops() {
 
 #[test]
 fn phase5_break_in_for_array_appends_value() {
-    // §9.4: break v in for[] / while[] appends v if non-null.
+    // §9.4: `break v` in for[] / while[] appends v; bare `break` does not.
     let src = "for[] (i, 0..10) { if i == 5 { break 99 }; i }";
     match run(src) {
         Value::Array(a) => {
@@ -939,6 +990,33 @@ fn phase5_break_no_value_in_for_array_appends_nothing() {
         }
         v => panic!("expected array, got {v:?}"),
     }
+}
+
+#[test]
+fn v11_break_null_in_for_array_appends_null() {
+    // `break <value>` appends the value verbatim — even `null` — which
+    // distinguishes it from a bare `break` (appends nothing).
+    let src = "for[] (i, 0..10) { if i == 2 { break null }; i }";
+    match run(src) {
+        Value::Array(a) => {
+            let b = a.borrow();
+            let v: Vec<Option<i64>> = b.iter().map(|x| match x {
+                Value::Int(n) => Some(*n),
+                Value::Null => None,
+                _ => panic!("unexpected element: {x:?}"),
+            }).collect();
+            assert_eq!(v, vec![Some(0), Some(1), None]);
+        }
+        v => panic!("expected array, got {v:?}"),
+    }
+}
+
+#[test]
+fn v11_continue_in_plain_for_yields_null_iteration() {
+    // Plain `for` is unchanged: a `continue`d iteration's value is `null`,
+    // and a plain `for` yields its last iteration's value.
+    assert_eq!(run("for (i, 0..5) { if i == 4 { continue }; i }"), Value::Null);
+    assert_eq!(run("for (i, 0..5) { if i == 4 { continue }; i * 10 }"), Value::Null);
 }
 
 #[test]
@@ -1017,10 +1095,13 @@ fn phase6_num_parses_or_passes_through() {
 
 #[test]
 fn phase6_bool_uses_truthiness() {
-    assert_eq!(run("bool(0)"), Value::Bool(false));
+    // Lua-style: only `null` / `false` are falsy.
+    assert_eq!(run("bool(0)"), Value::Bool(true));
     assert_eq!(run("bool('hi')"), Value::Bool(true));
-    assert_eq!(run("bool([])"), Value::Bool(false));
+    assert_eq!(run("bool([])"), Value::Bool(true));
     assert_eq!(run("bool(${a:1})"), Value::Bool(true));
+    assert_eq!(run("bool(null)"), Value::Bool(false));
+    assert_eq!(run("bool(false)"), Value::Bool(false));
 }
 
 #[test]
@@ -2849,8 +2930,26 @@ fn v05_match_literal() {
 }
 
 #[test]
-fn v05_match_non_exhaustive_is_null() {
-    assert_eq!(run("match 9 { 1 => 'a', 2 => 'b' }"), Value::Null);
+fn v11_match_non_exhaustive_raises_no_match() {
+    // A `match` that falls through every arm raises a catchable
+    // `no_match` error rather than yielding `null`.
+    assert!(run_err("match 9 { 1 => 'a', 2 => 'b' }").contains("no matching arm"));
+    assert_eq!(
+        run("try (match 9 { 1 => 'a', 2 => 'b' }) catch (e) { e.kind }"),
+        Value::Str("no_match".into()),
+    );
+}
+
+#[test]
+fn v11_match_exhaustive_arm_does_not_raise() {
+    // An unguarded wildcard / binding last arm is provably exhaustive.
+    assert_eq!(run("match 9 { 1 => 'a', _ => 'z' }"), Value::Str("z".into()));
+    assert_eq!(run("match 9 { 1 => 'a', x => x }"), Value::Int(9));
+    // A guarded wildcard is NOT exhaustive — a false guard falls through.
+    assert_eq!(
+        run("try (match 9 { _ if false => 'never' }) catch (e) { e.kind }"),
+        Value::Str("no_match".into()),
+    );
 }
 
 #[test]
@@ -4928,12 +5027,13 @@ fn v09_type_of_map_and_set() {
 
 #[test]
 fn v09_map_set_truthiness() {
-    assert_eq!(run("Map := import 'Map'; if Map.new() { 1 } else { 0 }"), Value::Int(0));
+    // Lua-style: a Map / Set is always truthy, even when empty.
+    assert_eq!(run("Map := import 'Map'; if Map.new() { 1 } else { 0 }"), Value::Int(1));
     assert_eq!(
         run("Map := import 'Map'; m := Map.new(); m['k'] = 1; if m { 1 } else { 0 }"),
         Value::Int(1),
     );
-    assert_eq!(run("Set := import 'Set'; if Set.new() { 1 } else { 0 }"), Value::Int(0));
+    assert_eq!(run("Set := import 'Set'; if Set.new() { 1 } else { 0 }"), Value::Int(1));
     assert_eq!(run("Set := import 'Set'; if Set.new([1]) { 1 } else { 0 }"), Value::Int(1));
 }
 

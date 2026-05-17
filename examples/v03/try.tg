@@ -6,9 +6,9 @@
 // string error.
 
 // 1. Catching a built-in error: `int()` raises on unparseable strings.
-//    The catch handler binds the error message as a string.
+//    A built-in error is reified into `${kind, message, line}`.
 parsed := try int('not a number') catch (e) {
-    'unparseable: ' + e
+    'unparseable: ' + e.message
 };
 
 // 2. No-catch try: value on success, null on error. Pairs with `||`.
@@ -32,10 +32,10 @@ chained := try {
     outer
 };
 
-// 5. try inside a loop body works alongside `break` — catching here
-//    converts a per-iteration failure into a continue-with-null.
+// 5. try inside a loop body works alongside `continue` — catching a
+//    per-iteration failure and skipping that item entirely.
 sum := for[] (n, [1, 2, 0, 4, 5]) {
-    try (10 / n) catch (_) { null }
+    try (10 / n) catch (_) { continue }
 };
 
 [parsed, fallback, safe, chained, sum]

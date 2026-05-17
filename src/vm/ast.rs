@@ -286,7 +286,8 @@ pub enum Expr {
 
     // `while cond body` (is_array = false) or `while[] cond body`
     // (is_array = true). The array form collects each iteration's
-    // body value (nulls filtered) per spec §9.2.
+    // body value verbatim (including `null`) per spec §9.2; `continue`
+    // is the only way to skip an item.
     While {
         is_array: bool,
         cond: Box<SpannedExpr>,
@@ -316,9 +317,9 @@ pub enum Expr {
     // into another break.
     Break(Option<Box<SpannedExpr>>),
 
-    // `continue` — skip the rest of the current loop iteration. The
-    // iteration contributes `null` (nothing appended in `for[]`/
-    // `while[]`). Carries no value.
+    // `continue` — skip the rest of the current loop iteration. In a
+    // `for[]`/`while[]` the iteration contributes nothing; in a plain
+    // `for`/`while` its value becomes `null`. Carries no value.
     Continue,
 
     // `[a, b, c]` — array literal. Items may be `Expr::Spread(...)`.

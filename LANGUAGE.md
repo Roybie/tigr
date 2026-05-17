@@ -13,8 +13,8 @@ authoritative.
 - **Everything is an expression.** No statements. Every construct produces a
   value (possibly `null`).
 - **Loops come in pairs.** Plain forms (`for`, `while`) yield the value of the
-  last iteration. Array forms (`for[]`, `while[]`) yield an array of the
-  per-iteration values, with `null` values filtered out.
+  last iteration. Array forms (`for[]`, `while[]`) yield an array of every
+  per-iteration value; `continue` omits an item.
 - **Concise but consistent.** Prefer one short syntax over two. Promote
   patterns into syntax only when they recur in real programs.
 - **Dynamic and small.** Closures, first-class functions, dynamic typing. No
@@ -196,28 +196,33 @@ c();   // 2
 
 ## 5. Truthiness
 
-The following values are **falsy**:
+Only two values are **falsy**:
 
 - `false`
 - `null`
-- `0`
-- `0.0`
-- `''` (empty string)
-- `[]` (empty array)
-- `${}` (empty object)
 
-Everything else is **truthy**, including all functions and all non-empty
-ranges. (Change from 0.1: empty arrays and objects are now falsy.)
+**Everything else is truthy** — including `0`, `0.0`, `''` (empty string),
+`[]` (empty array), `${}` (empty object), empty ranges, empty maps/sets,
+and all functions. Truthiness tests exactly one thing: "is this value
+present and not `false`". To test whether a collection or string is
+*empty*, compare its length: `#arr == 0`. To test for a number being
+zero, compare it: `n == 0`.
 
 `!x` and boolean contexts (`if`, `while`, `&&`, `||`) use this rule.
+
+(Change from v0.2–v0.10, where `0`, `0.0`, `''`, and empty
+collections were also falsy. The Lua-style rule keeps *absence*
+(`null`) distinct from a legitimate zero/empty value, and makes the
+`x || default` idiom default only on `null`/`false`.)
 
 `&&` and `||` short-circuit and return the **value** that decided the result
 (not coerced to bool):
 
 ```
-0 || 'fallback'    // == 'fallback'
-'a' && 'b'         // == 'b'
-null || []         // == []
+0 || 'fallback'      // == 0          — 0 is truthy
+null || 'fallback'   // == 'fallback' — null is falsy
+'a' && 'b'           // == 'b'
+false && 'b'         // == false
 ```
 
 (Change from 0.1: `&&`/`||` previously returned a `Bool`; they now return one
@@ -523,7 +528,7 @@ matches.
 
 ```
 while cond scope            // value of last iteration, or null
-while[] cond scope          // array of per-iteration values (nulls filtered)
+while[] cond scope          // array of every iteration's body value
 ```
 
 ### 9.3 for / for[]
@@ -536,6 +541,15 @@ squares := for[] (i, 1..=10) { i * i };
 last := for (x, arr) { x };
 ```
 
+A `for[]` / `while[]` collects **every** iteration's body value
+verbatim, including `null`. The only way to omit an item is `continue`
+(§9.4a) — skipping is control flow, not a filtered value.
+
+```
+for[] (i, 0..5) { if i % 2 == 0 { i } }   // [0, null, 2, null, 4]
+for[] (i, 0..5) { if i % 2 != 0 { continue }; i }   // [0, 2, 4]
+```
+
 ### 9.4 break
 
 `break` exits the innermost loop, optionally with a value:
@@ -546,8 +560,9 @@ break 5                     // exit loop, loop value is 5
 break (x + y)               // expression form requires parens
 ```
 
-In a `for[]` / `while[]`, the value supplied to `break` is appended to the
-result array (unless `null`, which is filtered like any iteration value).
+In a `for[]` / `while[]`, `break <value>` appends the value to the result
+array — verbatim, even if it is `null`. A bare `break` (no value) appends
+nothing, exiting the loop without contributing a final item.
 
 `break` itself is an expression that evaluates to a "break value" — passing
 it to another `break` propagates the exit one level up:
@@ -565,11 +580,11 @@ for (i, 0..10) {
 ### 9.4a continue (v0.6)
 
 `continue` skips the rest of the current loop iteration and proceeds to
-the next. The skipped iteration contributes `null` — so in a `for[]` /
-`while[]` nothing is appended (the same filtering a `null`-valued
-iteration or a bare `break` gets), and in a plain `for` / `while` that
-iteration's value becomes `null`. Unlike `break`, `continue` carries no
-value. `continue` outside any loop is a compile-time error.
+the next. In a `for[]` / `while[]` the skipped iteration contributes
+**nothing** to the result array — `continue` is the only way to omit an
+item. In a plain `for` / `while` that iteration's value becomes `null`.
+Unlike `break`, `continue` carries no value. `continue` outside any loop
+is a compile-time error.
 
 ```
 evens := for[] (n, 0..10) {
@@ -608,7 +623,8 @@ can `match` on it (v0.7b):
 - `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
   `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
   `invalid_index_type`, `immutable_target`, `import_failed`,
-  `overflow`, `stack_overflow`, `stack_underflow`, `cycle`.
+  `overflow`, `stack_overflow`, `stack_underflow`, `cycle`,
+  `no_match`.
 - `message` — the human-readable text an uncaught error would show
   (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
 - `line` — the source line the error occurred on.
@@ -670,9 +686,12 @@ match subject {
 `match` evaluates `subject` once, then tries each arm top-to-bottom.
 The value of the `match` is the body of the first arm whose pattern
 matches (and whose guard, if present, is truthy). If no arm matches,
-`match` evaluates to `null` — it is **non-exhaustive**, like an `if`
-with no `else`. `match` is an expression. Arms are comma-separated; a
-trailing comma is allowed. Each arm body runs in its own scope.
+`match` raises a catchable `no_match` runtime error (§9.6) rather than
+yielding a value — a fall-through is almost always a bug. To make a
+`match` total, end it with a `_` wildcard (or a bare-binding) arm; an
+unguarded one is provably exhaustive and never raises. `match` is an
+expression. Arms are comma-separated; a trailing comma is allowed.
+Each arm body runs in its own scope.
 
 **Patterns** in a `match` arm are *refutable* — unlike the irrefutable
 destructuring patterns of §11, they can fail and fall through:
@@ -888,7 +907,7 @@ A module typically returns an object:
 // Array.tg
 ${
     map: fn(arr, f) { for[] (x, arr) { f(x) } },
-    filter: fn(arr, f) { for[] (x, arr) { if f(x) { x } } },
+    filter: fn(arr, f) { for[] (x, arr) { if !f(x) { continue }; x } },
     // ...
 }
 ```
@@ -1518,7 +1537,8 @@ User-visible breaking changes:
 
 1. `=` no longer creates new bindings. Use `:=` to declare.
 2. Arrays and objects are now reference types.
-3. Empty `[]` and `${}` are now falsy.
+3. Only `false` and `null` are falsy (Lua-style); `0`, `''`, `[]`,
+   `${}` are truthy.
 4. `&&` / `||` now return one of their operands rather than a `Bool`.
 5. `arr += [5, 6]` now concatenates instead of nesting.
 6. `floor`, `ceil`, `rand` are no longer keywords; they are bindings.

@@ -1,2 +1,9 @@
-// `||` short-circuits and returns the operand value (spec §5)
-0 || 'fallback'
+// `||` / `&&` short-circuit and return the deciding operand value
+// (spec §5). Lua-style truthiness: only `null` and `false` are falsy,
+// so `||` defaults only on those — `0`, `''`, `[]` pass through.
+
+print(null || 'fallback');    // 'fallback' — null is falsy
+print(false || 'fallback');   // 'fallback' — false is falsy
+print(0 || 'fallback');       // 0          — 0 is truthy
+print('' || 'fallback');      // ''         — empty string is truthy
+print('first' && 'second');   // 'second'   — both truthy, returns the last

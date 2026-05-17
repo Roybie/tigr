@@ -121,9 +121,10 @@ pub enum OpCode {
     /// Like `IterNext` but pushes 2 values per advance — the counter
     /// for Range/Array/String, the key for Object, plus the element.
     IterNext2,
-    /// Pop the top value; if it is not `null`, append it to the Array
-    /// stored at local slot `slot`. Used to collect body values inside
-    /// `for[]` / `while[]`. Operand: u8 slot.
+    /// Pop the top value and append it to the Array stored at local
+    /// slot `slot`. Used to collect body values inside `for[]` /
+    /// `while[]`; every value is collected verbatim, including `null`.
+    /// Operand: u8 slot.
     IterAppend,
     /// Truncate the stack to `base_slot + n`, closing any open upvalues
     /// at the popped slots. Used by `break` to unwind arbitrary
@@ -236,6 +237,12 @@ pub enum OpCode {
     /// discarded, callee + args shifted down to its base slot). Runs
     /// recursion in O(1) frames. Operand: u8 arg count.
     TailCall,
+
+    // -- v0.11 — non-exhaustive match --
+    /// Raise a built-in `no_match` runtime error. Emitted at the
+    /// fall-through of a `match` whose arms are not provably
+    /// exhaustive; reached only when no arm matched. Operand: none.
+    NoMatchError,
 }
 
 impl OpCode {
@@ -307,6 +314,7 @@ impl OpCode {
             62 => JumpIfNotNull,
             63 => AddAssign,
             64 => TailCall,
+            65 => NoMatchError,
             _ => return None,
         })
     }

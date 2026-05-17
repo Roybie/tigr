@@ -42,7 +42,8 @@ ${
     // filter(arr, predicate(elem, index, whole_array))
     filter: fn(array, func) {
         for[] (i, 0..#array) {
-            if func(array[i], i, array) { array[i] }
+            if !func(array[i], i, array) { continue };
+            array[i]
         }
     },
 

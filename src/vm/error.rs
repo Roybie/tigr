@@ -198,6 +198,8 @@ pub enum RuntimeErrorKind {
     StackOverflow,
     /// `JSON.stringify` hit a circular reference in the value graph.
     Cycle,
+    /// A `match` expression fell through every arm without matching.
+    NoMatch,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -225,6 +227,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::Overflow => "overflow",
             RuntimeErrorKind::StackOverflow => "stack_overflow",
             RuntimeErrorKind::Cycle => "cycle",
+            RuntimeErrorKind::NoMatch => "no_match",
             RuntimeErrorKind::Raised(_) => "raised",
         }
     }
@@ -252,6 +255,7 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::Overflow => f.write_str("integer overflow"),
             RuntimeErrorKind::StackOverflow => f.write_str("call stack depth exceeded"),
             RuntimeErrorKind::Cycle => f.write_str("circular reference"),
+            RuntimeErrorKind::NoMatch => f.write_str("no matching arm in match expression"),
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }

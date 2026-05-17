@@ -219,7 +219,8 @@ impl Compiler {
             let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
             c.current_chunk_mut().write_op(OpCode::Return, last_line);
 
-            let fc = c.funcs.pop().expect("main function compiler popped");
+            let mut fc = c.funcs.pop().expect("main function compiler popped");
+            fc.chunk.thread_jumps();
             Ok(Function {
                 arity: 0,
                 has_rest: false,
@@ -298,7 +299,8 @@ impl Compiler {
         let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
         c.current_chunk_mut().write_op(OpCode::Halt, last_line);
 
-        let fc = c.funcs.pop().expect("repl function compiler popped");
+        let mut fc = c.funcs.pop().expect("repl function compiler popped");
+        fc.chunk.thread_jumps();
 
         // Collect the new top-level locals (skip closure placeholder
         // and existing). Every local the line declares in the REPL's
@@ -2220,7 +2222,8 @@ impl Compiler {
         // TailCall, but harmless)
         self.emit_op(OpCode::Return, line);
 
-        let fc = self.funcs.pop().unwrap();
+        let mut fc = self.funcs.pop().unwrap();
+        fc.chunk.thread_jumps();
         let upvalues_info = fc.upvalues.clone();
         let function = Function {
             arity: fc.arity,

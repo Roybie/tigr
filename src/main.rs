@@ -13,6 +13,8 @@ use std::rc::Rc;
 
 use vm::source_map::SourceMap;
 
+mod bench_runner;
+mod disasm_runner;
 mod repl;
 mod test_runner;
 mod v01;
@@ -26,6 +28,14 @@ fn main() -> ExitCode {
     // `tigr test [path]` — discover and run test files.
     if args.get(1).map(String::as_str) == Some("test") {
         return test_runner::run(args.get(2).map(String::as_str));
+    }
+    // `tigr disasm <file.tg> [-r]` — print the compiled bytecode.
+    if args.get(1).map(String::as_str) == Some("disasm") {
+        return disasm_runner::run(&args[2..]);
+    }
+    // `tigr bench [path]` — discover and time benchmark files.
+    if args.get(1).map(String::as_str) == Some("bench") {
+        return bench_runner::run(args.get(2).map(String::as_str));
     }
     let mut filename: Option<&str> = None;
     let mut legacy = false;
@@ -83,5 +93,7 @@ fn print_usage() {
     eprintln!("usage: tigr [<file.tg> [args...]]");
     eprintln!("       tigr                       (interactive REPL)");
     eprintln!("       tigr test [<path>]         (discover and run *_test.tg / tests/)");
+    eprintln!("       tigr disasm <file.tg> [-r] (print compiled bytecode; -r for nested)");
+    eprintln!("       tigr bench [<path>]        (discover and time bench/*.tg)");
     eprintln!("       tigr --legacy <file.tg>    (v0.1 interpreter; not currently wired)");
 }

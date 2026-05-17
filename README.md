@@ -21,11 +21,16 @@ cargo build --release
 ./target/release/tigr                                  # interactive REPL
 ./target/release/tigr test                             # discover and run tests
 ./target/release/tigr test path/                       # tests under a path
+./target/release/tigr disasm program.tg                # print compiled bytecode
+./target/release/tigr disasm program.tg -r             # ...including nested functions
+./target/release/tigr bench                            # time the bench/ suite
 ```
 
 When a script finishes, its final value is printed. So `1 + 1` as a one-line file produces `2`. With no argument, tigr drops into a REPL — see [REPL](#repl) below.
 
 `tigr test` discovers test files — any `*_test.tg` file, plus every `.tg` file under a `tests/` directory — runs them, and reports pass/fail counts. See the [`Test`](#test) module for writing tests.
+
+`tigr disasm` compiles a program and prints its bytecode listing without running it — handy for seeing what the compiler emitted (constant folding included); add `-r` to recurse into nested function chunks. `tigr bench` discovers `.tg` files under `bench/` (or a given path), runs each repeatedly, and reports min / mean wall time — see [`bench/`](bench/).
 
 Working examples live in [`examples/`](examples/) — a curated `.tg` file per interesting language feature or standard-library module. The original v0.1 tree-walking interpreter keeps its own examples under [`examples/v01/`](examples/v01/); the language has changed since, so those use older syntax.
 
@@ -66,12 +71,13 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `Object` | `${name: 'a', age: 1}`                        | String keys, reference type              |
 | `Map`    | `Map.new()`                          | Arbitrary-keyed dictionary, reference type |
 | `Set`    | `Set.new([1, 2, 3])`                 | Collection of unique values, reference type |
+| `Bytes`  | `Bytes.from_hex('deadbeef')`         | Mutable byte buffer for binary data, reference type |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
 
 Underscores are allowed only between digits — `_5`, `5_`, `5__5`, and `0x_FF` are all rejected. A trailing `5.` lexes as `Int(5)` followed by `Dot` so `5.method` style member access still works.
 
-`Array`, `Object`, `Map`, and `Set` are **reference types** — passing them around shares the same underlying value.
+`Array`, `Object`, `Map`, `Set`, and `Bytes` are **reference types** — passing them around shares the same underlying value.
 
 ### Truthiness
 
@@ -305,7 +311,7 @@ last := while i < 5 { i = i + 1; i * 10 };   // last == 50
 
 ### `for` and `for[]`
 
-Iterates a Range, Array, Object, Map, Set, String, or iterator object. One-variable or two-variable form:
+Iterates a Range, Array, Object, Map, Set, Bytes, String, or iterator object. One-variable or two-variable form:
 
 | Iterable | One-var          | Two-var                              |
 |----------|------------------|--------------------------------------|
@@ -314,6 +320,7 @@ Iterates a Range, Array, Object, Map, Set, String, or iterator object. One-varia
 | Object   | `for (v, obj)`   | `for (k, v, obj)`                    |
 | Map      | `for (v, map)`   | `for (k, v, map)`                    |
 | Set      | `for (x, set)`   | `for (i, x, set)`     (`i` = 0,1,2…) |
+| Bytes    | `for (b, buf)`   | `for (i, b, buf)`     (`b` = byte as Int) |
 | String   | `for (ch, str)`  | `for (i, ch, str)`                   |
 | Iterator | `for (v, it)`    | `for (i, v, it)`      (`i` = 0,1,2…) |
 
@@ -644,7 +651,7 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Bytes`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
@@ -777,6 +784,18 @@ A tigr-source module wrapping native primitives. Every entry raises on a non-`St
 | `pad_end(s, len, ch)` | `String` | Right-pad `s` with `ch` until it reaches length `len` |
 | `format(value, spec)` | `String` | Render `value` through the spec mini-language (see below) |
 | `printf(template, args)` | `String` | Fill `%(SPEC)` placeholders in `template` from `args` |
+| `words(s)` | `Array<String>` | Split on runs of whitespace, dropping empty fields |
+| `lines(s)` | `Array<String>` | Split into lines on `\n` / `\r\n`; a trailing newline adds no final empty line |
+| `split_any(s, delims)` | `Array<String>` | Split on any character present in `delims`; an empty `delims` yields `s` unsplit |
+| `find_all(s, needle)` | `Array<Int>` | Byte offsets of every non-overlapping `needle`; empty for an empty `needle` |
+| `count(s, needle)` | `Int` | Number of non-overlapping occurrences of `needle`; `0` for an empty `needle` |
+| `replace_first(s, from, to)` | `String` | Replace only the first `from` with `to`; an empty `from` returns `s` unchanged |
+| `matches_glob(s, pattern)` | `Bool` | Whole-string shell-style glob match (see below); a malformed pattern raises |
+| `reverse(s)` | `String` | Characters in reverse order |
+| `strip_prefix(s, prefix)` | `String` | `s` without `prefix` if it starts with it, else `s` unchanged |
+| `strip_suffix(s, suffix)` | `String` | `s` without `suffix` if it ends with it, else `s` unchanged |
+| `capitalize(s)` | `String` | Uppercase the first character; the rest is unchanged |
+| `is_blank(s)` | `Bool` | True if `s` is empty or contains only whitespace |
 
 #### The format spec mini-language
 
@@ -853,6 +872,26 @@ S.format('hi', '^8')                      // '   hi   '(centre)
 S.format(255, '#x')                       // '0xff'    (hex, prefixed)
 S.format(1234567, ',d')                   // '1,234,567'
 S.printf('%(<6)%(>6.2f)', ['tea', 1.5])   // 'tea     1.50'
+```
+
+#### Glob patterns
+
+`matches_glob(s, pattern)` tests `s` against a shell-style glob — the
+whole string must match. It is a small slice of pattern matching, not a
+regular-expression engine:
+
+- `*` — any run of characters, including none
+- `?` — exactly one character
+- `[abc]` / `[a-z]` — one character from a set or range
+- `[!abc]` / `[!a-z]` — one character *not* in the set
+- `\` — escape a metacharacter (`\*`, `\?`, `\[`, `\\`)
+
+A malformed pattern — an unterminated `[`, a dangling `\` — raises.
+
+```
+S.matches_glob('readme.txt', '*.txt')     // true
+S.matches_glob('img_03.png', 'img_[0-9][0-9].png')   // true
+S.matches_glob('a.b.c', 'a?b?c')          // true
 ```
 
 ### `Math`
@@ -991,6 +1030,33 @@ A native module. File operations raise a catchable error on failure; the predica
 | `stat(path)` | `Object` | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing |
 | `read_line()` | `String \| null` | One line from stdin without the trailing newline; `null` on EOF |
 | `eprint(...args)` | last arg | Like `print`, but writes to stderr |
+| `read_bytes(path)` | `Bytes` | Entire file contents as raw bytes; raises on error |
+| `write_bytes(path, bytes)` | `null` | Overwrite the file with raw bytes; raises on error |
+| `append_bytes(path, bytes)` | `null` | Append raw bytes, creating the file if missing; raises on error |
+
+### `Bytes`
+
+A native module, and a value type — a **mutable byte buffer**, the binary counterpart to the UTF-8-only `String`. A `Bytes` value is indexable (`b[i]` reads a byte as an `Int` 0–255; `b[i] = n` writes one), `#`-measurable, `for`-iterable, spreadable (`[...b]`), concatenable with `+` / `+=`, and content-compared with `==`. It is not JSON-serializable and cannot be a `Map`/`Set` key.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `new(n [, fill])` | `Bytes` | `n` bytes, zero- or `fill`-filled; raises if `n < 0` |
+| `from_array(arr)` | `Bytes` | Pack an `[Int]` (each 0–255); raises otherwise |
+| `from_string(s)` | `Bytes` | The UTF-8 encoding of `s` |
+| `from_hex(s)` | `Bytes` | Decode a hex string (whitespace ignored); raises `decode` on bad input |
+| `from_base64(s)` | `Bytes` | Decode standard base64; raises `decode` on bad input |
+| `to_array(b)` | `Array<Int>` | One `Int` per byte |
+| `to_string(b)` | `String` | Decode as UTF-8; raises a catchable `decode` error if invalid |
+| `to_hex(b)` | `String` | Lower-case hex, two digits per byte |
+| `to_base64(b)` | `String` | Standard-alphabet base64 |
+| `push(b, byte)` | `Bytes` | Append one byte in place; returns `b` |
+| `extend(b, other)` | `Bytes` | Append every byte of `other` in place; returns `b` |
+| `slice(b, start, end)` | `Bytes` | New buffer of `b[start..end]`; negative indices count from the end, bounds clamped |
+| `concat(a, b)` | `Bytes` | New buffer of `a` followed by `b` |
+| `read_<t>(b, offset)` | `Int` | Read a fixed-width integer at `offset` |
+| `write_<t>(b, offset, value)` | `Bytes` | Write a fixed-width integer at `offset`, in place |
+
+`<t>` is `u8`/`i8`, or `u16`/`i16`/`u32`/`i32`/`u64`/`i64` with a `_be`/`_le` endianness suffix — e.g. `read_u32_be`, `write_i16_le`. An out-of-bounds offset raises; `write_*` raises if `value` does not fit the field; an unsigned 64-bit read above the `Int` range raises a catchable `overflow`.
 
 ### `Path`
 

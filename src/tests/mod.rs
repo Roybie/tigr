@@ -5391,3 +5391,104 @@ fn v09_string_printf_too_many_args_raises() {
     let err = run_err("S := import 'String'; S.printf('%(d)', [1, 2])");
     assert!(err.contains("too many arguments"), "got: {err}");
 }
+
+// -- v0.13: Bytes type + binary IO --
+
+#[test]
+fn v13_bytes_type_name() {
+    assert_eq!(run("B := import 'Bytes'; type(B.new(1))"), run("'bytes'"));
+}
+
+#[test]
+fn v13_bytes_index_and_len() {
+    assert_eq!(run("B := import 'Bytes'; b := B.from_array([10,20,30]); b[1]"), Value::Int(20));
+    assert_eq!(run("B := import 'Bytes'; b := B.from_array([10,20,30]); b[-1]"), Value::Int(30));
+    assert_eq!(run("B := import 'Bytes'; #B.new(7)"), Value::Int(7));
+}
+
+#[test]
+fn v13_bytes_index_assignment_mutates() {
+    eval_eq(
+        "B := import 'Bytes'; b := B.from_array([1,2,3]); b[0] = 9; B.to_array(b)",
+        "[9, 2, 3]",
+    );
+}
+
+#[test]
+fn v13_bytes_index_assignment_out_of_range_raises() {
+    let err = run_err("B := import 'Bytes'; b := B.new(1); b[0] = 256");
+    assert!(err.contains("0..=255"), "got: {err}");
+}
+
+#[test]
+fn v13_bytes_for_iterates_bytes() {
+    assert_eq!(
+        run("B := import 'Bytes'; t := 0; for (_, x, B.from_array([4,5,6])) { t = t + x }; t"),
+        Value::Int(15),
+    );
+}
+
+#[test]
+fn v13_bytes_spread_into_array() {
+    eval_eq("B := import 'Bytes'; [...B.from_array([7,8,9])]", "[7, 8, 9]");
+}
+
+#[test]
+fn v13_bytes_concat_and_extend() {
+    eval_eq(
+        "B := import 'Bytes'; B.to_array(B.from_array([1,2]) + B.from_array([3]))",
+        "[1, 2, 3]",
+    );
+    eval_eq(
+        "B := import 'Bytes'; b := B.from_array([1]); b += B.from_array([2,3]); B.to_array(b)",
+        "[1, 2, 3]",
+    );
+}
+
+#[test]
+fn v13_bytes_equality_is_structural() {
+    assert_eq!(
+        run("B := import 'Bytes'; B.from_array([1,2]) == B.from_array([1,2])"),
+        Value::Bool(true),
+    );
+    assert_eq!(
+        run("B := import 'Bytes'; B.from_array([1,2]) == B.from_array([1,3])"),
+        Value::Bool(false),
+    );
+}
+
+#[test]
+fn v13_bytes_int_pack_unpack_roundtrips() {
+    assert_eq!(
+        run("B := import 'Bytes'; b := B.new(4); B.write_u32_be(b, 0, 66051); B.read_u32_be(b, 0)"),
+        Value::Int(66051),
+    );
+    assert_eq!(
+        run("B := import 'Bytes'; B.read_u16_le(B.from_array([0x34,0x12]), 0)"),
+        Value::Int(0x1234),
+    );
+}
+
+#[test]
+fn v13_bytes_string_roundtrip_and_decode_error() {
+    assert_eq!(
+        run("B := import 'Bytes'; B.to_string(B.from_string('hi'))"),
+        run("'hi'"),
+    );
+    let err = run_err("B := import 'Bytes'; B.to_string(B.from_array([255]))");
+    assert!(err.contains("decode") || err.contains("UTF-8"), "got: {err}");
+}
+
+#[test]
+fn v13_bytes_u64_overflow_raises() {
+    let err = run_err(
+        "B := import 'Bytes'; B.read_u64_be(B.from_array([255,255,255,255,255,255,255,255]), 0)",
+    );
+    assert!(err.contains("overflow"), "got: {err}");
+}
+
+#[test]
+fn v13_bytes_not_json_serializable() {
+    let err = run_err("B := import 'Bytes'; J := import 'JSON'; J.stringify(B.new(1))");
+    assert!(err.contains("cannot serialize"), "got: {err}");
+}

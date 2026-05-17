@@ -1,0 +1,58 @@
+// Binary data with the `Bytes` type (v0.13).
+//
+// `String` is UTF-8 text and `IO.read_file` is text-only. `Bytes` is the
+// other half: a mutable byte buffer for binary formats, file content
+// that isn't text, and — later — network traffic. This walks a small
+// binary packet through build → write → read → parse.
+
+Bytes := import 'Bytes';
+IO    := import 'IO';
+
+// -------- constructing buffers --------
+print('from an array: ' + str(Bytes.to_array(Bytes.from_array([0xDE, 0xAD]))));
+print('from a string: ' + str(#Bytes.from_string('héllo')) + ' bytes (UTF-8)');
+print('zero-filled:   ' + str(Bytes.to_array(Bytes.new(4))));
+
+// -------- a fake binary packet --------
+// Layout:  magic u16-BE | version u8 | payload-length u32-BE | payload
+payload := Bytes.from_string('ping');
+
+header := Bytes.new(7);
+Bytes.write_u16_be(header, 0, 0xCAFE);   // magic
+Bytes.write_u8(header, 2, 1);            // version
+Bytes.write_u32_be(header, 3, #payload); // payload length
+
+packet := header + payload;
+print('');
+print('packet: ' + str(packet));        // hex view via str()
+print('  hex:    ' + Bytes.to_hex(packet));
+print('  base64: ' + Bytes.to_base64(packet));
+
+// -------- parsing it back --------
+magic   := Bytes.read_u16_be(packet, 0);
+version := Bytes.read_u8(packet, 2);
+length  := Bytes.read_u32_be(packet, 3);
+body    := Bytes.to_string(Bytes.slice(packet, 7, 7 + length));
+
+print('');
+print('parsed:');
+print('  magic   = {magic}   (valid: {magic == 0xCAFE})');
+print('  version = {version}');
+print('  length  = {length}');
+print('  body    = "{body}"');
+
+// -------- a binary file round-trip --------
+path := 'bytes_example.bin';
+IO.write_bytes(path, packet);
+loaded := IO.read_bytes(path);
+print('');
+print('wrote {#packet} bytes, read back {#loaded} — identical: {loaded == packet}');
+IO.remove(path);
+
+// -------- a catchable decode error --------
+// Raw bytes are not always valid UTF-8; `to_string` raises so the
+// caller can recover instead of producing mojibake.
+result := try { Bytes.to_string(Bytes.from_array([0xFF, 0xFE])) }
+          catch (e) { 'decode failed ({e.kind})' };
+print('');
+print(result);

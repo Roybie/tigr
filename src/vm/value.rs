@@ -15,8 +15,8 @@ use std::rc::Rc;
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc::{
-    ArrayKind, ClosureKind, GcRef, IterKind, MapKind, ObjectKind, SetKind,
-    UpvalueKind,
+    ArrayKind, BytesKind, ClosureKind, GcRef, IterKind, MapKind, ObjectKind,
+    SetKind, UpvalueKind,
 };
 
 #[derive(Clone)]
@@ -35,6 +35,11 @@ pub enum Value {
     // hashable primitives (see `MapKey`); insertion-ordered like Object.
     Map(GcRef<MapKind>),
     Set(GcRef<SetKind>),
+
+    // v0.13 — a mutable byte buffer (`Vec<u8>`). GC-managed like the
+    // other mutable collections; indexable, `#`-length, `for`-iterable,
+    // sliceable. Backs binary IO and future networking.
+    Bytes(GcRef<BytesKind>),
 
     // Phase 5+
     Range(Rc<RangeData>),
@@ -164,6 +169,10 @@ pub enum IterState {
         set: GcRef<SetKind>,
         index: usize,
     },
+    Bytes {
+        bytes: GcRef<BytesKind>,
+        index: usize,
+    },
     String {
         string: Rc<str>,
         char_index: usize,
@@ -245,6 +254,16 @@ impl IterState {
                 let counter = Value::Int(*index as i64);
                 *index += 1;
                 Some((counter, elem))
+            }
+            IterState::Bytes { bytes, index } => {
+                let b = bytes.borrow();
+                if *index >= b.len() {
+                    return None;
+                }
+                let value = Value::Int(b[*index] as i64);
+                let counter = Value::Int(*index as i64);
+                *index += 1;
+                Some((counter, value))
             }
             IterState::String { string, char_index, byte_index } => {
                 let rest = &string[*byte_index..];
@@ -357,6 +376,7 @@ impl Value {
             Value::Object(_) => "object",
             Value::Map(_) => "map",
             Value::Set(_) => "set",
+            Value::Bytes(_) => "bytes",
             Value::Range(_) => "range",
             Value::Iter(_) => "iterator",
             Value::Function(_) => "function",
@@ -389,6 +409,7 @@ impl PartialEq for Value {
             (Object(a), Object(b)) => a == b || *a.borrow() == *b.borrow(),
             (Map(a), Map(b)) => a == b || *a.borrow() == *b.borrow(),
             (Set(a), Set(b)) => a == b || *a.borrow() == *b.borrow(),
+            (Bytes(a), Bytes(b)) => a == b || *a.borrow() == *b.borrow(),
             (Range(a), Range(b)) => a == b,
             (Iter(a), Iter(b)) => a == b,
             (Function(a), Function(b)) => a == b,
@@ -463,6 +484,21 @@ impl fmt::Display for Value {
                     write!(f, "{}", Value::from(k.clone()))?;
                 }
                 f.write_str("}")
+            }
+            Value::Bytes(b) => {
+                // Space-separated hex, truncated so a large buffer can
+                // never blow up a string interpolation or error message.
+                const SHOWN: usize = 64;
+                let bytes = b.borrow();
+                f.write_str("Bytes[")?;
+                for (i, byte) in bytes.iter().take(SHOWN).enumerate() {
+                    if i > 0 { f.write_str(" ")?; }
+                    write!(f, "{byte:02x}")?;
+                }
+                if bytes.len() > SHOWN {
+                    write!(f, " … ({} total)", bytes.len())?;
+                }
+                f.write_str("]")
             }
             Value::Range(r) => {
                 let dots = if r.inclusive { "..=" } else { ".." };

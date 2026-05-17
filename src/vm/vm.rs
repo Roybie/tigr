@@ -393,6 +393,24 @@ impl Vm {
                             }
                             self.stack.push(Value::Array(a));
                         }
+                        Value::Bytes(a) => {
+                            match rhs {
+                                // Snapshot first so `b += b` doesn't
+                                // double-borrow the cell.
+                                Value::Bytes(b) => {
+                                    let items: Vec<u8> = b.borrow().clone();
+                                    a.borrow_mut().extend(items);
+                                }
+                                other => return Err(RuntimeError::new(
+                                    RuntimeErrorKind::TypeMismatch(format!(
+                                        "cannot append {} to bytes (expected bytes)",
+                                        other.type_name()
+                                    )),
+                                    line,
+                                )),
+                            }
+                            self.stack.push(Value::Bytes(a));
+                        }
                         other => {
                             let sum = arith_add(other, rhs, line)?;
                             self.stack.push(sum);
@@ -435,6 +453,7 @@ impl Vm {
                         (9, Value::Function(_) | Value::NativeFn(_)) => true,
                         (10, Value::Map(_)) => true,
                         (11, Value::Set(_)) => true,
+                        (12, Value::Bytes(_)) => true,
                         _ => false,
                     };
                     self.stack.push(Value::Bool(matched));
@@ -584,6 +603,7 @@ impl Vm {
                         Value::Object(o) => o.borrow().len() as i64,
                         Value::Map(m) => m.borrow().len() as i64,
                         Value::Set(s) => s.borrow().len() as i64,
+                        Value::Bytes(b) => b.borrow().len() as i64,
                         Value::Str(s) => s.chars().count() as i64,
                         Value::Range(r) => r.length(),
                         other => return Err(RuntimeError::new(
@@ -1159,23 +1179,30 @@ impl Vm {
                             line,
                         )),
                     };
-                    let out = match arr_val {
+                    let result = match arr_val {
                         Value::Array(a) => {
                             let src = a.borrow();
                             let len = src.len() as i64;
                             let real = if start < 0 { (start + len).max(0) } else { start.min(len) };
                             let real = real.max(0) as usize;
-                            src[real..].to_vec()
+                            Value::Array(gc::alloc_array(src[real..].to_vec()))
+                        }
+                        Value::Bytes(b) => {
+                            let src = b.borrow();
+                            let len = src.len() as i64;
+                            let real = if start < 0 { (start + len).max(0) } else { start.min(len) };
+                            let real = real.max(0) as usize;
+                            Value::Bytes(gc::alloc_bytes(src[real..].to_vec()))
                         }
                         other => return Err(RuntimeError::new(
                             RuntimeErrorKind::TypeMismatch(format!(
-                                "cannot slice {} (only Array supported)",
+                                "cannot slice {} (only Array and Bytes supported)",
                                 other.type_name()
                             )),
                             line,
                         )),
                     };
-                    self.stack.push(Value::Array(gc::alloc_array(out)));
+                    self.stack.push(result);
                 }
                 OpCode::ObjRest => {
                     let keys_val = self.pop(line)?;
@@ -1686,6 +1713,11 @@ fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
             v.push(other);
             Ok(Array(gc::alloc_array(v)))
         }
+        (Bytes(x), Bytes(y)) => {
+            let mut v: Vec<u8> = x.borrow().clone();
+            v.extend(y.borrow().iter().copied());
+            Ok(Bytes(gc::alloc_bytes(v)))
+        }
         (a, b) => Err(type_err("+", &a, &b, line)),
     }
 }
@@ -1869,6 +1901,13 @@ fn extend_array(
                 out.push(Value::Str(c.to_string().into()));
             }
         }
+        Value::Bytes(b) => {
+            let src = b.borrow();
+            let mut out = target.borrow_mut();
+            for &byte in src.iter() {
+                out.push(Value::Int(byte as i64));
+            }
+        }
         other => {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::TypeMismatch(format!(
@@ -1906,6 +1945,7 @@ fn make_iter(v: Value, line: u32) -> Result<IterState, RuntimeError> {
         }
         Value::Map(m) => Ok(IterState::Map { map: m, index: 0 }),
         Value::Set(s) => Ok(IterState::Set { set: s, index: 0 }),
+        Value::Bytes(b) => Ok(IterState::Bytes { bytes: b, index: 0 }),
         Value::Str(s) => Ok(IterState::String { string: s, char_index: 0, byte_index: 0 }),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(
@@ -1957,6 +1997,17 @@ fn index_get(coll: &Value, key: &Value, line: u32) -> Result<Value, RuntimeError
         Value::Set(s) => {
             let key = MapKey::from_value(key, line)?;
             Ok(Value::Bool(s.borrow().contains(&key)))
+        }
+        Value::Bytes(b) => {
+            let bytes = b.borrow();
+            let idx = match key {
+                Value::Int(n) => normalize_index(*n, bytes.len()),
+                other => return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidIndexType(other.type_name().into()),
+                    line,
+                )),
+            };
+            Ok(idx.map(|i| Value::Int(bytes[i] as i64)).unwrap_or(Value::Null))
         }
         Value::Str(s) => {
             let idx = match key {
@@ -2017,6 +2068,39 @@ fn index_set(coll: &Value, key: &Value, value: Value, line: u32) -> Result<(), R
             RuntimeErrorKind::ImmutableTarget("set (use Set.add)".into()),
             line,
         )),
+        Value::Bytes(b) => {
+            let idx = match key {
+                Value::Int(n) => *n,
+                other => return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidIndexType(other.type_name().into()),
+                    line,
+                )),
+            };
+            let byte = match &value {
+                Value::Int(n) if (0..=255).contains(n) => *n as u8,
+                Value::Int(n) => return Err(RuntimeError::new(
+                    RuntimeErrorKind::Raised(Value::Str(format!(
+                        "bytes index assignment: byte value {n} out of range 0..=255"
+                    ).into())),
+                    line,
+                )),
+                other => return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(format!(
+                        "bytes index assignment: expected Int 0..=255, got {}",
+                        other.type_name()
+                    )),
+                    line,
+                )),
+            };
+            let mut buf = b.borrow_mut();
+            let len = buf.len() as i64;
+            let real = if idx < 0 { idx + len } else { idx };
+            if real < 0 || real >= len {
+                return Err(RuntimeError::new(RuntimeErrorKind::IndexOutOfBounds(idx), line));
+            }
+            buf[real as usize] = byte;
+            Ok(())
+        }
         Value::Str(_) => Err(RuntimeError::new(
             RuntimeErrorKind::ImmutableTarget("string".into()),
             line,

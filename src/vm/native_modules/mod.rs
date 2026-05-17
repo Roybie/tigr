@@ -8,6 +8,7 @@
 //! `Vm` run.
 
 pub mod array;
+pub mod bytes;
 pub mod datetime;
 pub mod io;
 pub mod json;
@@ -41,6 +42,7 @@ pub fn resolve(name: &str) -> Option<Value> {
         "DateTime" => Some(datetime::module()),
         "JSON" => Some(json::module()),
         "Random" => Some(random::module()),
+        "Bytes" => Some(bytes::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.

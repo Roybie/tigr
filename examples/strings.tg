@@ -1,0 +1,66 @@
+// Text-processing helpers (v0.13 "String II").
+//
+// `String` literal search/replace is fine for fixed text, but real
+// text is messy — irregular whitespace, multiple delimiters, lines.
+// These helpers cover the common cases without reaching for a regex
+// engine. (`matches_glob` is a small slice of pattern matching: shell
+// `*`/`?`/`[...]` globs, not a full regular-expression language.)
+
+String := import 'String';
+
+// -------- tokenizing a messy line --------
+
+line := '  the   quick \t brown   fox  ';
+print('words:    ' + str(String.words(line)));
+print('word #:   ' + str(#String.words(line)));
+
+// -------- splitting structured text --------
+
+csv := 'name=tigr;version=0.13;kind=language';
+print('');
+print('fields:');
+for (_, field, String.split_any(csv, ';')) {
+    pair := String.split_any(field, '=');
+    print('  {String.capitalize(pair[0])}: {pair[1]}')
+};
+
+// -------- working line by line --------
+
+doc := 'first line\nsecond line\n\nfourth line';
+print('');
+print('non-blank lines:');
+for (i, ln, String.lines(doc)) {
+    if !String.is_blank(ln) { print('  {i}: {ln}') }
+};
+
+// -------- locate and count --------
+
+text := 'a needle in a needle stack with one more needle';
+print('');
+print('\'needle\' appears {String.count(text, 'needle')} times');
+print('at byte offsets ' + str(String.find_all(text, 'needle')));
+
+// -------- replace just the first --------
+
+print('');
+print(String.replace_first('error: error: error', 'error', 'FIXED'));
+
+// -------- glob matching: pattern as a tiny bit of data --------
+
+print('');
+patterns := ['*.txt', 'src/*.rs', 'README.*', '[a-z]*.log'];
+files := ['notes.txt', 'src/main.rs', 'README.md', 'app7.log', 'Build.log'];
+for (_, pat, patterns) {
+    hits := for[] (_, f, files) {
+        if !String.matches_glob(f, pat) { continue };
+        f
+    };
+    print('  {pat}  ->  ' + str(hits))
+};
+
+// -------- odds and ends --------
+
+print('');
+print('reversed:    ' + String.reverse('stressed'));
+print('un-prefixed: ' + String.strip_prefix('img_photo.png', 'img_'));
+print('un-suffixed: ' + String.strip_suffix('photo.png.bak', '.bak'));

@@ -1007,6 +1007,9 @@ destructure or pass them like any other binding.
 | `stat`        | `stat(path) -> Object`             | `${size, is_dir, is_file, modified_ms}`; raises if the path is missing (v0.6) |
 | `read_line`   | `read_line() -> String\|null`      | One line from stdin (without trailing `\n`); null on EOF |
 | `eprint`      | `eprint(...args) -> last_arg`      | Like `print` but to stderr                        |
+| `read_bytes`  | `read_bytes(path) -> Bytes`        | Read entire file as raw bytes; raises on error (v0.13) |
+| `write_bytes` | `write_bytes(path, bytes) -> null` | Overwrite file with raw bytes; raises on error (v0.13) |
+| `append_bytes`| `append_bytes(path, bytes) -> null`| Append raw bytes; creates if missing; raises on error (v0.13) |
 
 #### `Os`
 
@@ -1092,6 +1095,68 @@ called the stream is auto-seeded from the wall clock.
 Random := import 'Random';
 Random.seed(42);
 Random.int(1, 6)          // a dice roll, reproducible after the seed
+```
+
+#### `Bytes` (v0.13)
+
+`Bytes` is a value type as well as a module — a **mutable byte buffer**
+(`Vec<u8>`), the binary counterpart to the UTF-8-only `String`. It is
+GC-managed like `Array`/`Map`/`Set`, and supports the collection
+operators directly:
+
+- `b[i]` reads the byte at `i` as an `Int` 0–255; a negative `i` counts
+  from the end; an out-of-range `i` yields `null`.
+- `b[i] = n` writes a byte in place; `n` must be an `Int` 0–255.
+- `#b` is the byte count.
+- `for (i, byte, b)` iterates `(index, byte-as-Int)`.
+- `[...b]` spreads the buffer into an Array of `Int`s, and array
+  destructuring works — `[first, ...rest] := b` binds `first` to an
+  `Int` and `rest` to a new `Bytes`.
+- `a + b` concatenates two buffers into a new one; `b += other` extends
+  `b` in place. Both operands must be `Bytes`.
+- `==` compares buffers by content. There is no ordering (`<`, `>`).
+- `type(b)` is `'bytes'`; `str(b)` is a hex view, `Bytes[de ad be ef]`,
+  truncated for large buffers.
+- A `Bytes` cannot be a `Map`/`Set` key (it is mutable) and is not
+  JSON-serializable.
+
+The module supplies construction, conversion, growth, and a named
+family of fixed-width integer readers/writers for binary protocols.
+
+| Entry          | Signature                                  | Behavior                                                       |
+|----------------|--------------------------------------------|----------------------------------------------------------------|
+| `new`          | `new(n [, fill]) -> Bytes`                 | `n` bytes, zero- or `fill`-filled; raises if `n < 0`           |
+| `from_array`   | `from_array(arr) -> Bytes`                 | Pack an `[Int]` (each 0–255); raises otherwise                 |
+| `from_string`  | `from_string(s) -> Bytes`                  | The UTF-8 encoding of `s`                                      |
+| `from_hex`     | `from_hex(s) -> Bytes`                     | Decode a hex string (whitespace ignored); raises `decode` on bad input |
+| `from_base64`  | `from_base64(s) -> Bytes`                  | Decode standard base64; raises `decode` on bad input           |
+| `to_array`     | `to_array(b) -> Array<Int>`                | The buffer as one `Int` per byte                               |
+| `to_string`    | `to_string(b) -> String`                   | Decode as UTF-8; raises a catchable `decode` error if invalid  |
+| `to_hex`       | `to_hex(b) -> String`                      | Lower-case hex, two digits per byte                            |
+| `to_base64`    | `to_base64(b) -> String`                   | Standard-alphabet base64 with `=` padding                      |
+| `push`         | `push(b, byte) -> Bytes`                   | Append one byte in place; returns `b`                          |
+| `extend`       | `extend(b, other) -> Bytes`                | Append every byte of `other` in place; returns `b`             |
+| `slice`        | `slice(b, start, end) -> Bytes`            | A new buffer of `b[start..end]`; negative indices count from the end, bounds are clamped |
+| `concat`       | `concat(a, b) -> Bytes`                    | A new buffer of `a` followed by `b`                            |
+| `read_u8` …    | `read_<type>(b, offset) -> Int`            | Read a fixed-width integer at `offset` (see below)             |
+| `write_u8` …   | `write_<type>(b, offset, value) -> Bytes`  | Write a fixed-width integer at `offset`, in place; returns `b` |
+
+The integer family is named, not parameterized: `<type>` is `u8`/`i8`
+(no endianness), or one of `u16`/`i16`/`u32`/`i32`/`u64`/`i64` followed
+by `_be` (big-endian) or `_le` (little-endian) — e.g. `read_u32_be`,
+`write_i16_le`. A read or write whose `offset + width` falls outside the
+buffer raises a catchable error. `write_*` raises if `value` does not
+fit the field (an unsigned writer also rejects a negative `value`). An
+unsigned 64-bit *read* of a value above the `Int` (`i64`) range raises a
+catchable `overflow` — the same error class as v0.8 arithmetic overflow.
+
+```
+Bytes := import 'Bytes';
+
+pkt := Bytes.new(6);
+Bytes.write_u16_be(pkt, 0, 0xCAFE);   // magic
+Bytes.write_u32_be(pkt, 2, 1500);     // length
+Bytes.read_u16_be(pkt, 0)             // 51966
 ```
 
 ### 13.3 Source-stdlib modules (v0.3)
@@ -1197,6 +1262,19 @@ collapsing duplicates. Like `Map`, a `Set` is not JSON-serializable.
 `split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
 `starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`,
 `repeat`, `chars`, `pad_start`, `pad_end`, `format`, `printf`.
+
+v0.13 adds targeted text helpers: `words` (split on whitespace runs,
+dropping empties), `lines` (split on `\n`/`\r\n`), `split_any` (split
+on any char in a delimiter set), `find_all` (byte offsets of every
+non-overlapping match), `count` (non-overlapping match count),
+`replace_first` (replace one match only), `reverse`, `strip_prefix`,
+`strip_suffix`, `capitalize` (uppercase the first char), `is_blank`
+(empty or all-whitespace), and `matches_glob`. Like `index_of`, the
+offsets `find_all` returns are byte offsets. `matches_glob(s, pattern)`
+is a whole-string shell-style match — `*` (any run), `?` (one char),
+`[abc]`/`[a-z]` classes, `[!...]` negation, `\` to escape a
+metacharacter — a small slice of pattern matching, not a full regular
+expression language; a malformed pattern raises.
 
 `format(value, spec)` (v0.9) renders one value through a spec
 mini-language and `printf(template, args)` (v0.9) fills a template;
@@ -1539,6 +1617,27 @@ These are genuinely undecided; pick when you reach them:
 - **Error handling**: panic-and-die (current 0.1) or recoverable runtime
   errors with `try`? Out of scope for v0.2.
 
+### 15.8 Optimization (v0.12)
+
+Two optional passes, both semantically invisible — they change neither
+the value a program produces nor the errors it raises:
+
+- **Constant folding** — an AST→AST pass between parsing and
+  compilation. A `BinOp`/`UnOp` whose operands are all literals is
+  replaced by the literal it evaluates to (`2 + 3` → `5`); a
+  fully-parenthesised literal expression collapses too. The folder must
+  mirror the VM's arithmetic exactly, and — critically — must **decline
+  to fold** any operation that would *raise* at runtime: integer
+  overflow (§6.2b), divide-by-zero, an out-of-range shift. Leaving
+  those unfolded keeps the catchable error and its source line intact.
+- **Peephole — jump threading** — a pass over finished bytecode. A
+  forward jump whose target is an unconditional jump is retargeted past
+  it. Only operand bytes change; code does not move, so the line table
+  needs no fixup.
+
+Both are verifiable with the `tigr disasm` listing. Neither is required
+for a conforming implementation.
+
 ---
 
 ## Appendix A — Migration from 0.1
@@ -1833,3 +1932,41 @@ Additive changes:
     and `allocated` / `freed` the lifetime totals. Read-only: collection
     itself is automatic and cannot be forced from tigr code. Intended
     for tests and for observing memory behaviour.
+
+## Appendix K — Changes in v0.13
+
+48. **`String` text helpers** (§13.3). Twelve targeted additions to the
+    `String` module, all additive: `words`, `lines`, and `split_any`
+    cover the splitting cases the literal-separator `split` cannot —
+    runs of whitespace, line breaks, and a set of delimiter characters.
+    `find_all` returns the byte offsets of every non-overlapping match
+    of a substring and `count` returns how many there are. `replace_first`
+    replaces a single match where `replace` replaces all. `reverse`,
+    `strip_prefix`, `strip_suffix`, and `capitalize` are
+    self-explanatory; `is_blank` reports whether a string is empty or
+    all-whitespace. `matches_glob(s, pattern)` is a whole-string
+    shell-style match — `*` matches any run of characters, `?` exactly
+    one, `[abc]` / `[a-z]` a character class, `[!...]` a negated class,
+    and `\` escapes a metacharacter. It is a deliberately small slice of
+    pattern-as-data matching, not a regular-expression engine; a
+    malformed pattern (an unterminated `[`, a dangling `\`) raises a
+    catchable error. A full `Regex` module remains deferred — see the
+    roadmap.
+
+49. **`Bytes` type + binary IO** (§13.2). A new value type — a mutable,
+    GC-managed byte buffer — alongside the `Bytes` module that builds
+    and converts it, and three binary `IO` entries (`read_bytes`,
+    `write_bytes`, `append_bytes`). `Bytes` is the binary counterpart to
+    the UTF-8-only `String`: it is indexable (bytes read as `Int`
+    0–255), `#`-measurable, `for`-iterable, spreadable, concatenable
+    with `+`/`+=`, and content-compared with `==`. `String` ⇄ `Bytes`
+    conversion is explicit and the decode direction (`to_string`) raises
+    a catchable `decode` error on invalid UTF-8; `Bytes` ⇄ `[Int]`,
+    hex, and base64 conversions round-trip. For binary-protocol work the
+    module carries a named family of fixed-width integer readers and
+    writers — `read_u32_be`, `write_i16_le`, and so on — so a call site
+    states its width and endianness without a magic argument. An
+    unsigned 64-bit read above the `Int` range raises a catchable
+    `overflow`, consistent with v0.8. `Bytes` is the prerequisite for
+    future networking and non-text-file work; streaming IO (file and
+    socket handles) remains deferred.

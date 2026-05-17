@@ -27,6 +27,19 @@ pub fn module() -> Value {
         ("repeat",      native("repeat",      Arity::Exact(2), s_repeat)),
         ("chars",       native("chars",       Arity::Exact(1), s_chars)),
         ("format",      native("format",      Arity::Exact(2), s_format)),
+
+        // v0.13 — "String II" targeted text helpers.
+        ("words",         native("words",         Arity::Exact(1), s_words)),
+        ("lines",         native("lines",         Arity::Exact(1), s_lines)),
+        ("split_any",     native("split_any",     Arity::Exact(2), s_split_any)),
+        ("find_all",      native("find_all",      Arity::Exact(2), s_find_all)),
+        ("count",         native("count",         Arity::Exact(2), s_count)),
+        ("replace_first", native("replace_first", Arity::Exact(3), s_replace_first)),
+        ("matches_glob",  native("matches_glob",  Arity::Exact(2), s_matches_glob)),
+        ("reverse",       native("reverse",       Arity::Exact(1), s_reverse)),
+        ("strip_prefix",  native("strip_prefix",  Arity::Exact(2), s_strip_prefix)),
+        ("strip_suffix",  native("strip_suffix",  Arity::Exact(2), s_strip_suffix)),
+        ("capitalize",    native("capitalize",    Arity::Exact(1), s_capitalize)),
     ])
 }
 
@@ -148,6 +161,239 @@ fn s_chars(args: &[Value]) -> Result<Value, RuntimeError> {
         .map(|c| Value::Str(c.to_string().into()))
         .collect();
     Ok(Value::Array(gc::alloc_array(parts)))
+}
+
+// --- v0.13 "String II" — targeted text helpers ----------------------
+
+/// Build a `Value::Array` of strings from an iterator of `&str`.
+fn str_array<'a>(it: impl Iterator<Item = &'a str>) -> Value {
+    Value::Array(gc::alloc_array(it.map(|p| Value::Str(p.into())).collect()))
+}
+
+/// Split on runs of whitespace, dropping empty leading/trailing/inner
+/// fields — unlike `split`, which only takes a literal separator.
+fn s_words(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "words")?;
+    Ok(str_array(s.split_whitespace()))
+}
+
+/// Split into lines on `\n` / `\r\n`; a trailing newline does not
+/// produce a final empty line (matches Rust's `str::lines`).
+fn s_lines(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "lines")?;
+    Ok(str_array(s.lines()))
+}
+
+/// Split on *any* char present in `delims`. An empty `delims` yields
+/// the whole string unsplit. Adjacent delimiters yield empty fields,
+/// consistent with `split`.
+fn s_split_any(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "split_any")?;
+    let delims = as_str(&args[1], "split_any")?;
+    if delims.is_empty() {
+        return Ok(str_array(std::iter::once(s)));
+    }
+    let set: Vec<char> = delims.chars().collect();
+    Ok(str_array(s.split(|c| set.contains(&c))))
+}
+
+/// Byte offsets of every non-overlapping occurrence of `needle`. An
+/// empty `needle` yields an empty array. (Bytes, not chars — matches
+/// `index_of`.)
+fn s_find_all(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "find_all")?;
+    let needle = as_str(&args[1], "find_all")?;
+    let mut out: Vec<Value> = Vec::new();
+    if !needle.is_empty() {
+        let mut start = 0;
+        while let Some(i) = s[start..].find(needle) {
+            let abs = start + i;
+            out.push(Value::Int(abs as i64));
+            start = abs + needle.len();
+        }
+    }
+    Ok(Value::Array(gc::alloc_array(out)))
+}
+
+/// Count non-overlapping occurrences of `needle`. Empty `needle` → 0.
+fn s_count(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "count")?;
+    let needle = as_str(&args[1], "count")?;
+    let n = if needle.is_empty() { 0 } else { s.matches(needle).count() };
+    Ok(Value::Int(n as i64))
+}
+
+/// Replace only the first occurrence of `from`. An empty `from`
+/// returns the source unchanged (mirrors `replace`).
+fn s_replace_first(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "replace_first")?;
+    let from = as_str(&args[1], "replace_first")?;
+    let to = as_str(&args[2], "replace_first")?;
+    if from.is_empty() {
+        return Ok(Value::Str(s.into()));
+    }
+    Ok(Value::Str(s.replacen(from, to, 1).into()))
+}
+
+/// Reverse by Unicode scalar values (not bytes).
+fn s_reverse(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "reverse")?;
+    Ok(Value::Str(s.chars().rev().collect::<String>().into()))
+}
+
+/// `s` without `prefix` if it starts with it, else `s` unchanged.
+fn s_strip_prefix(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "strip_prefix")?;
+    let prefix = as_str(&args[1], "strip_prefix")?;
+    Ok(Value::Str(s.strip_prefix(prefix).unwrap_or(s).into()))
+}
+
+/// `s` without `suffix` if it ends with it, else `s` unchanged.
+fn s_strip_suffix(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "strip_suffix")?;
+    let suffix = as_str(&args[1], "strip_suffix")?;
+    Ok(Value::Str(s.strip_suffix(suffix).unwrap_or(s).into()))
+}
+
+/// Uppercase the first char; the rest of the string is left as-is.
+fn s_capitalize(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "capitalize")?;
+    let mut it = s.chars();
+    let out = match it.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + it.as_str(),
+    };
+    Ok(Value::Str(out.into()))
+}
+
+// --- glob matching --------------------------------------------------
+//
+// `matches_glob(s, pattern)` is a whole-string shell-style match — a
+// deliberately small slice of pattern-as-data, *not* a regex engine:
+//
+//   *        any run of chars, including empty
+//   ?        exactly one char
+//   [abc]    one char from a set; ranges `a-z`; `[!...]` negates
+//   \* \? \[ \\   escape a metacharacter
+//
+// Matching runs the classic linear two-pointer scan with a single
+// backtrack point for the most recent `*` — O(n·m) worst case, no
+// recursion, no catastrophic backtracking.
+
+enum GlobTok {
+    Lit(char),
+    AnyOne,
+    Star,
+    Class { negated: bool, ranges: Vec<(char, char)> },
+}
+
+/// Parse a glob pattern into tokens, or raise on a malformed pattern.
+fn glob_parse(pattern: &str) -> Result<Vec<GlobTok>, RuntimeError> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let n = chars.len();
+    let mut toks = Vec::new();
+    let mut i = 0;
+    while i < n {
+        match chars[i] {
+            '*' => {
+                toks.push(GlobTok::Star);
+                i += 1;
+            }
+            '?' => {
+                toks.push(GlobTok::AnyOne);
+                i += 1;
+            }
+            '\\' => {
+                if i + 1 >= n {
+                    return Err(fmt_err("matches_glob", "dangling '\\' in pattern"));
+                }
+                toks.push(GlobTok::Lit(chars[i + 1]));
+                i += 2;
+            }
+            '[' => {
+                let mut j = i + 1;
+                let negated = j < n && (chars[j] == '!' || chars[j] == '^');
+                if negated {
+                    j += 1;
+                }
+                let mut ranges: Vec<(char, char)> = Vec::new();
+                let class_start = j;
+                loop {
+                    if j >= n {
+                        return Err(fmt_err(
+                            "matches_glob",
+                            "unterminated '[' in pattern",
+                        ));
+                    }
+                    // A `]` is a literal only as the very first class
+                    // member; otherwise it closes the class.
+                    if chars[j] == ']' && j > class_start {
+                        j += 1;
+                        break;
+                    }
+                    // `a-z` range: a `-` flanked by two chars.
+                    if j + 2 < n && chars[j + 1] == '-' && chars[j + 2] != ']' {
+                        ranges.push((chars[j], chars[j + 2]));
+                        j += 3;
+                    } else {
+                        ranges.push((chars[j], chars[j]));
+                        j += 1;
+                    }
+                }
+                toks.push(GlobTok::Class { negated, ranges });
+                i = j;
+            }
+            c => {
+                toks.push(GlobTok::Lit(c));
+                i += 1;
+            }
+        }
+    }
+    Ok(toks)
+}
+
+/// Does a single non-`Star` token match exactly one char `c`?
+fn glob_tok_matches(tok: &GlobTok, c: char) -> bool {
+    match tok {
+        GlobTok::Lit(l) => *l == c,
+        GlobTok::AnyOne => true,
+        GlobTok::Class { negated, ranges } => {
+            let hit = ranges.iter().any(|(lo, hi)| *lo <= c && c <= *hi);
+            hit != *negated
+        }
+        GlobTok::Star => unreachable!("Star handled by the scanner"),
+    }
+}
+
+fn s_matches_glob(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = as_str(&args[0], "matches_glob")?;
+    let pattern = as_str(&args[1], "matches_glob")?;
+    let toks = glob_parse(pattern)?;
+    let text: Vec<char> = s.chars().collect();
+
+    let mut ti = 0;
+    let mut pi = 0;
+    let mut star: Option<(usize, usize)> = None; // (token index, text index)
+    while ti < text.len() {
+        if pi < toks.len() && matches!(toks[pi], GlobTok::Star) {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if pi < toks.len() && glob_tok_matches(&toks[pi], text[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if let Some((sp, st)) = star {
+            // Backtrack: let the last `*` swallow one more char.
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return Ok(Value::Bool(false));
+        }
+    }
+    while pi < toks.len() && matches!(toks[pi], GlobTok::Star) {
+        pi += 1;
+    }
+    Ok(Value::Bool(pi == toks.len()))
 }
 
 // --- String.format: a printf-flavoured per-value formatter ----------
@@ -488,4 +734,175 @@ fn s_format(args: &[Value]) -> Result<Value, RuntimeError> {
         Some(c) => return Err(fmt_err("format", &format!("unknown type code '{c}'"))),
     };
     Ok(Value::Str(out.into()))
+}
+
+// --- tests ----------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(f: fn(&[Value]) -> Result<Value, RuntimeError>, args: &[Value]) -> Value {
+        f(args).expect("native call should succeed")
+    }
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    fn strs(v: &Value) -> Vec<String> {
+        match v {
+            Value::Array(a) => a
+                .borrow()
+                .iter()
+                .map(|e| match e {
+                    Value::Str(t) => t.to_string(),
+                    other => panic!("expected Str, got {}", other.type_name()),
+                })
+                .collect(),
+            other => panic!("expected Array, got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn words_splits_on_whitespace_runs() {
+        assert_eq!(
+            strs(&call(s_words, &[s("  foo   bar\t baz\n")])),
+            ["foo", "bar", "baz"]
+        );
+        assert!(strs(&call(s_words, &[s("   ")])).is_empty());
+    }
+
+    #[test]
+    fn lines_handles_crlf_and_no_trailing_empty() {
+        assert_eq!(
+            strs(&call(s_lines, &[s("a\nb\r\nc")])),
+            ["a", "b", "c"]
+        );
+        assert_eq!(strs(&call(s_lines, &[s("a\n")])), ["a"]);
+    }
+
+    #[test]
+    fn split_any_splits_on_each_delim() {
+        assert_eq!(
+            strs(&call(s_split_any, &[s("a,b;c d"), s(",; ")])),
+            ["a", "b", "c", "d"]
+        );
+        // empty delims → whole string unsplit
+        assert_eq!(strs(&call(s_split_any, &[s("abc"), s("")])), ["abc"]);
+    }
+
+    #[test]
+    fn find_all_reports_byte_offsets() {
+        let v = call(s_find_all, &[s("café! café!"), s("café")]);
+        match v {
+            Value::Array(a) => {
+                let got: Vec<i64> = a
+                    .borrow()
+                    .iter()
+                    .map(|e| match e {
+                        Value::Int(n) => *n,
+                        _ => panic!("expected Int"),
+                    })
+                    .collect();
+                // 'é' is two bytes, so the second match is at byte 7.
+                assert_eq!(got, [0, 7]);
+            }
+            _ => panic!("expected Array"),
+        }
+        // empty needle → no matches
+        assert!(strs(&call(s_find_all, &[s("abc"), s("")])).is_empty());
+        // overlap is not double-counted
+        let v = call(s_find_all, &[s("aaaa"), s("aa")]);
+        if let Value::Array(a) = v {
+            assert_eq!(a.borrow().len(), 2);
+        }
+    }
+
+    #[test]
+    fn count_is_non_overlapping() {
+        assert!(matches!(call(s_count, &[s("aaaa"), s("aa")]), Value::Int(2)));
+        assert!(matches!(call(s_count, &[s("abc"), s("")]), Value::Int(0)));
+    }
+
+    #[test]
+    fn replace_first_replaces_one() {
+        assert_eq!(
+            call(s_replace_first, &[s("a-a-a"), s("a"), s("X")]),
+            s("X-a-a")
+        );
+        // empty `from` → unchanged
+        assert_eq!(call(s_replace_first, &[s("ab"), s(""), s("X")]), s("ab"));
+    }
+
+    #[test]
+    fn reverse_is_char_wise() {
+        assert_eq!(call(s_reverse, &[s("abç")]), s("çba"));
+    }
+
+    #[test]
+    fn strip_prefix_suffix() {
+        assert_eq!(call(s_strip_prefix, &[s("foobar"), s("foo")]), s("bar"));
+        assert_eq!(call(s_strip_prefix, &[s("foobar"), s("xyz")]), s("foobar"));
+        assert_eq!(call(s_strip_suffix, &[s("foobar"), s("bar")]), s("foo"));
+        assert_eq!(call(s_strip_suffix, &[s("foobar"), s("xyz")]), s("foobar"));
+    }
+
+    #[test]
+    fn capitalize_uppercases_first_char() {
+        assert_eq!(call(s_capitalize, &[s("hello")]), s("Hello"));
+        assert_eq!(call(s_capitalize, &[s("")]), s(""));
+        assert_eq!(call(s_capitalize, &[s("ABC")]), s("ABC"));
+    }
+
+    fn glob(text: &str, pat: &str) -> bool {
+        match call(s_matches_glob, &[s(text), s(pat)]) {
+            Value::Bool(b) => b,
+            _ => panic!("expected Bool"),
+        }
+    }
+
+    #[test]
+    fn glob_literals_and_wildcards() {
+        assert!(glob("readme.txt", "*.txt"));
+        assert!(!glob("readme.md", "*.txt"));
+        assert!(glob("abc", "a?c"));
+        assert!(!glob("ac", "a?c"));
+        assert!(glob("anything", "*"));
+        assert!(glob("", "*"));
+        assert!(glob("", ""));
+        assert!(!glob("x", ""));
+        assert!(glob("a.b.c", "*.*"));
+    }
+
+    #[test]
+    fn glob_classes_ranges_and_negation() {
+        assert!(glob("cat", "[cb]at"));
+        assert!(!glob("rat", "[cb]at"));
+        assert!(glob("file7", "file[0-9]"));
+        assert!(!glob("fileX", "file[0-9]"));
+        assert!(glob("xat", "[!cb]at"));
+        assert!(!glob("cat", "[!cb]at"));
+    }
+
+    #[test]
+    fn glob_escapes_metacharacters() {
+        assert!(glob("a*b", "a\\*b"));
+        assert!(!glob("axb", "a\\*b"));
+        assert!(glob("[x]", "\\[x\\]"));
+    }
+
+    #[test]
+    fn glob_rejects_malformed_patterns() {
+        assert!(s_matches_glob(&[s("x"), s("[abc")]).is_err());
+        assert!(s_matches_glob(&[s("x"), s("ab\\")]).is_err());
+    }
+
+    #[test]
+    fn glob_star_backtracks() {
+        // The classic case a naive matcher gets wrong.
+        assert!(glob("abcabd", "a*bd"));
+        assert!(glob("aXbXcXd", "a*b*c*d"));
+        assert!(!glob("aXbXcX", "a*b*c*d"));
+    }
 }

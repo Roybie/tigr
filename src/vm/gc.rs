@@ -272,6 +272,9 @@ pub struct Heap {
     objects: Arena<IndexMap<Rc<str>, Value>>,
     maps: Arena<IndexMap<MapKey, Value>>,
     sets: Arena<IndexSet<MapKey>>,
+    /// v0.13 — `Bytes` buffers. A `Vec<u8>` owns no handles, so this
+    /// arena is a GC leaf (marked, never traced).
+    bytes: Arena<Vec<u8>>,
     iters: Arena<IterState>,
     closures: Arena<Closure>,
     upvalues: Arena<Upvalue>,
@@ -291,6 +294,7 @@ impl Heap {
             objects: Arena::new(),
             maps: Arena::new(),
             sets: Arena::new(),
+            bytes: Arena::new(),
             iters: Arena::new(),
             closures: Arena::new(),
             upvalues: Arena::new(),
@@ -317,6 +321,7 @@ impl Heap {
             + self.objects.sweep()
             + self.maps.sweep()
             + self.sets.sweep()
+            + self.bytes.sweep()
             + self.iters.sweep()
             + self.closures.sweep()
             + self.upvalues.sweep()
@@ -377,6 +382,7 @@ gc_kind!(ArrayKind, Vec<Value>, arrays, alloc_array);
 gc_kind!(ObjectKind, IndexMap<Rc<str>, Value>, objects, alloc_object);
 gc_kind!(MapKind, IndexMap<MapKey, Value>, maps, alloc_map);
 gc_kind!(SetKind, IndexSet<MapKey>, sets, alloc_set);
+gc_kind!(BytesKind, Vec<u8>, bytes, alloc_bytes);
 gc_kind!(IterKind, IterState, iters, alloc_iter);
 gc_kind!(ClosureKind, Closure, closures, alloc_closure);
 gc_kind!(UpvalueKind, Upvalue, upvalues, alloc_upvalue);
@@ -434,6 +440,10 @@ impl<'h> Marker<'h> {
         // Sets hold only primitive keys — nothing managed to trace, so
         // marking the slot is the whole job.
         self.heap.sets.mark(r.index, r.generation);
+    }
+    pub fn mark_bytes(&mut self, r: GcRef<BytesKind>) {
+        // A `Vec<u8>` owns no handles — marking the slot is the whole job.
+        self.heap.bytes.mark(r.index, r.generation);
     }
     pub fn mark_iter(&mut self, r: GcRef<IterKind>) {
         if self.heap.iters.mark(r.index, r.generation) {
@@ -493,6 +503,7 @@ impl Trace for Value {
             Value::Object(r) => m.mark_object(*r),
             Value::Map(r) => m.mark_map(*r),
             Value::Set(r) => m.mark_set(*r),
+            Value::Bytes(r) => m.mark_bytes(*r),
             Value::Iter(r) => m.mark_iter(*r),
             Value::Function(r) => m.mark_closure(*r),
             Value::Null
@@ -541,6 +552,7 @@ impl Trace for IterState {
             | IterState::IterObject { object, .. } => m.mark_object(*object),
             IterState::Map { map, .. } => m.mark_map(*map),
             IterState::Set { set, .. } => m.mark_set(*set),
+            IterState::Bytes { bytes, .. } => m.mark_bytes(*bytes),
             IterState::Range { .. } | IterState::String { .. } => {}
         }
     }

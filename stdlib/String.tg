@@ -21,6 +21,22 @@ ${
     chars:       _n.chars,
     format:      _n.format,
 
+    // v0.13 "String II" — targeted text helpers (native).
+    words:         _n.words,
+    lines:         _n.lines,
+    split_any:     _n.split_any,
+    find_all:      _n.find_all,
+    count:         _n.count,
+    replace_first: _n.replace_first,
+    matches_glob:  _n.matches_glob,
+    reverse:       _n.reverse,
+    strip_prefix:  _n.strip_prefix,
+    strip_suffix:  _n.strip_suffix,
+    capitalize:    _n.capitalize,
+
+    // True when `s` is empty or contains only whitespace.
+    is_blank: fn(s) { #_n.trim(s) == 0 },
+
     // Join with a separator, stringifying via `str`.
     join: fn(parts, sep) {
         if #parts == 0 { return '' };

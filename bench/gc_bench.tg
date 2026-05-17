@@ -1,0 +1,10 @@
+// Allocation churn — builds many short-lived objects and arrays so
+// the tracing GC has live work to trace and reclaim between safepoints.
+
+sink := 0;
+for (i, 0..120000) {
+    node := ${ id: i, pair: [i, i + 1], tag: 'n{i}' };
+    sink = sink + node.id;
+};
+
+sink

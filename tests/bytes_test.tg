@@ -1,0 +1,192 @@
+// tests/bytes_test.tg — v0.13 "Bytes": the mutable byte-buffer type.
+//
+// Exercises construction, conversions (incl. catchable decode / bad-hex
+// / bad-base64 errors), buffer ops, the value-type operators
+// (indexing, `#`, slicing, `for`, `+`, `+=`, `==`), and the full named
+// integer pack/unpack family. Run directly (`tigr tests/bytes_test.tg`)
+// or via discovery (`tigr test`).
+
+Test  := import 'Test';
+Bytes := import 'Bytes';
+
+[
+    Test.suite('Bytes — construction', [
+        Test.case('new fills with zero', fn() {
+            Test.assert_eq(Bytes.to_array(Bytes.new(3)), [0, 0, 0])
+        }),
+        Test.case('new with a fill byte', fn() {
+            Test.assert_eq(Bytes.to_array(Bytes.new(3, 0xff)), [255, 255, 255])
+        }),
+        Test.case('new with a negative length raises', fn() {
+            Test.assert_raises(fn() { Bytes.new(-1) })
+        }),
+        Test.case('from_array packs Ints', fn() {
+            Test.assert_eq(Bytes.to_array(Bytes.from_array([1, 2, 255])), [1, 2, 255])
+        }),
+        Test.case('from_array rejects out-of-range elements', fn() {
+            Test.assert_raises(fn() { Bytes.from_array([1, 256]) });
+            Test.assert_raises(fn() { Bytes.from_array([1, -1]) });
+            Test.assert_raises(fn() { Bytes.from_array(['x']) })
+        }),
+        Test.case('type() of a buffer is "bytes"', fn() {
+            Test.assert_eq(type(Bytes.new(1)), 'bytes')
+        }),
+    ]),
+
+    Test.suite('Bytes — conversions', [
+        Test.case('string round-trips through UTF-8', fn() {
+            Test.assert_eq(Bytes.to_string(Bytes.from_string('héllo')), 'héllo')
+        }),
+        Test.case('from_string encodes UTF-8 byte-wise', fn() {
+            // 'é' is two UTF-8 bytes, so '#' counts 6, not 5.
+            Test.assert_eq(#Bytes.from_string('héllo'), 6)
+        }),
+        Test.case('to_string on invalid UTF-8 raises a decode error', fn() {
+            Test.assert_raises(
+                fn() { Bytes.to_string(Bytes.from_array([0xff, 0xfe])) },
+                'decode')
+        }),
+        Test.case('hex round-trips', fn() {
+            Test.assert_eq(Bytes.to_hex(Bytes.from_array([0, 222, 173])), '00dead');
+            Test.assert_eq(Bytes.to_array(Bytes.from_hex('00dead')), [0, 222, 173])
+        }),
+        Test.case('from_hex ignores whitespace', fn() {
+            Test.assert_eq(Bytes.to_array(Bytes.from_hex('de ad')), [222, 173])
+        }),
+        Test.case('from_hex rejects bad input', fn() {
+            Test.assert_raises(fn() { Bytes.from_hex('abc') });
+            Test.assert_raises(fn() { Bytes.from_hex('zz') })
+        }),
+        Test.case('base64 round-trips', fn() {
+            Test.assert_eq(Bytes.to_base64(Bytes.from_string('foobar')), 'Zm9vYmFy');
+            Test.assert_eq(Bytes.to_string(Bytes.from_base64('Zm9vYmFy')), 'foobar')
+        }),
+        Test.case('from_base64 rejects bad input', fn() {
+            Test.assert_raises(fn() { Bytes.from_base64('abc') });
+            Test.assert_raises(fn() { Bytes.from_base64('****') })
+        }),
+    ]),
+
+    Test.suite('Bytes — operators', [
+        Test.case('indexing reads a byte as an Int', fn() {
+            b := Bytes.from_array([10, 20, 30]);
+            Test.assert_eq(b[0], 10);
+            Test.assert_eq(b[2], 30);
+            Test.assert_eq(b[-1], 30)
+        }),
+        Test.case('index assignment mutates in place', fn() {
+            b := Bytes.from_array([1, 2, 3]);
+            b[1] = 99;
+            Test.assert_eq(Bytes.to_array(b), [1, 99, 3])
+        }),
+        Test.case('index assignment rejects out-of-range bytes', fn() {
+            Test.assert_raises(fn() { b := Bytes.new(1); b[0] = 300 })
+        }),
+        Test.case('# is the byte count', fn() {
+            Test.assert_eq(#Bytes.new(7), 7);
+            Test.assert_eq(#Bytes.new(0), 0)
+        }),
+        Test.case('destructuring rest yields a Bytes tail', fn() {
+            [head, ...tail] := Bytes.from_array([1, 2, 3, 4]);
+            Test.assert_eq(head, 1);
+            Test.assert_eq(type(tail), 'bytes');
+            Test.assert_eq(Bytes.to_array(tail), [2, 3, 4])
+        }),
+        Test.case('for iterates index and byte', fn() {
+            total := 0;
+            seen := [];
+            for (i, byte, Bytes.from_array([5, 6, 7])) {
+                total = total + byte;
+                seen = seen + [i]
+            };
+            Test.assert_eq(total, 18);
+            Test.assert_eq(seen, [0, 1, 2])
+        }),
+        Test.case('spread expands to an array of Ints', fn() {
+            Test.assert_eq([...Bytes.from_array([9, 8])], [9, 8])
+        }),
+        Test.case('+ concatenates into a new buffer', fn() {
+            sum := Bytes.from_array([1, 2]) + Bytes.from_array([3]);
+            Test.assert_eq(Bytes.to_array(sum), [1, 2, 3])
+        }),
+        Test.case('+= extends in place', fn() {
+            b := Bytes.from_array([1]);
+            b += Bytes.from_array([2, 3]);
+            Test.assert_eq(Bytes.to_array(b), [1, 2, 3])
+        }),
+        Test.case('== is structural', fn() {
+            Test.assert(Bytes.from_array([1, 2]) == Bytes.from_array([1, 2]));
+            Test.assert(Bytes.from_array([1, 2]) != Bytes.from_array([1, 3]))
+        }),
+    ]),
+
+    Test.suite('Bytes — buffer ops', [
+        Test.case('push appends one byte', fn() {
+            b := Bytes.new(0);
+            Bytes.push(b, 7);
+            Bytes.push(b, 8);
+            Test.assert_eq(Bytes.to_array(b), [7, 8])
+        }),
+        Test.case('extend appends another buffer', fn() {
+            b := Bytes.from_array([1]);
+            Bytes.extend(b, Bytes.from_array([2, 3]));
+            Test.assert_eq(Bytes.to_array(b), [1, 2, 3])
+        }),
+        Test.case('slice extracts a sub-range', fn() {
+            src := Bytes.from_array([1, 2, 3, 4, 5]);
+            Test.assert_eq(Bytes.to_array(Bytes.slice(src, 1, 3)), [2, 3]);
+            // the source is untouched
+            Test.assert_eq(#src, 5)
+        }),
+        Test.case('concat joins without mutating', fn() {
+            a := Bytes.from_array([1]);
+            joined := Bytes.concat(a, Bytes.from_array([2]));
+            Test.assert_eq(Bytes.to_array(joined), [1, 2]);
+            Test.assert_eq(#a, 1)
+        }),
+    ]),
+
+    Test.suite('Bytes — integer pack/unpack', [
+        Test.case('write then read round-trips, big-endian', fn() {
+            b := Bytes.new(4);
+            Bytes.write_u32_be(b, 0, 0x01020304);
+            Test.assert_eq(Bytes.to_array(b), [1, 2, 3, 4]);
+            Test.assert_eq(Bytes.read_u32_be(b, 0), 0x01020304)
+        }),
+        Test.case('endianness is honoured', fn() {
+            b := Bytes.from_array([0x34, 0x12]);
+            Test.assert_eq(Bytes.read_u16_be(b, 0), 0x3412);
+            Test.assert_eq(Bytes.read_u16_le(b, 0), 0x1234)
+        }),
+        Test.case('reads at an offset', fn() {
+            b := Bytes.from_array([0, 0, 0xab, 0xcd]);
+            Test.assert_eq(Bytes.read_u16_be(b, 2), 0xabcd)
+        }),
+        Test.case('signed reads sign-extend', fn() {
+            Test.assert_eq(Bytes.read_i8(Bytes.from_array([0xff]), 0), -1);
+            Test.assert_eq(Bytes.read_i16_be(Bytes.from_array([0xff, 0xff]), 0), -1);
+            Test.assert_eq(Bytes.read_i8(Bytes.from_array([0x7f]), 0), 127)
+        }),
+        Test.case('signed write round-trips', fn() {
+            b := Bytes.new(2);
+            Bytes.write_i16_le(b, 0, -2);
+            Test.assert_eq(Bytes.read_i16_le(b, 0), -2)
+        }),
+        Test.case('a read past the end raises', fn() {
+            Test.assert_raises(fn() { Bytes.read_u32_be(Bytes.new(2), 0) });
+            Test.assert_raises(fn() { Bytes.read_u8(Bytes.new(1), 5) })
+        }),
+        Test.case('an unsigned 64-bit value above the Int range overflows', fn() {
+            big := Bytes.from_array([255, 255, 255, 255, 255, 255, 255, 255]);
+            Test.assert_raises(fn() { Bytes.read_u64_be(big, 0) }, 'overflow')
+        }),
+        Test.case('a write that does not fit the field raises', fn() {
+            Test.assert_raises(fn() { Bytes.write_u8(Bytes.new(1), 0, 256) });
+            Test.assert_raises(fn() { Bytes.write_u16_be(Bytes.new(2), 0, -1) });
+            Test.assert_raises(fn() { Bytes.write_i8(Bytes.new(1), 0, 200) })
+        }),
+        Test.case('a write past the end raises', fn() {
+            Test.assert_raises(fn() { Bytes.write_u32_be(Bytes.new(2), 0, 1) })
+        }),
+    ]),
+]

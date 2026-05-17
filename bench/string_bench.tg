@@ -1,0 +1,9 @@
+// String building by repeated concatenation with interpolation.
+// Stresses string allocation and the interpolation ConcatN path.
+
+acc := '';
+for (i, 0..8000) {
+    acc = acc + 'item-{i};';
+};
+
+#acc

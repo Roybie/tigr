@@ -1,0 +1,11 @@
+// Tight arithmetic loop. Several sub-expressions have only literal
+// operands — (100 * 100), (3 + 4) * 2, 2 ^^ 8, 64 / 8 — so v0.12
+// constant folding evaluates them once at compile time rather than
+// on every one of the 400k iterations.
+
+total := 0;
+for (i, 0..400000) {
+    total = total + (i % (100 * 100)) + (3 + 4) * 2 - (2 ^^ 8) + (64 / 8);
+};
+
+total

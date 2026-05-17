@@ -1,0 +1,137 @@
+// tests/string_test.tg — v0.13 "String II": targeted text helpers.
+//
+// Exercises the helpers added to the `String` module in v0.13 —
+// `words`, `lines`, `split_any`, `find_all`, `count`, `replace_first`,
+// `matches_glob`, `reverse`, `strip_prefix`, `strip_suffix`,
+// `capitalize`, and `is_blank`. Run directly (`tigr tests/string_test.tg`)
+// or via discovery (`tigr test`).
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test   := import 'Test';
+String := import 'String';
+
+[
+    Test.suite('String — splitting', [
+        Test.case('words splits on runs of whitespace', fn() {
+            Test.assert_eq(
+                String.words('  foo   bar\t baz\n'),
+                ['foo', 'bar', 'baz'])
+        }),
+        Test.case('words on all-whitespace is empty', fn() {
+            Test.assert_eq(String.words('   \t\n'), [])
+        }),
+        Test.case('lines splits on \\n and \\r\\n', fn() {
+            Test.assert_eq(String.lines('a\nb\r\nc'), ['a', 'b', 'c'])
+        }),
+        Test.case('lines drops no-trailing-empty for a final newline', fn() {
+            Test.assert_eq(String.lines('a\nb\n'), ['a', 'b'])
+        }),
+        Test.case('split_any splits on any delimiter char', fn() {
+            Test.assert_eq(
+                String.split_any('a,b;c d', ',; '),
+                ['a', 'b', 'c', 'd'])
+        }),
+        Test.case('split_any with empty delims is the whole string', fn() {
+            Test.assert_eq(String.split_any('abc', ''), ['abc'])
+        }),
+    ]),
+
+    Test.suite('String — search', [
+        Test.case('find_all reports byte offsets', fn() {
+            // 'é' is two bytes, so the second match starts at byte 7.
+            Test.assert_eq(String.find_all('café! café!', 'café'), [0, 7])
+        }),
+        Test.case('find_all is non-overlapping', fn() {
+            Test.assert_eq(String.find_all('aaaa', 'aa'), [0, 2])
+        }),
+        Test.case('find_all with no match is empty', fn() {
+            Test.assert_eq(String.find_all('abc', 'z'), [])
+        }),
+        Test.case('find_all with an empty needle is empty', fn() {
+            Test.assert_eq(String.find_all('abc', ''), [])
+        }),
+        Test.case('count is non-overlapping', fn() {
+            Test.assert_eq(String.count('aaaa', 'aa'), 2);
+            Test.assert_eq(String.count('a-b-c', '-'), 2);
+            Test.assert_eq(String.count('abc', ''), 0)
+        }),
+    ]),
+
+    Test.suite('String — transform', [
+        Test.case('replace_first replaces only the first match', fn() {
+            Test.assert_eq(String.replace_first('a-a-a', 'a', 'X'), 'X-a-a')
+        }),
+        Test.case('replace_first with an empty from is unchanged', fn() {
+            Test.assert_eq(String.replace_first('ab', '', 'X'), 'ab')
+        }),
+        Test.case('reverse reverses by character', fn() {
+            Test.assert_eq(String.reverse('abç'), 'çba')
+        }),
+        Test.case('strip_prefix removes a present prefix', fn() {
+            Test.assert_eq(String.strip_prefix('foobar', 'foo'), 'bar')
+        }),
+        Test.case('strip_prefix leaves an absent prefix alone', fn() {
+            Test.assert_eq(String.strip_prefix('foobar', 'xyz'), 'foobar')
+        }),
+        Test.case('strip_suffix removes a present suffix', fn() {
+            Test.assert_eq(String.strip_suffix('foobar', 'bar'), 'foo')
+        }),
+        Test.case('strip_suffix leaves an absent suffix alone', fn() {
+            Test.assert_eq(String.strip_suffix('foobar', 'xyz'), 'foobar')
+        }),
+        Test.case('capitalize uppercases the first char only', fn() {
+            Test.assert_eq(String.capitalize('hello'), 'Hello');
+            Test.assert_eq(String.capitalize('ABC'), 'ABC');
+            Test.assert_eq(String.capitalize(''), '')
+        }),
+        Test.case('is_blank is true for empty and whitespace', fn() {
+            Test.assert(String.is_blank(''));
+            Test.assert(String.is_blank('  \t\n'));
+            Test.assert(!String.is_blank('  x  '))
+        }),
+    ]),
+
+    Test.suite('String — matches_glob', [
+        Test.case('* matches any run including empty', fn() {
+            Test.assert(String.matches_glob('readme.txt', '*.txt'));
+            Test.assert(!String.matches_glob('readme.md', '*.txt'));
+            Test.assert(String.matches_glob('', '*'));
+            Test.assert(String.matches_glob('', ''))
+        }),
+        Test.case('? matches exactly one char', fn() {
+            Test.assert(String.matches_glob('abc', 'a?c'));
+            Test.assert(!String.matches_glob('ac', 'a?c'))
+        }),
+        Test.case('character classes and ranges', fn() {
+            Test.assert(String.matches_glob('cat', '[cb]at'));
+            Test.assert(!String.matches_glob('rat', '[cb]at'));
+            Test.assert(String.matches_glob('file7', 'file[0-9]'));
+            Test.assert(!String.matches_glob('fileX', 'file[0-9]'))
+        }),
+        Test.case('negated classes', fn() {
+            Test.assert(String.matches_glob('xat', '[!cb]at'));
+            Test.assert(!String.matches_glob('cat', '[!cb]at'))
+        }),
+        Test.case('escaped metacharacters are literal', fn() {
+            Test.assert(String.matches_glob('a*b', 'a\\*b'));
+            Test.assert(!String.matches_glob('axb', 'a\\*b'))
+        }),
+        Test.case('* backtracks correctly', fn() {
+            Test.assert(String.matches_glob('abcabd', 'a*bd'));
+            Test.assert(String.matches_glob('aXbXcXd', 'a*b*c*d'));
+            Test.assert(!String.matches_glob('aXbXcX', 'a*b*c*d'))
+        }),
+        Test.case('a malformed pattern raises', fn() {
+            Test.assert_raises(fn() { String.matches_glob('x', '[abc') });
+            Test.assert_raises(fn() { String.matches_glob('x', 'ab\\') })
+        }),
+    ]),
+
+    Test.suite('String — type errors', [
+        Test.case('a non-string argument raises', fn() {
+            Test.assert_raises(fn() { String.words(42) });
+            Test.assert_raises(fn() { String.count('abc', 7) })
+        }),
+    ]),
+]

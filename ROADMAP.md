@@ -1,8 +1,10 @@
 # Tigr Roadmap
 
-Planned work beyond v0.7b. Four releases, all in the `v0.N` line — no
-jump to 1.0. Each numbered item keeps the reference number from the
-design discussion that produced this roadmap.
+Planned work beyond v0.7b. The `v0.N` line continues — v0.8–v0.11 are
+shipped, v0.12–v0.15 are planned below, and 1.0 is a stabilization
+release after them. Items 1–14 keep the reference number from the
+original design discussion; items 15+ were added in a later roadmap
+extension.
 
 Conventions for every release below:
 
@@ -227,6 +229,269 @@ Shipped as a standalone plugin repo —
 
 ---
 
+## v0.12 — Performance & developer tooling
+
+The first release to treat speed as the deliverable. The core is
+stable (v0.8) and the GC is sound (v0.10), so the VM can finally be
+optimized without chasing a moving target. Nothing here changes
+language semantics — all additive.
+
+Scope was set by measurement. A 300-run timing of the release binary
+showed process startup (~1.6 ms) dominates short runs, and the entire
+front end (lex+parse+compile, imports included) is only ~0.1–0.45 ms —
+so bytecode caching would save sub-millisecond. The originally-planned
+`tigr build` / `.tgc` item was therefore **cut** (moved to Deferred);
+the real win is faster *VM execution* of compute-heavy programs, which
+is what constant folding and the peephole pass deliver.
+
+### 15. Constant folding + peephole optimization  ✅ done  *(additive)*
+
+The compiler emits naive bytecode: `2 + 3` compiles to two `Const`
+pushes and an `Add`, literal arithmetic is never folded, and obvious
+sequences (a `Pop` after a dead `Const`, jump-to-jump chains) survive
+into the final chunk.
+
+- A constant-folding pass — over the AST, or post-compile over the
+  chunk — that evaluates literal arithmetic, bitwise ops, and string
+  concatenation at compile time.
+- A peephole pass over emitted bytecode: collapse jump-to-jump, drop
+  `Const`/`Pop` pairs, fuse common opcode runs.
+- `Chunk::disassemble()` makes every pass verifiable — add Rust tests
+  that assert the optimized opcode sequence, not just the result.
+- **Design detail:** folding must preserve v0.8 overflow semantics —
+  a literal `9223372036854775807 + 1` still raises `overflow` (or
+  becomes a compile error), never silently wraps.
+
+Shipped as two passes. **Constant folding** (`src/vm/fold.rs`) is an
+AST→AST rewrite between parse and compile: it folds arithmetic,
+bitwise, unary, and string-concat on literal operands, and collapses
+fully-parenthesised literals so the enclosing operator folds in turn.
+It mirrors the VM arithmetic exactly and **declines to fold** any
+operation that would raise — overflow, divide-by-zero, out-of-range
+shift — so the catchable error and its source line survive unchanged
+(no compile-error path was needed). **Peephole** shipped as jump
+threading only (`Chunk::thread_jumps`): a forward jump onto an
+unconditional `Jump` is retargeted past it (operands only, no code
+relocation). The code-shrinking dead-code pass was deferred (see
+Deferred). Measured: `loops_bench` −36%; benches without literal hot-
+path arithmetic unchanged — folding helps exactly where literal
+sub-expressions sit in a hot path.
+
+### 16. Bytecode serialization — `tigr build`  — cut, see Deferred.
+
+### 17. Disassembler CLI — `tigr disasm`  ✅ done  *(tooling)*
+
+`Chunk::disassemble()` already exists but nothing exposes it.
+
+- `tigr disasm <file.tg>` prints the human-readable bytecode listing
+  for a program — and, with a flag, for each nested function chunk.
+- Useful on its own; also the inspection tool for verifying item 15.
+
+Shipped as the `tigr disasm` subcommand (`src/disasm_runner.rs`),
+reusing the existing compile-without-run path; `-r`/`--nested`
+recurses into nested function chunks. The disassembler itself was
+fixed along the way — it had mishandled `Closure`'s variable-length
+operands (desyncing on any chunk with closures) — and now annotates
+jump targets with absolute offsets.
+
+### 18. Benchmark suite  ✅ done  *(tooling)*
+
+There is no committed performance baseline — the old
+`examples/v03/bench.tg` was removed.
+
+- A `bench/` directory of representative programs: recursion,
+  array/loop churn, string building, GC pressure.
+- A `tigr bench` runner (or a documented harness) reporting timings,
+  so item 15 gains are measurable and regressions are caught.
+- **Sequencing:** land this *before* item 15 and commit the
+  unoptimized numbers as the baseline — optimization gains can only be
+  shown as a delta against a recorded "before".
+
+Shipped as a `bench/` directory of four programs plus the `tigr bench`
+subcommand (`src/bench_runner.rs`), which times each file over an
+adaptive iteration count and reports min/mean. The pre-item-15
+baseline is recorded in `bench/README.md`. Timing is measured inside
+the process (front end + run, not startup), so it tracks exactly what
+the optimizer affects.
+
+Stretch / design work, not taken in v0.12: inline caching for member
+access, and NaN-boxing the `Value` representation — both larger VM
+reworks, now listed under Deferred.
+
+---
+
+## v0.13 — Standard library II
+
+The modules a "small but real" language eventually needs. All
+additive.
+
+### 19. `String` II — targeted text helpers  ✅ done  *(library)*
+
+`String` only offers literal search/replace, so any real text work —
+tokenizing, line handling, locating, pattern checks — is awkward.
+
+- Twelve additive `String` functions: `words`, `lines`, `split_any`,
+  `find_all`, `count`, `replace_first`, `reverse`, `strip_prefix`,
+  `strip_suffix`, `capitalize`, `is_blank`, and `matches_glob` (a
+  whole-string shell-style `*`/`?`/`[...]` matcher).
+- **Design detail — why not a `Regex` module.** Item 19 was originally
+  a full `Regex` module, with an open build-vs-buy question. Measuring
+  the `regex` crate showed a modest build cost (+1.35 s) but a near
+  doubling of binary size (+1.58 MiB, +4 crates). More to the point,
+  most "regex" needs — whitespace splitting, counting, line handling,
+  glob-style checks — are met by a handful of focused helpers without
+  an engine to maintain ("now you have two problems"). The one thing
+  they cannot do is **pattern-as-data** — matching a rule unknown until
+  runtime (a grep-like tool, user-authored config rules) — and no
+  concrete need for that exists in tigr today. So v0.13 ships these
+  helpers and `Regex` is deferred (see below), to be revisited when a
+  real pattern-as-data use case appears.
+
+Shipped as twelve `String` functions — eleven native in
+`src/vm/native_modules/string.rs`, plus `is_blank` in pure tigr.
+`matches_glob` is a linear two-pointer scan (no catastrophic
+backtracking); a malformed glob raises a catchable error.
+
+### 20. `Bytes` type + binary IO  ✅ done  *(value type + library)*
+
+`String` is UTF-8 only and `IO` is text only — there is no way to
+read a non-UTF-8 file, handle binary data, or (later) touch a socket.
+
+- A `Bytes` value type: a mutable, GC-managed byte buffer — indexable
+  (bytes as `Int` 0–255), `#`-length, `for`-iterable, spreadable,
+  concatenable with `+`/`+=`, content-compared with `==`. Slicing is
+  `Bytes.slice` plus array-destructuring `...rest` (tigr has no
+  user-facing `[a:]` slice operator).
+- Binary `IO`: `read_bytes` / `write_bytes` / `append_bytes`.
+- Conversions: `Bytes` ⇄ `String` (UTF-8; the decode direction raises
+  a catchable `decode` error), `Bytes` ⇄ `[Int]`, hex, and base64.
+- A named fixed-width integer family (`read_u32_be`, `write_i16_le`, …)
+  for binary-protocol work — self-documenting call sites over a
+  magic-argument `(width, endian)` pair.
+- **Design detail — streaming deferred.** Whole-buffer only:
+  `read_bytes`/`write_bytes` mirror `read_file`/`write_file`. Streaming
+  IO (stateful file/socket handles, `read(n)`, `seek`) is a separate
+  axis that arrives with networking — the mutable `Bytes` buffer is its
+  enabler. The prerequisite for any future networking or non-text-file
+  work.
+
+### 21. `BigInt`  *(value type — stretch)*
+
+A natural complement to v0.8's "overflow raises" decision: an
+arbitrary-precision integer for code that genuinely needs it —
+Project Euler problems already brush the `i64` ceiling.
+
+- A `BigInt` value type with the full arithmetic surface.
+- **Design detail:** explicit (`BigInt.new(n)`) vs. automatic
+  promotion on overflow. Automatic promotion is friendlier but
+  silently changes a value's type mid-computation and conflicts with
+  v0.8's catchable `overflow`. Recommend explicit. Stretch item —
+  drop to a later release if v0.13 runs long.
+
+---
+
+## v0.14 — Concurrency model
+
+The one design-led release, and possibly breaking. Everything below
+v0.14 is single-threaded; this release decides whether — and how —
+Tigr runs concurrent work.
+
+### 22. Concurrency model  *(design-led, possibly BREAKING)*
+
+The v0.10 GC is deliberately **per-thread** (`memory/
+v10-design-decisions.md`): a thread-local arena heap with `GcRef`
+handles. That decision forecloses shared-memory threading — a `Value`
+cannot safely cross threads — and pushes toward a message-passing
+model where each worker owns its own heap.
+
+Likely shape, to be confirmed before implementation:
+
+- **Message-passing actors / structured async**, not shared-memory
+  threads. Each unit of concurrency gets its own heap; communication
+  is by sending values down channels, which deep-copy across the heap
+  boundary.
+- New surface: spawning a task, a channel type, and a `select`/await
+  form — kept expression-oriented like the rest of the language.
+- **Open questions to settle first:** cooperative vs. OS threads;
+  whether channels copy or move; how an uncaught error in a worker
+  surfaces (extend the existing stack traces across the send
+  boundary); GC implications of one heap per worker.
+
+This item should get a dedicated design pass — quite possibly an
+explicit decision check with the project owner — before any code
+lands. It is the heaviest item on the extended roadmap.
+
+---
+
+## v0.15 — Editor & developer tooling  *(optional)*
+
+Make Tigr pleasant to *work in*. v0.11 shipped static Vim completion;
+this release adds the tools that need real program analysis. Pulls two
+items off the Deferred list.
+
+This release is **optional**: the language is feature-complete without
+it (see *Toward 1.0*), so it can land before or after 1.0 as
+developer-experience polish rather than gating the stable release.
+
+### 23. Formatter — `tigr fmt`  *(tooling)*
+
+A canonical-form pretty-printer over the AST.
+
+- `tigr fmt <file.tg>` rewrites in place; `tigr fmt --check` exits
+  non-zero on unformatted input (CI-friendly).
+- Reuses the existing parser; the only new code is AST → source.
+- **Design detail:** decide comment handling first. The parser must
+  retain comments (or attach them to AST nodes) or `fmt` drops them —
+  this may need a small lexer/parser change.
+
+### 24. Language server (LSP)  *(tooling — formerly Deferred)*
+
+The big editor-tooling unlock. A standalone LSP binary (`tigr lsp`, or
+a sibling crate) speaking the Language Server Protocol.
+
+- Tier 1: diagnostics — lex/parse/compile errors as you type,
+  reusing the existing error machinery.
+- Tier 2: scope-aware completion and go-to-definition — the
+  vim-tigr "tier 2" that v0.11 explicitly blocked on this.
+- Hover showing inferred binding kind / stdlib signatures.
+- **Design detail:** the compiler runs front-to-back and bails on the
+  first error. An LSP wants error-recovery parsing and a reusable
+  symbol table — scope this honestly; it may be the largest single
+  item on the extended roadmap.
+
+### 25. Test coverage reporting  *(tooling)*
+
+`tigr test` reports pass/fail counts but not what the suite exercised.
+
+- Instrument the VM (line hits via the source map); have
+  `tigr test --coverage` report per-file line coverage.
+- Optional: a coverage-threshold flag for CI.
+
+---
+
+## Toward 1.0
+
+After v0.14 the language is feature-complete in every dimension this
+roadmap treats as required: core semantics, diagnostics, stdlib,
+memory model, and concurrency. (The v0.15 editor-tooling release is
+optional — it may land before or after 1.0.) 1.0 is then a
+*stabilization* release, not a feature release:
+
+- **Spec freeze.** `LANGUAGE.md` becomes a compatibility contract;
+  further breaking changes require a 2.0.
+- **Compatibility statement.** Document what is and isn't guaranteed
+  stable — surface syntax, stdlib signatures, the `.tgc` format, the
+  embedding API if any.
+- **Legacy cleanup.** Either finish wiring `src/v01/` + the
+  `--legacy` flag back in, or remove both — a permanently dead flag
+  shouldn't ship in 1.0.
+- **Documentation pass.** README, LANGUAGE.md, and examples reviewed
+  end to end for the post-v0.14 surface.
+
+No new numbered items — 1.0 is the line under the existing ones.
+
+---
+
 ## Deferred
 
 - **Named function expressions** (item 3) — self-recursion of a bound
@@ -236,7 +501,30 @@ Shipped as a standalone plugin repo —
   recursive call from the binding name — largely redundant with a
   future block-level hoisting of `fn` bindings, which would also give
   ergonomic *mutual* recursion. Revisit hoisting if it proves needed.
-- **Language server (LSP)** — unlocks semantic autocomplete, go-to-
-  definition, and editor support beyond Vim.
-- **Formatter** (`tigr fmt`).
-- **`Regex` module.**
+- **Inline caching / NaN-boxing the `Value`** — larger VM reworks
+  raised under v0.12 item 18; revisit if profiling shows the
+  complexity is worth it.
+- **Peephole — code-shrinking dead-code elimination** (v0.12 item 15
+  "Pass 2") — dropping instructions unreachable after an unconditional
+  `Return`/`Raise`/`Jump`. Deferred because it resizes `code` and so
+  needs jump-offset and line-table relocation; the no-resize jump-
+  threading pass shipped instead. Revisit if the disassembler shows
+  enough dead bytecode to be worth the relocation machinery.
+- **Bytecode serialization — `tigr build` / `.tgc`** (item 16) — cut
+  from v0.12 once measurement showed the startup payoff is
+  sub-millisecond (the front end is already ~0.1–0.45 ms; process
+  startup dominates). Not a performance feature. Its real value is
+  *distribution* — shipping runnable bytecode without source — so
+  revisit if and when that becomes a need, scoped as tooling rather
+  than optimization.
+- **`Regex` module** — scheduled as v0.13 item 19, then deferred.
+  Measuring the `regex` crate showed it nearly doubles binary size
+  (+1.58 MiB, +4 crates), and most everyday text work is served by the
+  targeted `String` helpers that shipped in its place (item 19). The
+  genuine gap a regex engine fills is **pattern-as-data** — matching a
+  rule supplied at runtime — for which no concrete tigr use case exists
+  yet. Revisit when one does; the build-vs-buy question (the `regex`
+  crate vs. a hand-written engine) reopens at that point.
+
+The formerly-deferred **Language server** and **Formatter** are now
+scheduled (v0.15, items 24 and 23).

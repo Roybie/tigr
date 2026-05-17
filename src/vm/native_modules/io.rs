@@ -19,6 +19,9 @@ pub fn module() -> Value {
         ("read_file",   native("read_file",   Arity::Exact(1), read_file)),
         ("write_file",  native("write_file",  Arity::Exact(2), write_file)),
         ("append_file", native("append_file", Arity::Exact(2), append_file)),
+        ("read_bytes",   native("read_bytes",   Arity::Exact(1), read_bytes)),
+        ("write_bytes",  native("write_bytes",  Arity::Exact(2), write_bytes)),
+        ("append_bytes", native("append_bytes", Arity::Exact(2), append_bytes)),
         ("exists",      native("exists",      Arity::Exact(1), exists)),
         ("list_dir",    native("list_dir",    Arity::Exact(1), list_dir)),
         ("mkdir",       native("mkdir",       Arity::Exact(1), mkdir)),
@@ -36,6 +39,16 @@ fn expect_string<'a>(v: &'a Value, label: &str) -> Result<&'a str, RuntimeError>
         Value::Str(s) => Ok(s),
         other => Err(raise(format!(
             "IO.{label}: expected String, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn expect_bytes(v: &Value, label: &str) -> Result<crate::vm::gc::GcReadGuard<Vec<u8>>, RuntimeError> {
+    match v {
+        Value::Bytes(b) => Ok(b.borrow()),
+        other => Err(raise(format!(
+            "IO.{label}: expected Bytes, got {}",
             other.type_name()
         ))),
     }
@@ -73,6 +86,34 @@ fn append_file(args: &[Value]) -> Result<Value, RuntimeError> {
         .and_then(|mut f| f.write_all(contents.as_bytes()))
         .map(|_| Value::Null)
         .map_err(|e| raise(format!("append_file({path:?}): {e}")))
+}
+
+fn read_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+    let path = expect_string(&args[0], "read_bytes")?;
+    std::fs::read(path)
+        .map(|b| Value::Bytes(crate::vm::gc::alloc_bytes(b)))
+        .map_err(|e| raise(format!("read_bytes({path:?}): {e}")))
+}
+
+fn write_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+    let path = expect_string(&args[0], "write_bytes")?;
+    let data = expect_bytes(&args[1], "write_bytes")?;
+    std::fs::write(path, &*data)
+        .map(|_| Value::Null)
+        .map_err(|e| raise(format!("write_bytes({path:?}): {e}")))
+}
+
+fn append_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+    let path = expect_string(&args[0], "append_bytes")?;
+    let data = expect_bytes(&args[1], "append_bytes")?;
+    use std::fs::OpenOptions;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(&data))
+        .map(|_| Value::Null)
+        .map_err(|e| raise(format!("append_bytes({path:?}): {e}")))
 }
 
 fn exists(args: &[Value]) -> Result<Value, RuntimeError> {

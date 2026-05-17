@@ -7,6 +7,7 @@ pub mod ast;
 pub mod chunk;
 pub mod compiler;
 pub mod error;
+pub mod fold;
 pub mod gc;
 pub mod lexer;
 pub mod native_modules;
@@ -100,10 +101,11 @@ fn run_source_inner(
         e.source = sid;
         Error::from(e)
     })?;
-    let program = parser::parse(tokens).map_err(|mut e| {
+    let mut program = parser::parse(tokens).map_err(|mut e| {
         e.source = sid;
         Error::from(e)
     })?;
+    fold::fold_program(&mut program);
     let main = Compiler::compile_with_source(&program, base_dir, sid)?;
     let mut vm = Vm::with_source_map(sources);
     let value = vm.run(main)?;
@@ -148,10 +150,11 @@ pub fn compile_source_with_id(
         e.source = sid;
         Error::from(e)
     })?;
-    let program = parser::parse(tokens).map_err(|mut e| {
+    let mut program = parser::parse(tokens).map_err(|mut e| {
         e.source = sid;
         Error::from(e)
     })?;
+    fold::fold_program(&mut program);
     let main = Compiler::compile_with_source(&program, base_dir, sid)?;
     Ok(main)
 }

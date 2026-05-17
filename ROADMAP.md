@@ -375,7 +375,48 @@ read a non-UTF-8 file, handle binary data, or (later) touch a socket.
   enabler. The prerequisite for any future networking or non-text-file
   work.
 
-### 21. `BigInt`  *(value type — stretch)*
+### 26. Index a collection with a `Range`  ✅ done  *(additive)*
+
+Slicing today means the `Array.slice` / `Bytes.slice` functions — there
+is no slice *syntax*. Rather than add a dedicated `[a:b]` operator
+(cross-cutting across lexer/parser/opcodes, and redundant with those
+functions), let a `Range` be an index key:
+
+- `b[2..5]`, `arr[0..=3]`, `b[0..10:2]` — `..` / `..=` and step already
+  exist on the `Range` type, so this needs **no new syntax**:
+  `coll[range]` already parses and compiles to `IndexGet`; today it just
+  raises `cannot index with range` at runtime.
+- The whole change is a `Range`-key arm in `index_get` (`src/vm/vm.rs`)
+  for `Array`, `Bytes`, and `String`, returning a new collection of the
+  same type — copy semantics, like the `slice` functions. Negative
+  bounds resolve from the end; out-of-range bounds clamp.
+- Consistent with element indexing: `coll[Int]` → one element,
+  `coll[Range]` → a sub-collection. Same bracket; the key type picks the
+  behaviour.
+- `Array.slice` / `Bytes.slice` stay — they remain the form for an
+  open-ended slice (`b[2..#b]` works but reads worse) and the v0.13
+  `Bytes` work already shipped them.
+- **Design detail:** `String` indexes by character (`#s` and `s[i]` are
+  char-based), so a string slice is char-indexed and O(n) — consistent,
+  but worth noting. Range-keyed *assignment* (splice) is out of scope;
+  slicing is read-only.
+
+Sequenced before item 21 — a small ergonomics win to land before the
+`BigInt` stretch.
+
+Shipped exactly as scoped: a `Range`-key arm in `index_get`
+(`src/vm/vm.rs`) for `Array`, `Bytes`, and `String`, behind one
+`range_indices` helper. The helper resolves negative endpoints from the
+end and **filters** out-of-bounds positions — for a monotonic range that
+*is* clamping, and it sidesteps the inclusive/step corner cases (a
+clamped `arr[0..=100]` must not yield index `len`) that endpoint-clamping
+would need to special-case. The range's step and direction carry
+through, so a descending range yields a reversed slice. One quirk worth
+noting: a range literal fixes its direction from the written endpoints,
+so `arr[1..-1]` is a *descending* range (start `1` > end `-1`) — the
+non-flipping end-relative idiom is `arr[1..#arr-1]`.
+
+### 21. `BigInt`  ✅ done  *(value type — stretch)*
 
 A natural complement to v0.8's "overflow raises" decision: an
 arbitrary-precision integer for code that genuinely needs it —
@@ -387,6 +428,25 @@ Project Euler problems already brush the `i64` ceiling.
   silently changes a value's type mid-computation and conflicts with
   v0.8's catchable `overflow`. Recommend explicit. Stretch item —
   drop to a later release if v0.13 runs long.
+
+Shipped as an immutable `BigInt` value type (`Value::BigInt`,
+`Rc`-managed like `Str`/`Range` — not GC-managed, since it carries no
+handles), backed by the `num-bigint` crate. A worktree measurement
+settled the build-vs-buy question the other way from item 19's `regex`
+call: `num-bigint` adds only ~75 KiB / 3 small crates, ~21× cheaper
+than `regex`. Construction is **explicit** (`BigInt.new`) as
+recommended — no auto-promotion, so v0.8's `overflow` is unchanged. The
+ordinary operators (`+ - * / % ^^`, unary `-`, comparisons) work, with
+an `Int` operand promoted and a `Float` operand promoting the result;
+`==`/ordering compare a `BigInt` against an `Int` by value. Division
+`/` is **exact-or-raise** — it yields a `BigInt` only when the result
+is exact, otherwise raises a catchable `inexact_division`, so a
+`BigInt` operator never silently decays to a lossy `Float`;
+`BigInt.divmod` / `BigInt.div` give integer division. The `BigInt`
+module adds conversion (`to_int` raising `overflow`, `to_float`,
+`to_str_radix`), `pow`, `abs`, `sign`, `is_negative`, `gcd`, `lcm`.
+Bitwise operators stay `Int`-only; a `BigInt` is not a `Map`/`Set` key
+and is not JSON-serializable.
 
 ---
 

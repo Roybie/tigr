@@ -20,6 +20,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
+use num_bigint::BigInt as BigIntData;
+use num_integer::Integer;
+use num_traits::{Pow, Zero};
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::gc::{
@@ -28,7 +31,9 @@ use crate::vm::gc::{
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
-use crate::vm::value::{Closure, Function, IterState, MapKey, RangeData, Upvalue, Value};
+use crate::vm::value::{
+    bigint_to_f64, Closure, Function, IterState, MapKey, RangeData, Upvalue, Value,
+};
 
 struct CallFrame {
     closure: GcRef<ClosureKind>,
@@ -1690,6 +1695,53 @@ fn underflow(line: u32) -> RuntimeError {
 
 // -- arithmetic helpers (spec §6.2 + §7.1) --
 
+/// Wrap a `num_bigint::BigInt` back into a `Value`.
+fn big(n: BigIntData) -> Value {
+    Value::BigInt(Rc::new(n))
+}
+
+/// A non-exact `BigInt /` raises this catchable structured error —
+/// `${kind: 'inexact_division', message}` — rather than silently
+/// dropping precision into a `Float`. `BigInt.divmod` / `BigInt.div`
+/// give integer division.
+fn inexact_div_err(line: u32) -> RuntimeError {
+    let obj = crate::vm::native_modules::object(&[
+        ("kind", Value::Str("inexact_division".into())),
+        (
+            "message",
+            Value::Str(
+                "BigInt division is not exact; use BigInt.divmod or \
+                 BigInt.div for integer division"
+                    .into(),
+            ),
+        ),
+    ]);
+    RuntimeError::new(RuntimeErrorKind::Raised(obj), line)
+}
+
+/// `BigInt / BigInt`: exact → `BigInt`, otherwise raise (see
+/// `inexact_div_err`). Divide-by-zero raises `DivisionByZero`.
+fn bigint_div(x: &BigIntData, y: &BigIntData, line: u32) -> Result<Value, RuntimeError> {
+    if y.is_zero() {
+        return Err(RuntimeError::new(RuntimeErrorKind::DivisionByZero, line));
+    }
+    let (q, r) = x.div_rem(y);
+    if r.is_zero() {
+        Ok(big(q))
+    } else {
+        Err(inexact_div_err(line))
+    }
+}
+
+/// `BigInt % BigInt`: always a `BigInt` (Rust truncated remainder,
+/// sign of the dividend — matches `Int % Int`).
+fn bigint_rem(x: &BigIntData, y: &BigIntData, line: u32) -> Result<Value, RuntimeError> {
+    if y.is_zero() {
+        return Err(RuntimeError::new(RuntimeErrorKind::DivisionByZero, line));
+    }
+    Ok(big(x % y))
+}
+
 fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
@@ -1697,6 +1749,11 @@ fn arith_add(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => Ok(Float(x as f64 + y)),
         (Float(x), Int(y)) => Ok(Float(x + y as f64)),
         (Float(x), Float(y)) => Ok(Float(x + y)),
+        (BigInt(x), BigInt(y)) => Ok(big(&*x + &*y)),
+        (BigInt(x), Int(y)) => Ok(big(&*x + &BigIntData::from(y))),
+        (Int(x), BigInt(y)) => Ok(big(&BigIntData::from(x) + &*y)),
+        (BigInt(x), Float(y)) => Ok(Float(bigint_to_f64(&x) + y)),
+        (Float(x), BigInt(y)) => Ok(Float(x + bigint_to_f64(&y))),
         (Str(x), Str(y)) => {
             let mut s = String::with_capacity(x.len() + y.len());
             s.push_str(&x);
@@ -1729,6 +1786,11 @@ fn arith_sub(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => Ok(Float(x as f64 - y)),
         (Float(x), Int(y)) => Ok(Float(x - y as f64)),
         (Float(x), Float(y)) => Ok(Float(x - y)),
+        (BigInt(x), BigInt(y)) => Ok(big(&*x - &*y)),
+        (BigInt(x), Int(y)) => Ok(big(&*x - &BigIntData::from(y))),
+        (Int(x), BigInt(y)) => Ok(big(&BigIntData::from(x) - &*y)),
+        (BigInt(x), Float(y)) => Ok(Float(bigint_to_f64(&x) - y)),
+        (Float(x), BigInt(y)) => Ok(Float(x - bigint_to_f64(&y))),
         (a, b) => Err(type_err("-", &a, &b, line)),
     }
 }
@@ -1740,6 +1802,11 @@ fn arith_mul(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => Ok(Float(x as f64 * y)),
         (Float(x), Int(y)) => Ok(Float(x * y as f64)),
         (Float(x), Float(y)) => Ok(Float(x * y)),
+        (BigInt(x), BigInt(y)) => Ok(big(&*x * &*y)),
+        (BigInt(x), Int(y)) => Ok(big(&*x * &BigIntData::from(y))),
+        (Int(x), BigInt(y)) => Ok(big(&BigIntData::from(x) * &*y)),
+        (BigInt(x), Float(y)) => Ok(Float(bigint_to_f64(&x) * y)),
+        (Float(x), BigInt(y)) => Ok(Float(x * bigint_to_f64(&y))),
         (a, b) => Err(type_err("*", &a, &b, line)),
     }
 }
@@ -1754,6 +1821,11 @@ fn arith_div(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => Ok(Float(x as f64 / y)),
         (Float(x), Int(y)) => Ok(Float(x / y as f64)),
         (Float(x), Float(y)) => Ok(Float(x / y)),
+        (BigInt(x), BigInt(y)) => bigint_div(&x, &y, line),
+        (BigInt(x), Int(y)) => bigint_div(&x, &BigIntData::from(y), line),
+        (Int(x), BigInt(y)) => bigint_div(&BigIntData::from(x), &y, line),
+        (BigInt(x), Float(y)) => Ok(Float(bigint_to_f64(&x) / y)),
+        (Float(x), BigInt(y)) => Ok(Float(x / bigint_to_f64(&y))),
         (a, b) => Err(type_err("/", &a, &b, line)),
     }
 }
@@ -1766,17 +1838,41 @@ fn arith_mod(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
         (Int(x), Float(y)) => Ok(Float(x as f64 % y)),
         (Float(x), Int(y)) => Ok(Float(x % y as f64)),
         (Float(x), Float(y)) => Ok(Float(x % y)),
+        (BigInt(x), BigInt(y)) => bigint_rem(&x, &y, line),
+        (BigInt(x), Int(y)) => bigint_rem(&x, &BigIntData::from(y), line),
+        (Int(x), BigInt(y)) => bigint_rem(&BigIntData::from(x), &y, line),
+        (BigInt(x), Float(y)) => Ok(Float(bigint_to_f64(&x) % y)),
+        (Float(x), BigInt(y)) => Ok(Float(x % bigint_to_f64(&y))),
         (a, b) => Err(type_err("%", &a, &b, line)),
     }
 }
 
 fn arith_pow(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
+    use num_traits::ToPrimitive;
     use Value::*;
+    // A `BigInt` base raised to a non-negative integer exponent stays
+    // exact — `^^` then yields a `BigInt`, not a lossy `Float`.
+    match (&a, &b) {
+        (BigInt(x), Int(y)) if *y >= 0 => return Ok(big(Pow::pow(&**x, *y as u64))),
+        (BigInt(x), BigInt(y)) => {
+            if let Some(e) = y.to_u64() {
+                return Ok(big(Pow::pow(&**x, e)));
+            }
+        }
+        _ => {}
+    }
+    // Otherwise fall back to `f64` — a negative, fractional, or
+    // astronomically large exponent has no exact `BigInt` result.
     let (x, y) = match (a, b) {
         (Int(x), Int(y)) => (x as f64, y as f64),
         (Int(x), Float(y)) => (x as f64, y),
         (Float(x), Int(y)) => (x, y as f64),
         (Float(x), Float(y)) => (x, y),
+        (BigInt(x), Int(y)) => (bigint_to_f64(&x), y as f64),
+        (BigInt(x), Float(y)) => (bigint_to_f64(&x), y),
+        (BigInt(x), BigInt(y)) => (bigint_to_f64(&x), bigint_to_f64(&y)),
+        (Int(x), BigInt(y)) => (x as f64, bigint_to_f64(&y)),
+        (Float(x), BigInt(y)) => (x, bigint_to_f64(&y)),
         (a, b) => return Err(type_err("^^", &a, &b, line)),
     };
     Ok(Float(x.powf(y)))
@@ -1787,6 +1883,7 @@ fn arith_neg(a: Value, line: u32) -> Result<Value, RuntimeError> {
     match a {
         Int(x) => Ok(Int(x.checked_neg().ok_or_else(|| overflow_err(line))?)),
         Float(x) => Ok(Float(-x)),
+        BigInt(x) => Ok(big(-&*x)),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!("cannot negate {}", other.type_name())),
             line,
@@ -1960,14 +2057,23 @@ fn index_get(coll: &Value, key: &Value, line: u32) -> Result<Value, RuntimeError
     match coll {
         Value::Array(a) => {
             let arr = a.borrow();
-            let idx = match key {
-                Value::Int(n) => normalize_index(*n, arr.len()),
-                other => return Err(RuntimeError::new(
+            match key {
+                Value::Int(n) => {
+                    let idx = normalize_index(*n, arr.len());
+                    Ok(idx.and_then(|i| arr.get(i).cloned()).unwrap_or(Value::Null))
+                }
+                Value::Range(r) => {
+                    let items: Vec<Value> = range_indices(r, arr.len())
+                        .into_iter()
+                        .map(|i| arr[i].clone())
+                        .collect();
+                    Ok(Value::Array(gc::alloc_array(items)))
+                }
+                other => Err(RuntimeError::new(
                     RuntimeErrorKind::InvalidIndexType(other.type_name().into()),
                     line,
                 )),
-            };
-            Ok(idx.and_then(|i| arr.get(i).cloned()).unwrap_or(Value::Null))
+            }
         }
         Value::Range(r) => {
             let len = r.length();
@@ -2000,27 +2106,46 @@ fn index_get(coll: &Value, key: &Value, line: u32) -> Result<Value, RuntimeError
         }
         Value::Bytes(b) => {
             let bytes = b.borrow();
-            let idx = match key {
-                Value::Int(n) => normalize_index(*n, bytes.len()),
-                other => return Err(RuntimeError::new(
+            match key {
+                Value::Int(n) => {
+                    let idx = normalize_index(*n, bytes.len());
+                    Ok(idx.map(|i| Value::Int(bytes[i] as i64)).unwrap_or(Value::Null))
+                }
+                Value::Range(r) => {
+                    let out: Vec<u8> = range_indices(r, bytes.len())
+                        .into_iter()
+                        .map(|i| bytes[i])
+                        .collect();
+                    Ok(Value::Bytes(gc::alloc_bytes(out)))
+                }
+                other => Err(RuntimeError::new(
                     RuntimeErrorKind::InvalidIndexType(other.type_name().into()),
                     line,
                 )),
-            };
-            Ok(idx.map(|i| Value::Int(bytes[i] as i64)).unwrap_or(Value::Null))
+            }
         }
         Value::Str(s) => {
-            let idx = match key {
-                Value::Int(n) => normalize_index(*n, s.chars().count()),
-                other => return Err(RuntimeError::new(
+            match key {
+                Value::Int(n) => {
+                    let idx = normalize_index(*n, s.chars().count());
+                    Ok(idx
+                        .and_then(|i| s.chars().nth(i))
+                        .map(|c| Value::Str(c.to_string().into()))
+                        .unwrap_or(Value::Null))
+                }
+                Value::Range(r) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    let out: String = range_indices(r, chars.len())
+                        .into_iter()
+                        .map(|i| chars[i])
+                        .collect();
+                    Ok(Value::Str(out.into()))
+                }
+                other => Err(RuntimeError::new(
                     RuntimeErrorKind::InvalidIndexType(other.type_name().into()),
                     line,
                 )),
-            };
-            Ok(idx
-                .and_then(|i| s.chars().nth(i))
-                .map(|c| Value::Str(c.to_string().into()))
-                .unwrap_or(Value::Null))
+            }
         }
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!("cannot index {}", other.type_name())),
@@ -2116,6 +2241,53 @@ fn normalize_index(idx: i64, len: usize) -> Option<usize> {
     let len_i = len as i64;
     let real = if idx < 0 { idx + len_i } else { idx };
     if real < 0 || real >= len_i { None } else { Some(real as usize) }
+}
+
+/// Resolve a `Range` index key into the element positions it selects.
+/// Negative endpoints count from the end; positions outside `[0, len)`
+/// are dropped — which clamps an over-long slice. Step and inclusivity
+/// are honoured, so a descending range yields a reversed slice.
+fn range_indices(r: &RangeData, len: usize) -> Vec<usize> {
+    let len_i = len as i64;
+    let resolve = |v: i64| if v < 0 { v.saturating_add(len_i) } else { v };
+    let from = resolve(r.from);
+    let to = resolve(r.to);
+    let step = r.step;
+    let mut out = Vec::new();
+    if step == 0 {
+        return out;
+    }
+
+    // Fast-forward past a long run of leading out-of-bounds positions so
+    // `arr[-1_000_000_000..5]` does not spin a billion iterations.
+    let mut v = from;
+    if step > 0 && v < 0 {
+        let i = (-v + step - 1) / step; // ceil((0 - v) / step)
+        v = v.saturating_add(i.saturating_mul(step));
+    } else if step < 0 && v > len_i - 1 {
+        let i = (v - (len_i - 1) + (-step) - 1) / (-step);
+        v = v.saturating_add(i.saturating_mul(step));
+    }
+
+    loop {
+        let done = if step > 0 {
+            if r.inclusive { v > to } else { v >= to }
+        } else if r.inclusive {
+            v < to
+        } else {
+            v <= to
+        };
+        if done {
+            break;
+        }
+        if v >= 0 && v < len_i {
+            out.push(v as usize);
+        } else {
+            break; // past the far end — every later position is OOB too
+        }
+        v = v.saturating_add(step);
+    }
+    out
 }
 
 fn type_err(op: &str, a: &Value, b: &Value, line: u32) -> RuntimeError {

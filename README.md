@@ -72,6 +72,7 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `Map`    | `Map.new()`                          | Arbitrary-keyed dictionary, reference type |
 | `Set`    | `Set.new([1, 2, 3])`                 | Collection of unique values, reference type |
 | `Bytes`  | `Bytes.from_hex('deadbeef')`         | Mutable byte buffer for binary data, reference type |
+| `BigInt` | `BigInt.new('123...890')`, `BigInt.new(2) ^^ 128` | Arbitrary-precision integer; immutable value type |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
 
@@ -162,6 +163,7 @@ String operators:
 'abc' + 'def'        // 'abcdef'    concatenation
 #'hello'             // 5           character count
 'hello'[1]           // 'e'         indexing — out-of-range returns null
+'hello'[1..4]        // 'ell'       Range index = substring (by character)
 ```
 
 Strings are immutable.
@@ -199,6 +201,7 @@ Comparison: `== != < > <= >=`. Equality across types is always false except `Int
 arr := [1, 2, 3];
 arr[0];                              // 1
 arr[-1];                             // 3   (negative indices count from the end)
+arr[0..2];                           // a NEW array [1, 2]   (Range index = slice)
 #arr;                                // 3
 arr[0] = 99;                         // mutates in place
 
@@ -226,6 +229,21 @@ Spread `...` unpacks into a literal:
 ```
 
 Out-of-range index returns `null`.
+
+Indexing with a **`Range`** instead of an `Int` slices — it returns a fresh
+array of the selected elements (a copy):
+
+```
+arr := [10, 20, 30, 40, 50];
+arr[1..3];                           // [20, 30]      exclusive
+arr[1..=3];                          // [20, 30, 40]  inclusive
+arr[0..#arr:2];                      // [10, 30, 50]  step
+arr[#arr-1..=0];                     // [50, 40, 30, 20, 10]  descending → reversed
+arr[0..1000];                        // whole array — out-of-range bounds clamp
+```
+
+The same `coll[Range]` slice works on `Bytes` and (character-indexed) on
+`String`. `Array.slice` / `Bytes.slice` still exist for an open-ended slice.
 
 ---
 
@@ -275,6 +293,7 @@ Operations:
 r[2];                                // element at index
 [...0..5];                           // materialize: [0, 1, 2, 3, 4]
 for (i, r) { ... };                  // iterate
+arr[1..3];                           // a range also slices a collection (see Arrays)
 ```
 
 A range whose `step` doesn't move `from` toward `to` is empty.
@@ -651,7 +670,7 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Bytes`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Bytes`, `BigInt`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
 
 ### `Array`
 
@@ -1057,6 +1076,27 @@ A native module, and a value type — a **mutable byte buffer**, the binary coun
 | `write_<t>(b, offset, value)` | `Bytes` | Write a fixed-width integer at `offset`, in place |
 
 `<t>` is `u8`/`i8`, or `u16`/`i16`/`u32`/`i32`/`u64`/`i64` with a `_be`/`_le` endianness suffix — e.g. `read_u32_be`, `write_i16_le`. An out-of-bounds offset raises; `write_*` raises if `value` does not fit the field; an unsigned 64-bit read above the `Int` range raises a catchable `overflow`.
+
+### `BigInt`
+
+A native module, and a value type — an **arbitrary-precision integer**, the complement to the 64-bit `Int`. Where an `Int` operation past the 64-bit range raises a catchable `overflow`, a `BigInt` grows instead. It is created **explicitly** (`BigInt.new`) — an overflowing `Int` is never auto-promoted — and is then used with the ordinary operators: `+ - * / % ^^`, unary `-`, and comparisons. An `Int` operand is promoted to `BigInt`; a `Float` operand promotes the result to `Float`. Division `/` is **exact-or-raise** — it yields a `BigInt` only when exact, otherwise it raises a catchable `inexact_division` error (use `divmod` / `div` for integer division). A `BigInt` is an immutable value type; `type(b)` is `'bigint'`, it cannot be a `Map`/`Set` key, and it is not JSON-serializable. Bitwise operators are `Int`-only.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `new(x)` | `BigInt` | From an `Int`, a decimal `String` (trimmed, optional sign), or a `BigInt`; a malformed string raises a catchable `parse` error |
+| `to_int(b)` | `Int` | Narrow to an `Int`; raises `overflow` if outside the `i64` range |
+| `to_float(b)` | `Float` | Convert to a `Float` (lossy; saturates to `±inf`) |
+| `to_str_radix(b, radix)` | `String` | The value in base `radix` (2–36) |
+| `divmod(a, b)` | `[BigInt, BigInt]` | `[quotient, remainder]`, truncating toward zero; raises `div_by_zero` |
+| `div(a, b)` | `BigInt` | Truncating integer quotient; raises `div_by_zero` |
+| `abs(b)` | `BigInt` | Absolute value |
+| `pow(base, exp)` | `BigInt` | `base` to a non-negative integer `exp`; a negative `exp` raises |
+| `sign(b)` | `Int` | `-1`, `0`, or `1` |
+| `is_negative(b)` | `Bool` | True for a value below zero |
+| `gcd(a, b)` | `BigInt` | Greatest common divisor (non-negative) |
+| `lcm(a, b)` | `BigInt` | Least common multiple |
+
+Every function that takes a number accepts an `Int` as well as a `BigInt`.
 
 ### `Path`
 

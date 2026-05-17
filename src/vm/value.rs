@@ -4,13 +4,15 @@
 //! `Set`, `Iter`, `Closure`, and upvalue cells — are managed by the
 //! v0.10 tracing collector ([`crate::vm::gc`]): a `Value` carries a
 //! small `Copy` [`GcRef`] handle into the thread-local heap rather than
-//! the data itself. `Str`, `Range`, and `NativeFn` are immutable and
-//! acyclic, so they stay plain `Rc` — `Rc` reclaims acyclic data fine
-//! and the collector skips them.
+//! the data itself. `Str`, `Range`, `NativeFn`, and `BigInt` are
+//! immutable and acyclic, so they stay plain `Rc` — `Rc` reclaims
+//! acyclic data fine and the collector skips them.
 
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
+
+use num_bigint::BigInt as BigIntData;
 
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
@@ -55,6 +57,12 @@ pub enum Value {
 
     // Phase 6+
     NativeFn(Rc<NativeFn>),
+
+    // v0.13 — arbitrary-precision integer. Immutable and acyclic, so
+    // Rc-managed like Str/Range/NativeFn — the collector skips it.
+    // Created explicitly via `BigInt.new(...)`; an overflowing `Int`
+    // still raises `overflow` (v0.8) rather than promoting here.
+    BigInt(Rc<BigIntData>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +389,7 @@ impl Value {
             Value::Iter(_) => "iterator",
             Value::Function(_) => "function",
             Value::NativeFn(_) => "native function",
+            Value::BigInt(_) => "bigint",
         }
     }
 
@@ -414,9 +423,31 @@ impl PartialEq for Value {
             (Iter(a), Iter(b)) => a == b,
             (Function(a), Function(b)) => a == b,
             (NativeFn(a), NativeFn(b)) => Rc::ptr_eq(a, b),
+            (BigInt(a), BigInt(b)) => a == b,
+            // A `BigInt` and an `Int` of equal value compare equal,
+            // mirroring `Int`/`Float` cross-type equality above.
+            (BigInt(a), Int(b)) | (Int(b), BigInt(a)) => {
+                **a == BigIntData::from(*b)
+            }
+            // `BigInt`/`Float` are deliberately never `==`: a BigInt
+            // outside f64's exact range could spuriously match.
             _ => false,
         }
     }
+}
+
+/// Lossy `BigInt` → `f64`, saturating to `±∞` when the magnitude
+/// exceeds the float range. Used for `BigInt`/`Float` ordering and for
+/// arithmetic that has a `Float` operand.
+pub(crate) fn bigint_to_f64(n: &BigIntData) -> f64 {
+    use num_traits::ToPrimitive;
+    n.to_f64().unwrap_or_else(|| {
+        if n.sign() == num_bigint::Sign::Minus {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        }
+    })
 }
 
 impl PartialOrd for Value {
@@ -428,6 +459,13 @@ impl PartialOrd for Value {
             (Int(a), Float(b)) => (*a as f64).partial_cmp(b),
             (Float(a), Int(b)) => a.partial_cmp(&(*b as f64)),
             (Str(a), Str(b)) => a.partial_cmp(b),
+            (BigInt(a), BigInt(b)) => a.partial_cmp(b),
+            (BigInt(a), Int(b)) => a.as_ref().partial_cmp(&BigIntData::from(*b)),
+            (Int(a), BigInt(b)) => BigIntData::from(*a).partial_cmp(b.as_ref()),
+            // `BigInt`/`Float` ordering is supported (unlike equality):
+            // `<`/`>` is what big-number code needs; promote to f64.
+            (BigInt(a), Float(b)) => bigint_to_f64(a).partial_cmp(b),
+            (Float(a), BigInt(b)) => a.partial_cmp(&bigint_to_f64(b)),
             _ => None,
         }
     }
@@ -517,6 +555,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::NativeFn(n) => write!(f, "<native fn {}>", n.name),
+            Value::BigInt(n) => write!(f, "{n}"),
         }
     }
 }

@@ -1,0 +1,186 @@
+// tests/bigint_test.tg — v0.13 "BigInt": the arbitrary-precision
+// integer type.
+//
+// Exercises construction (incl. the catchable `parse` error), the
+// arithmetic operators on BigInt/Int/Float operand mixes, exact-or-raise
+// division, comparison and cross-type ordering, conversion (incl. the
+// `overflow` error on `to_int`), and the `BigInt` module functions. Run
+// directly (`tigr tests/bigint_test.tg`) or via discovery (`tigr test`).
+
+Test := import 'Test';
+B    := import 'BigInt';
+
+// A factorial built on BigInt — overflows i64 well before n = 21.
+fact := fn(n) {
+    r := B.new(1);
+    for (i, 1..=n) { r = r * B.new(i) };
+    r
+};
+
+[
+    Test.suite('BigInt — construction', [
+        Test.case('new from an Int', fn() {
+            Test.assert_eq(B.new(42), B.new('42'))
+        }),
+        Test.case('new from a decimal string', fn() {
+            Test.assert_eq(str(B.new('123456789012345678901234567890')),
+                           '123456789012345678901234567890')
+        }),
+        Test.case('new trims surrounding whitespace and a leading sign', fn() {
+            Test.assert_eq(B.new('  -100  '), B.new(-100))
+        }),
+        Test.case('new on a BigInt returns it unchanged', fn() {
+            Test.assert_eq(B.new(B.new(7)), B.new(7))
+        }),
+        Test.case('new on a malformed string raises `parse`', fn() {
+            Test.assert_raises(fn() { B.new('12x3') }, 'parse');
+            Test.assert_raises(fn() { B.new('') }, 'parse')
+        }),
+        Test.case('type() of a BigInt is "bigint"', fn() {
+            Test.assert_eq(type(B.new(1)), 'bigint')
+        }),
+    ]),
+
+    Test.suite('BigInt — arithmetic', [
+        Test.case('addition is exact past the i64 ceiling', fn() {
+            Test.assert_eq(B.new('9223372036854775807') + B.new(1),
+                           B.new('9223372036854775808'))
+        }),
+        Test.case('subtraction and multiplication', fn() {
+            Test.assert_eq(B.new(1000) - B.new(1), B.new(999));
+            Test.assert_eq(B.new('1000000000000') * B.new('1000000000000'),
+                           B.new('1000000000000000000000000'))
+        }),
+        Test.case('unary negation', fn() {
+            Test.assert_eq(-B.new(7), B.new(-7))
+        }),
+        Test.case('a BigInt and an Int operand mix, result is BigInt', fn() {
+            Test.assert_eq(B.new(10) + 5, B.new(15));
+            Test.assert_eq(3 * B.new(4), B.new(12));
+            Test.assert_eq(type(B.new(10) + 5), 'bigint')
+        }),
+        Test.case('^^ with a non-negative Int exponent stays exact', fn() {
+            Test.assert_eq(B.new(2) ^^ 100,
+                           B.new('1267650600228229401496703205376'));
+            Test.assert_eq(type(B.new(2) ^^ 10), 'bigint')
+        }),
+        Test.case('factorial of 25 (well past i64)', fn() {
+            Test.assert_eq(fact(25), B.new('15511210043330985984000000'))
+        }),
+    ]),
+
+    Test.suite('BigInt — division', [
+        Test.case('/ is a BigInt when the division is exact', fn() {
+            Test.assert_eq(B.new('123456789000') / B.new(1000),
+                           B.new(123456789));
+            Test.assert_eq(type(B.new(10) / B.new(2)), 'bigint')
+        }),
+        Test.case('/ raises `inexact_division` when not exact', fn() {
+            Test.assert_raises(fn() { B.new(7) / B.new(2) }, 'inexact_division')
+        }),
+        Test.case('/ by zero raises `div_by_zero`', fn() {
+            Test.assert_raises(fn() { B.new(1) / B.new(0) }, 'div_by_zero')
+        }),
+        Test.case('% is the truncated remainder', fn() {
+            Test.assert_eq(B.new(17) % B.new(5), B.new(2));
+            Test.assert_eq(B.new(-17) % B.new(5), B.new(-2))
+        }),
+        Test.case('divmod returns [quotient, remainder]', fn() {
+            Test.assert_eq(B.divmod(B.new(17), B.new(5)), [B.new(3), B.new(2)])
+        }),
+        Test.case('div is the truncating integer quotient', fn() {
+            Test.assert_eq(B.div(B.new(17), B.new(5)), B.new(3));
+            Test.assert_raises(fn() { B.div(B.new(1), B.new(0)) }, 'div_by_zero')
+        }),
+    ]),
+
+    Test.suite('BigInt — comparison', [
+        Test.case('equality of two BigInts', fn() {
+            Test.assert(B.new('999999999999999999999') ==
+                        B.new('999999999999999999999'));
+            Test.assert(B.new(1) != B.new(2))
+        }),
+        Test.case('a BigInt equals an Int of the same value', fn() {
+            Test.assert(B.new(5) == 5);
+            Test.assert(5 == B.new(5))
+        }),
+        Test.case('ordering of BigInts and Ints', fn() {
+            Test.assert(B.new('100000000000000000000') > 999999999);
+            Test.assert(B.new(3) < B.new(4));
+            Test.assert(B.new(10) <= 10)
+        }),
+        Test.case('a BigInt orders against a Float', fn() {
+            Test.assert(B.new(10) < 10.5);
+            Test.assert(B.new(11) > 10.5)
+        }),
+        Test.case('a BigInt is never == a Float', fn() {
+            Test.assert(B.new(10) != 10.0)
+        }),
+    ]),
+
+    Test.suite('BigInt — float promotion', [
+        Test.case('a Float operand promotes the result to Float', fn() {
+            Test.assert_eq(B.new(10) + 2.5, 12.5);
+            Test.assert_eq(type(B.new(10) * 2.0), 'float')
+        }),
+    ]),
+
+    Test.suite('BigInt — conversion', [
+        Test.case('to_int round-trips a value that fits i64', fn() {
+            Test.assert_eq(B.to_int(B.new(123456789)), 123456789)
+        }),
+        Test.case('to_int raises `overflow` past the i64 range', fn() {
+            Test.assert_raises(
+                fn() { B.to_int(B.new('99999999999999999999999')) },
+                'overflow')
+        }),
+        Test.case('to_float converts (lossily)', fn() {
+            Test.assert_eq(B.to_float(B.new(100)), 100.0)
+        }),
+        Test.case('int() and float() builtins accept a BigInt', fn() {
+            Test.assert_eq(int(B.new(42)), 42);
+            Test.assert_eq(float(B.new(42)), 42.0)
+        }),
+        Test.case('to_str_radix prints in another base', fn() {
+            Test.assert_eq(B.to_str_radix(B.new(255), 16), 'ff');
+            Test.assert_eq(B.to_str_radix(B.new(10), 2), '1010')
+        }),
+        Test.case('to_str_radix rejects an out-of-range radix', fn() {
+            Test.assert_raises(fn() { B.to_str_radix(B.new(1), 37) })
+        }),
+    ]),
+
+    Test.suite('BigInt — number theory', [
+        Test.case('abs', fn() {
+            Test.assert_eq(B.abs(B.new(-9)), B.new(9));
+            Test.assert_eq(B.abs(B.new(9)), B.new(9))
+        }),
+        Test.case('pow with a non-negative exponent', fn() {
+            Test.assert_eq(B.pow(B.new(3), 4), B.new(81));
+            Test.assert_eq(B.pow(B.new(2), 0), B.new(1))
+        }),
+        Test.case('pow with a negative exponent raises', fn() {
+            Test.assert_raises(fn() { B.pow(B.new(2), -1) })
+        }),
+        Test.case('sign and is_negative', fn() {
+            Test.assert_eq(B.sign(B.new(-9)), -1);
+            Test.assert_eq(B.sign(B.new(0)), 0);
+            Test.assert_eq(B.sign(B.new(9)), 1);
+            Test.assert(B.is_negative(B.new(-1)));
+            Test.assert(!B.is_negative(B.new(1)))
+        }),
+        Test.case('gcd and lcm', fn() {
+            Test.assert_eq(B.gcd(B.new(48), B.new(18)), B.new(6));
+            Test.assert_eq(B.lcm(B.new(4), B.new(6)), B.new(12))
+        }),
+    ]),
+
+    Test.suite('BigInt — restrictions', [
+        Test.case('a BigInt cannot be a Map key', fn() {
+            Map := import 'Map';
+            Test.assert_raises(
+                fn() { m := Map.new(); m[B.new(1)] = 'x' },
+                'invalid_key_type')
+        }),
+    ]),
+]

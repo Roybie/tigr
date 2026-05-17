@@ -15,4 +15,15 @@ print('(0..10)[-1]   =', (0..10)[-1]);   // 9
 sum := for (i, 1..=100) { 0 } && 0;
 sum = 0;
 for (i, 1..=100) { sum = sum + i };
-print('sum 1..=100   =', sum)            // 5050
+print('sum 1..=100   =', sum);           // 5050
+
+// A range used as an index key slices a collection (spec §6.5) —
+// `coll[Range]` returns a fresh sub-collection of the same type.
+print('');
+xs := [10, 20, 30, 40, 50];
+print('xs[1..3]      =', xs[1..3]);      // [20, 30]
+print('xs[1..=3]     =', xs[1..=3]);     // [20, 30, 40]
+print('xs[0..#xs:2]  =', xs[0..#xs:2]);  // [10, 30, 50]
+print('xs reversed   =', xs[#xs-1..=0]); // [50, 40, 30, 20, 10]
+print('xs[0..1000]   =', xs[0..1000]);   // whole array — bounds clamp
+print('hello[1..4]   =', 'hello'[1..4])  // 'ell' — strings slice too

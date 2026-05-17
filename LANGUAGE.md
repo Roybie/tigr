@@ -327,10 +327,23 @@ arr[i + 1]
 obj['key']
 obj.key                     // sugar for obj['key']
 'hello'[1]                  // == 'e'  (strings are indexable)
+arr[1..3]                   // == [arr[1], arr[2]]  (slice with a Range)
 ```
 
 Out-of-range numeric index → `null`. Missing object key → `null`.
 Negative array indices count from the end: `arr[-1]` is the last element.
+
+Indexing an `Array`, `Bytes`, or `String` with a **`Range`** key slices it,
+returning a fresh sub-collection of the same type (a copy — like
+`Array.slice` / `Bytes.slice`). `coll[Int]` yields one element; `coll[Range]`
+yields a sub-collection. Negative endpoints count from the end and
+out-of-range endpoints clamp, so `arr[0..1000]` is the whole array. The
+range's step and direction carry through: `arr[0..#arr:2]` takes every other
+element and a descending range reverses (`arr[#arr-1..=0]`). Because a range
+literal fixes its direction from the written endpoints, an end-relative slice
+that must stay ascending uses `#`, not a negative end — `arr[1..#arr-1]`, not
+`arr[1..-1]` (the latter is a descending range). A `String` slice is
+character-indexed and therefore O(n), like `s[i]`.
 
 `obj.key` is exactly equivalent to `obj['key']` and may appear on the LHS of
 any assignment operator.
@@ -426,7 +439,8 @@ Ranges support:
 - Iteration in `for`
 - Spread in array literals: `[...0..5]` → `[0, 1, 2, 3, 4]`
 - Length: `#(0..10)` → 10
-- Indexing: `(0..10:2)[1]` → 2
+- Indexing into a range: `(0..10:2)[1]` → 2
+- Indexing a collection: `[10, 20, 30, 40][1..3]` → `[20, 30]` (see §6.5)
 
 Ranges are **lazy**: they do not materialize their elements unless spread or
 indexed.
@@ -1157,6 +1171,72 @@ pkt := Bytes.new(6);
 Bytes.write_u16_be(pkt, 0, 0xCAFE);   // magic
 Bytes.write_u32_be(pkt, 2, 1500);     // length
 Bytes.read_u16_be(pkt, 0)             // 51966
+```
+
+#### `BigInt` (v0.13)
+
+`BigInt` is a value type as well as a module — an **arbitrary-precision
+integer**, the complement to the fixed-width `Int`. Where an `Int`
+operation that exceeds the 64-bit range raises a catchable `overflow`
+(§6.2), a `BigInt` simply grows. It is immutable, so — unlike `Bytes` —
+it is an ordinary *value* type, not a reference type.
+
+A `BigInt` is created **explicitly**; an overflowing `Int` is *not*
+promoted automatically (that would silently change a value's type and
+defeat the `overflow` error). Once created it works with the ordinary
+operators:
+
+- `+ - * ^^`, unary `-`, and `%` behave as for `Int`, but never
+  overflow. An `Int` operand is promoted to `BigInt`, so `b + 1` works;
+  a `Float` operand promotes the `BigInt` to `Float` (the result is a
+  `Float`), as with `Int`/`Float` mixing.
+- `^^` with a non-negative integer exponent stays exact and yields a
+  `BigInt`; a negative or fractional exponent falls back to `Float`.
+- `/` is **exact-or-raise**: `a / b` yields a `BigInt` only when the
+  division leaves no remainder; otherwise it raises a catchable
+  `inexact_division` error, and `a / 0` raises `div_by_zero`. This keeps
+  every `BigInt` operator closed over exact integers — it never silently
+  produces a lossy `Float`. Use `BigInt.divmod` / `BigInt.div` for
+  integer (truncating) division.
+- `==` / `!=` and the ordering operators compare `BigInt`s, and compare
+  a `BigInt` against an `Int` by value (`BigInt.new(5) == 5`). A
+  `BigInt` *orders* against a `Float` but is never `==` to one (a value
+  beyond the float's exact range could compare spuriously equal).
+- The bitwise operators (`& | ^ ~ << >>`) are `Int`-only and raise on a
+  `BigInt`.
+- `type(b)` is `'bigint'`; `str(b)` is the decimal form. `int(b)`
+  narrows back to an `Int` (raising `overflow` if it does not fit);
+  `float(b)` converts (lossily). A `BigInt` cannot be a `Map`/`Set` key
+  and is not JSON-serializable.
+
+| Entry          | Signature                                  | Behavior                                                              |
+|----------------|--------------------------------------------|-----------------------------------------------------------------------|
+| `new`          | `new(x) -> BigInt`                         | From an `Int`, a decimal `String` (trimmed, optional sign), or a `BigInt`; a malformed string raises a catchable `parse` error |
+| `to_int`       | `to_int(b) -> Int`                         | Narrow to an `Int`; raises `overflow` if outside the `i64` range      |
+| `to_float`     | `to_float(b) -> Float`                     | Convert to a `Float` (lossy; saturates to `±inf`)                     |
+| `to_str_radix` | `to_str_radix(b, radix) -> String`         | The value in base `radix` (2–36)                                      |
+| `divmod`       | `divmod(a, b) -> [BigInt, BigInt]`          | `[quotient, remainder]`, truncating toward zero; raises `div_by_zero` |
+| `div`          | `div(a, b) -> BigInt`                      | The truncating integer quotient; raises `div_by_zero`                 |
+| `abs`          | `abs(b) -> BigInt`                         | Absolute value                                                       |
+| `pow`          | `pow(base, exp) -> BigInt`                 | `base` to a non-negative integer `exp`; a negative `exp` raises       |
+| `sign`         | `sign(b) -> Int`                           | `-1`, `0`, or `1`                                                     |
+| `is_negative`  | `is_negative(b) -> Bool`                   | `true` for a value below zero                                         |
+| `gcd`          | `gcd(a, b) -> BigInt`                      | Greatest common divisor (non-negative)                                |
+| `lcm`          | `lcm(a, b) -> BigInt`                      | Least common multiple                                                 |
+
+Every module function that takes a number accepts an `Int` as well as a
+`BigInt`.
+
+```
+BigInt := import 'BigInt';
+
+fact := fn(n) {
+    r := BigInt.new(1);
+    for (i, 1..=n) { r = r * BigInt.new(i) };
+    r
+};
+fact(50)               // 30414093201713378043612608166064768844377641568960512000000000000
+BigInt.new(2) ^^ 128   // 340282366920938463463374607431768211456
 ```
 
 ### 13.3 Source-stdlib modules (v0.3)
@@ -1970,3 +2050,35 @@ Additive changes:
     `overflow`, consistent with v0.8. `Bytes` is the prerequisite for
     future networking and non-text-file work; streaming IO (file and
     socket handles) remains deferred.
+
+50. **Range-keyed collection slicing** (§6.5, §7.3). Indexing an `Array`,
+    `Bytes`, or `String` with a `Range` rather than an `Int` slices it,
+    returning a fresh same-type sub-collection — `arr[1..3]`, `b[0..=4]`,
+    `s[2..#s]`. No new syntax: `coll[range]` already parsed and compiled to
+    the index opcode; this gives the `Range` key a meaning instead of an
+    error. The slice copies (like `Array.slice` / `Bytes.slice`, which
+    stay); negative endpoints count from the end and out-of-range endpoints
+    clamp; the range's step and direction carry through, so a descending
+    range yields a reversed slice. A `String` slice is character-indexed.
+    Range-keyed *assignment* is out of scope — slicing is read-only.
+
+51. **`BigInt` arbitrary-precision integer** (§13.2). A new value type —
+    an immutable, arbitrary-precision integer — alongside the `BigInt`
+    module that builds and operates on it. It is the complement to v0.8's
+    "integer overflow raises a catchable error": where an `Int`
+    computation past the 64-bit range raises `overflow`, a `BigInt`
+    grows instead. A `BigInt` is created **explicitly** (`BigInt.new`) —
+    an overflowing `Int` is never auto-promoted, since that would
+    silently change a value's type. Once created it works with the
+    ordinary operators (`+ - * / % ^^`, unary `-`, comparisons): an
+    `Int` operand is promoted, a `Float` operand promotes the result to
+    `Float`, and cross-type `==`/ordering against an `Int` works by
+    value. Division is **exact-or-raise** — `/` yields a `BigInt` only
+    when the result is exact, otherwise it raises a catchable
+    `inexact_division` error, so a `BigInt` operator never silently
+    decays to a lossy `Float`; `BigInt.divmod` / `BigInt.div` give
+    integer division. The module also covers conversion (`to_int` raises
+    `overflow` if the value will not fit an `Int`; `to_float`,
+    `to_str_radix`), `pow`, `abs`, `sign`, `gcd`, and `lcm`. Bitwise
+    operators stay `Int`-only; a `BigInt` is not a valid `Map`/`Set` key
+    and is not JSON-serializable.

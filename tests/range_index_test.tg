@@ -1,0 +1,87 @@
+// tests/range_index_test.tg — v0.13 #26: indexing a collection with a
+// `Range`. `coll[a..b]` slices Array / Bytes / String into a fresh
+// same-type sub-collection (copy semantics, like the `slice` functions).
+//
+// Run directly (`tigr tests/range_index_test.tg`) or via discovery
+// (`tigr test`, which picks up everything under `tests/`).
+
+Test  := import 'Test';
+Bytes := import 'Bytes';
+
+Test.suite('Range indexing — Array', [
+    Test.case('exclusive range slices', fn() {
+        Test.assert_eq([10, 20, 30, 40, 50][1..3], [20, 30])
+    }),
+
+    Test.case('inclusive range includes the end', fn() {
+        Test.assert_eq([10, 20, 30, 40, 50][1..=3], [20, 30, 40])
+    }),
+
+    Test.case('a descending range yields a reversed slice', fn() {
+        Test.assert_eq([1, 2, 3, 4, 5][4..=0], [5, 4, 3, 2, 1])
+    }),
+
+    Test.case('step is honoured', fn() {
+        Test.assert_eq([0, 1, 2, 3, 4, 5][0..6:2], [0, 2, 4])
+    }),
+
+    Test.case('both-negative endpoints resolve from the end', fn() {
+        Test.assert_eq([1, 2, 3, 4, 5][-3..-1], [3, 4])
+    }),
+
+    Test.case('out-of-range bounds clamp', fn() {
+        Test.assert_eq([1, 2, 3][0..100], [1, 2, 3]);
+        Test.assert_eq([1, 2, 3][-1000000000..2], [1, 2])
+    }),
+
+    Test.case('an empty range yields an empty array', fn() {
+        Test.assert_eq([1, 2, 3][2..2], [])
+    }),
+
+    Test.case('the slice is a copy, not an alias', fn() {
+        a := [1, 2, 3, 4];
+        s := a[0..2];
+        s[0] = 99;
+        Test.assert_eq(a[0], 1)
+    }),
+
+    Test.case('whole-collection slice via #', fn() {
+        a := [5, 6, 7, 8];
+        Test.assert_eq(a[0..#a], a)
+    }),
+]);
+
+Test.suite('Range indexing — Bytes', [
+    Test.case('slicing Bytes yields Bytes', fn() {
+        b := Bytes.from_array([10, 20, 30, 40]);
+        Test.assert_eq(type(b[1..3]), 'bytes')
+    }),
+
+    Test.case('the sliced bytes are correct', fn() {
+        b := Bytes.from_array([10, 20, 30, 40]);
+        Test.assert_eq(Bytes.to_array(b[1..=2]), [20, 30])
+    }),
+
+    Test.case('a descending range reverses the bytes', fn() {
+        b := Bytes.from_array([1, 2, 3]);
+        Test.assert_eq(Bytes.to_array(b[2..=0]), [3, 2, 1])
+    }),
+]);
+
+Test.suite('Range indexing — String', [
+    Test.case('a string slice is a string', fn() {
+        Test.assert_eq('hello world'[0..5], 'hello')
+    }),
+
+    Test.case('a descending range reverses the string', fn() {
+        Test.assert_eq('hello'[4..=0], 'olleh')
+    }),
+
+    Test.case('string slicing is by character, not byte', fn() {
+        Test.assert_eq('héllo'[0..2], 'hé')
+    }),
+
+    Test.case('out-of-range string bounds clamp', fn() {
+        Test.assert_eq('abc'[0..100], 'abc')
+    }),
+])

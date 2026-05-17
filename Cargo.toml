@@ -8,6 +8,13 @@ exclude = ["examples/*"]
 [dependencies]
 indexmap = "2"
 rustyline = "14"
+# v0.13 — backs the arbitrary-precision `BigInt` value type. num-integer
+# and num-traits are transitive deps of num-bigint; declared explicitly
+# so their traits (`Integer`, `ToPrimitive`, `Zero`, `Signed`, `Pow`) can
+# be `use`d directly without relying on a re-export.
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
 
 [features]
 # Collect on every VM dispatch step — stress mode that turns any

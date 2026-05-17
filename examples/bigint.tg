@@ -1,0 +1,67 @@
+// Arbitrary-precision integers with the `BigInt` type (v0.13).
+//
+// An `Int` is a 64-bit machine integer — overflow it and v0.8 raises a
+// catchable `overflow` error rather than wrapping silently. `BigInt` is
+// the escape hatch for the numbers that genuinely need it: factorials,
+// combinatorics, Project-Euler-scale arithmetic. It is created
+// *explicitly* — there is no auto-promotion — and then works with the
+// ordinary operators.
+
+BigInt := import 'BigInt';
+
+// -------- factorial of 100 --------
+// 100! has 158 digits — `Int` overflows at 21!.
+fact := fn(n) {
+    r := BigInt.new(1);
+    for (i, 1..=n) { r = r * BigInt.new(i) };
+    r
+};
+
+f100 := fact(100);
+print('100! = {f100}');
+
+// Digit sum of 100! — Project Euler #20. `str()` of a BigInt is its
+// decimal form, so the digits fall out as characters.
+digit_sum := fn(big) {
+    total := 0;
+    for (ch, str(big)) { total = total + int(ch) };
+    total
+};
+print('sum of its digits = {digit_sum(f100)}');
+
+// -------- a large Fibonacci --------
+fib := fn(n) {
+    a := BigInt.new(0);
+    b := BigInt.new(1);
+    for (_, 0..n) {
+        next := a + b;
+        a = b;
+        b = next
+    };
+    a
+};
+print('');
+print('fib(300) = {fib(300)}');
+
+// -------- exact integer division --------
+// `/` yields a BigInt only when the division is exact; otherwise it
+// raises, because a BigInt quotient that needed rounding would have to
+// become a lossy Float. `divmod` is the integer-division form.
+big := BigInt.new('1000000000000000000000000');
+print('');
+print('exact:   {big} / 8 = {big / BigInt.new(8)}');
+
+result := try { big / BigInt.new(7) }
+          catch (e) { 'not exact ({e.kind}) — use BigInt.divmod' };
+print('inexact: {result}');
+
+qr := BigInt.divmod(big, BigInt.new(7));
+print('divmod by 7: quotient {qr[0]}, remainder {qr[1]}');
+
+// -------- powers and number theory --------
+print('');
+print('2 ^^ 256       = {BigInt.new(2) ^^ 256}');
+print('gcd(1071, 462) = {BigInt.gcd(BigInt.new(1071), BigInt.new(462))}');
+
+// A BigInt compares against plain Ints, so guards read naturally.
+print('100! past a billion? {f100 > 1000000000}');

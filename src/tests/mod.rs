@@ -5492,3 +5492,145 @@ fn v13_bytes_not_json_serializable() {
     let err = run_err("B := import 'Bytes'; J := import 'JSON'; J.stringify(B.new(1))");
     assert!(err.contains("cannot serialize"), "got: {err}");
 }
+
+// ---- v0.13 item 26: index a collection with a Range ----
+
+#[test]
+fn v13_range_index_array_basic() {
+    eval_eq("[10, 20, 30, 40, 50][1..3]", "[20, 30]");
+    eval_eq("[10, 20, 30, 40, 50][1..=3]", "[20, 30, 40]");
+}
+
+#[test]
+fn v13_range_index_array_descending_reverses() {
+    eval_eq("[1, 2, 3, 4, 5][4..=0]", "[5, 4, 3, 2, 1]");
+}
+
+#[test]
+fn v13_range_index_array_step() {
+    eval_eq("[0, 1, 2, 3, 4, 5][0..6:2]", "[0, 2, 4]");
+}
+
+#[test]
+fn v13_range_index_array_negative_bounds() {
+    // Both endpoints negative — still ascending, so they resolve cleanly.
+    eval_eq("[1, 2, 3, 4, 5][-3..-1]", "[3, 4]");
+    // End-relative slice without flipping direction: use `#arr - 1`.
+    eval_eq("[1, 2, 3, 4, 5][1..#[1,2,3,4,5] - 1]", "[2, 3, 4]");
+}
+
+#[test]
+fn v13_range_index_array_clamps_out_of_range() {
+    eval_eq("[1, 2, 3][0..100]", "[1, 2, 3]");
+    eval_eq("[1, 2, 3][-1000000000..2]", "[1, 2]");
+    eval_eq("[1, 2, 3][2..2]", "[]");
+}
+
+#[test]
+fn v13_range_index_array_is_a_copy() {
+    // Slicing copies — mutating the slice leaves the original intact.
+    let src = "a := [1, 2, 3, 4]; s := a[0..2]; s[0] = 99; a[0]";
+    assert_eq!(run(src), Value::Int(1));
+}
+
+#[test]
+fn v13_range_index_bytes_returns_bytes() {
+    let src = "B := import 'Bytes'; \
+               b := B.from_array([10, 20, 30, 40]); \
+               type(b[1..3])";
+    assert_eq!(run(src), Value::Str("bytes".into()));
+    eval_eq(
+        "B := import 'Bytes'; B.to_array(B.from_array([10, 20, 30, 40])[1..3])",
+        "[20, 30]",
+    );
+}
+
+#[test]
+fn v13_range_index_string_is_char_indexed() {
+    assert_eq!(run("'hello world'[0..5]"), Value::Str("hello".into()));
+    assert_eq!(run("'hello'[4..=0]"), Value::Str("olleh".into()));
+    // Multi-byte chars: slice by character, not byte.
+    assert_eq!(run("'héllo'[0..2]"), Value::Str("hé".into()));
+}
+
+#[test]
+fn v13_range_index_object_still_rejects_range() {
+    let err = run_err("${ a: 1 }[0..2]");
+    assert!(err.contains("index"), "got: {err}");
+}
+
+// ---- v0.13 item 21: BigInt ----
+
+#[test]
+fn v13_bigint_type_name() {
+    assert_eq!(run("B := import 'BigInt'; type(B.new(1))"), Value::Str("bigint".into()));
+}
+
+#[test]
+fn v13_bigint_arithmetic_is_exact_past_i64() {
+    // i64::MAX + 1 — a plain Int `+` would raise `overflow`.
+    eval_eq(
+        "B := import 'BigInt'; str(B.new('9223372036854775807') + B.new(1))",
+        "'9223372036854775808'",
+    );
+    eval_eq(
+        "B := import 'BigInt'; str(B.new(2) ^^ 100)",
+        "'1267650600228229401496703205376'",
+    );
+}
+
+#[test]
+fn v13_bigint_mixes_with_int_operands() {
+    eval_eq("B := import 'BigInt'; B.new(10) + 5", "B := import 'BigInt'; B.new(15)");
+    assert_eq!(
+        run("B := import 'BigInt'; type(3 * B.new(4))"),
+        Value::Str("bigint".into()),
+    );
+}
+
+#[test]
+fn v13_bigint_cross_type_equality_with_int() {
+    assert_eq!(run("B := import 'BigInt'; B.new(5) == 5"), Value::Bool(true));
+    assert_eq!(run("B := import 'BigInt'; 5 == B.new(5)"), Value::Bool(true));
+    // A BigInt is never equal to a Float.
+    assert_eq!(run("B := import 'BigInt'; B.new(10) == 10.0"), Value::Bool(false));
+}
+
+#[test]
+fn v13_bigint_division_is_exact_or_raises() {
+    eval_eq(
+        "B := import 'BigInt'; B.new(10) / B.new(2)",
+        "B := import 'BigInt'; B.new(5)",
+    );
+    let err = run_err("B := import 'BigInt'; B.new(7) / B.new(2)");
+    assert!(err.contains("inexact_division"), "got: {err}");
+    let zero = run_err("B := import 'BigInt'; B.new(1) / B.new(0)");
+    assert!(zero.contains("zero") || zero.contains("div"), "got: {zero}");
+}
+
+#[test]
+fn v13_bigint_to_int_overflow_raises() {
+    let err = run_err("B := import 'BigInt'; B.to_int(B.new('99999999999999999999999'))");
+    assert!(err.contains("overflow"), "got: {err}");
+    assert_eq!(run("B := import 'BigInt'; B.to_int(B.new(42))"), Value::Int(42));
+}
+
+#[test]
+fn v13_bigint_parse_error_is_catchable() {
+    assert_eq!(
+        run("B := import 'BigInt'; try { B.new('nope') } catch (e) { e.kind }"),
+        Value::Str("parse".into()),
+    );
+}
+
+#[test]
+fn v13_bigint_not_json_serializable() {
+    let err = run_err("B := import 'BigInt'; J := import 'JSON'; J.stringify(B.new(1))");
+    assert!(err.contains("cannot serialize"), "got: {err}");
+}
+
+#[test]
+fn v13_bigint_rejected_as_map_key() {
+    let err = run_err("B := import 'BigInt'; M := import 'Map'; m := M.new(); m[B.new(1)] = 1");
+    assert!(err.contains("key"), "got: {err}");
+}

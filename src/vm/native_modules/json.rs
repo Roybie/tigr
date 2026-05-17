@@ -462,7 +462,8 @@ fn write_value(
         | Value::Iter(_)
         | Value::Map(_)
         | Value::Set(_)
-        | Value::Bytes(_) => {
+        | Value::Bytes(_)
+        | Value::BigInt(_) => {
             return Err(raise(format!(
                 "JSON.stringify: cannot serialize {}",
                 v.type_name()

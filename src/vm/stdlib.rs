@@ -10,10 +10,12 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
+use num_traits::ToPrimitive;
+
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
 use crate::vm::rng;
-use crate::vm::value::{Arity, NativeFn, Value};
+use crate::vm::value::{bigint_to_f64, Arity, NativeFn, Value};
 
 /// Returns the ordered list of built-in names. The compiler uses this
 /// to assign slot indices; the VM uses [`builtins`] to populate the
@@ -184,6 +186,8 @@ fn native_num(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) => Ok(Value::Float(*x)),
+        // A BigInt is already numeric — pass it through unchanged.
+        Value::BigInt(_) => Ok(args[0].clone()),
         Value::Str(s) => {
             let t = s.trim();
             if let Ok(n) = t.parse::<i64>() {
@@ -210,6 +214,12 @@ fn native_int(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) => Ok(Value::Int(x.trunc() as i64)),
         Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+        // Narrow a BigInt back to Int — raises `overflow` if it does
+        // not fit i64, the same catchable error v0.8 arithmetic uses.
+        Value::BigInt(n) => match n.to_i64() {
+            Some(i) => Ok(Value::Int(i)),
+            None => Err(RuntimeError::new(RuntimeErrorKind::Overflow, 0)),
+        },
         Value::Str(s) => {
             let t = s.trim();
             if let Ok(n) = t.parse::<i64>() {
@@ -239,6 +249,8 @@ fn native_float(args: &[Value]) -> Result<Value, RuntimeError> {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
         Value::Float(x) => Ok(Value::Float(*x)),
         Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+        // Lossy — saturates to ±inf beyond the float range.
+        Value::BigInt(n) => Ok(Value::Float(bigint_to_f64(n))),
         Value::Str(s) => match s.trim().parse::<f64>() {
             Ok(x) => Ok(Value::Float(x)),
             Err(_) => Err(RuntimeError::new(
@@ -265,6 +277,8 @@ fn native_floor(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) => Ok(Value::Int(x.floor() as i64)),
+        // A BigInt is already integral — return it unchanged.
+        Value::BigInt(_) => Ok(args[0].clone()),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(
                 "floor() expects a number, got {}", other.type_name()
@@ -278,6 +292,8 @@ fn native_ceil(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) => Ok(Value::Int(x.ceil() as i64)),
+        // A BigInt is already integral — return it unchanged.
+        Value::BigInt(_) => Ok(args[0].clone()),
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(
                 "ceil() expects a number, got {}", other.type_name()

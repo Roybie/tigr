@@ -512,7 +512,8 @@ impl Trace for Value {
             | Value::Float(_)
             | Value::Str(_)
             | Value::Range(_)
-            | Value::NativeFn(_) => {}
+            | Value::NativeFn(_)
+            | Value::BigInt(_) => {}
         }
     }
 }

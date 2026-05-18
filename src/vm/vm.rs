@@ -2422,12 +2422,11 @@ impl Vm {
         self.load_green(next)
     }
 
-    /// Run a `Socket` native — a steady-state `Net` read / write. Like
-    /// [`dispatch_blocking`] it runs inline when the actor is idle, but
-    /// the offload path drives the op on the async-IO reactor (see
-    /// [`crate::vm::reactor`]) rather than tying up a worker thread.
-    /// Sockets the reactor cannot drive yet (TLS, in sub-phase B1) fall
-    /// back to the worker pool — the inline executor run off-thread.
+    /// Run a `Socket` native — a steady-state `Net` read / write /
+    /// accept. Like [`dispatch_blocking`] it runs inline when the actor
+    /// is idle, but the offload path drives the op on the async-IO
+    /// reactor (see [`crate::vm::reactor`]) rather than tying up a
+    /// worker thread. Every socket kind, TLS included, is reactor-driven.
     fn dispatch_socket(
         &mut self,
         extract: fn(&[Value]) -> Result<ReactorOp, RuntimeError>,
@@ -2450,21 +2449,11 @@ impl Vm {
             self.stack.push(result);
             return Ok(());
         }
-        // Offload path: park this coroutine until the completion is
-        // pumped back. A connected TCP stream goes to the reactor; any
-        // other socket kind (TLS) takes the worker pool, reusing the
-        // inline executor as the off-thread job.
+        // Offload path: hand the op to the reactor and park this
+        // coroutine until its completion is pumped back.
         let job_id = self.next_job_id;
         self.next_job_id += 1;
-        if rop.socket.reactor_eligible() {
-            reactor::submit(job_id, self.mailbox.clone(), rop);
-        } else {
-            offload::submit(
-                job_id,
-                self.mailbox.clone(),
-                Box::new(move || reactor::run_blocking(rop)),
-            );
-        }
+        reactor::submit(job_id, self.mailbox.clone(), rop);
         let parked = self.save_current(None);
         self.scheduler.park_io(job_id, parked);
         let next = self

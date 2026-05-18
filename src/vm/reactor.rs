@@ -31,10 +31,11 @@
 //!
 //! A [`SocketOp`] runs two ways. [`run_blocking`] is the inline
 //! executor: a thin wrapper over the blocking `socket.rs` methods, used
-//! when the actor is idle (so blocking its thread stalls nobody) and as
-//! the worker-pool fallback for socket kinds the reactor cannot drive
-//! yet (TLS, in sub-phase B1). [`advance`] is the reactor executor: the
-//! non-blocking state machine driven by readiness events.
+//! when the actor is idle (so blocking its thread stalls nobody) and
+//! for a re-entrant native call. [`advance`] is the reactor executor:
+//! the non-blocking state machine driven by readiness events. Both
+//! cover every socket kind, TLS included — a TLS op is just a plain op
+//! whose `nb_read` / `nb_write` hand-drive `rustls` (see `socket.rs`).
 
 use std::collections::HashMap;
 use std::io;
@@ -62,8 +63,8 @@ const WAKE: Token = Token(0);
 
 /// Run a [`ReactorOp`] synchronously on the calling thread, blocking
 /// until it completes. Used on the inline fast path (the actor is idle)
-/// and as the worker-pool fallback for non-reactor sockets. A thin
-/// wrapper over the blocking `socket.rs` methods.
+/// and for a re-entrant native call. A thin wrapper over the blocking
+/// `socket.rs` methods.
 pub fn run_blocking(rop: ReactorOp) -> OffloadResult {
     let ReactorOp { socket, op, label } = rop;
     // A prior reactor op may have left the fd non-blocking; the
@@ -259,7 +260,19 @@ fn advance(op: &mut SocketOp, socket: &SocketInner, label: &'static str) -> Adva
         },
         SocketOp::WriteAll { data, sent } => loop {
             if *sent >= data.len() {
-                return Advance::Done(Ok(OffloadOk::Int(data.len() as i64)));
+                // Every byte handed off — but a TLS socket may still
+                // hold encrypted records that have not reached the
+                // wire. Drain them before the op completes.
+                return match socket.nb_flush() {
+                    Ok(()) => {
+                        Advance::Done(Ok(OffloadOk::Int(data.len() as i64)))
+                    }
+                    Err(e) if would_block(&e) => Advance::Pending,
+                    Err(e) => Advance::Done(Err(net::offload_err(
+                        label,
+                        NetError::Io(e),
+                    ))),
+                };
             }
             match socket.nb_write(&data[*sent..]) {
                 Ok(0) => {
@@ -454,11 +467,17 @@ fn start_op(
     let ReactorOp { socket, mut op, label } = rop;
     // Read ops watch the read half, writes the write half — distinct
     // `dup`'d fds, so a concurrent read + write register independently.
+    // A TLS connection has one fd and oscillates between read and write
+    // readiness as rustls drives its records, so it is registered for
+    // both interests and re-driven on either.
     let writes = matches!(op, SocketOp::WriteAll { .. });
-    let (fd, interest) = if writes {
-        (socket.write_raw_fd(), Interest::WRITABLE)
+    let fd = if writes { socket.write_raw_fd() } else { socket.read_raw_fd() };
+    let interest = if socket.is_tls() {
+        Interest::READABLE | Interest::WRITABLE
+    } else if writes {
+        Interest::WRITABLE
     } else {
-        (socket.read_raw_fd(), Interest::READABLE)
+        Interest::READABLE
     };
     let Some(fd) = fd else {
         // Not reactor-eligible — `dispatch_socket` routes such sockets

@@ -1,0 +1,45 @@
+// Concurrent HTTPS fetches on the async-IO reactor.
+//
+// `connect_tls` runs its handshake on the worker pool, since DNS and
+// the TLS handshake both block. But the connection it returns is then
+// driven for steady-state reads and writes on the reactor, exactly
+// like a plain socket: rustls is hand-driven over the raw fd, so many
+// TLS connections share the one reactor thread.
+//
+// Each fetch here is its own green thread. While their encrypted reads
+// are parked on the reactor, the sibling counter keeps ticking, which
+// is the proof that a TLS read no longer freezes the actor.
+//
+// Needs network access — `tigr test` skips examples, so this never
+// runs offline.
+
+Http := import 'Http';
+
+url := 'https://example.com';
+n := 6;
+statuses := for[] (i, 0..n) { null };
+ticks := 0;
+
+pending := fn() {
+    c := 0;
+    for (i, 0..n) { if statuses[i] == null { c = c + 1 } };
+    c
+};
+
+// n HTTPS fetches, each its own coroutine.
+for (i, 0..n) {
+    go fn() { statuses[i] = Http.get(url).status }
+};
+// A sibling that advances while every fetch is parked on the reactor.
+go fn() {
+    while (pending() > 0) { ticks = ticks + 1; yield }
+};
+
+while (pending() > 0) { yield };
+
+ok := 0;
+for (i, 0..n) {
+    if statuses[i] == 200 { ok = ok + 1 }
+};
+print('fetched {n} pages over TLS concurrently; {ok} returned 200');
+print('a sibling ticked {ticks} times while the TLS reads were parked');

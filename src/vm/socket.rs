@@ -32,13 +32,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls::{ClientConfig, ClientConnection, RootCertStore};
 
 /// A shared, `Send` socket handle. Cloning bumps the `Arc` refcount.
 pub type SocketHandle = Arc<SocketInner>;
 
-/// A blocking TLS client stream over a plain TCP connection.
-type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+/// A TLS client connection in unbundled form: the sans-IO `rustls`
+/// state machine plus the raw `TcpStream` it drives. The reactor sets
+/// `sock` non-blocking and hand-drives `rustls` ([`tls_read`] /
+/// [`tls_write`]); the inline executor drives the same loop against a
+/// blocking `sock`. One `Mutex` covers the pair on [`SocketKind::Tls`]
+/// — `rustls` keeps a single stateful connection, so reads and writes
+/// share it.
+struct TlsState {
+    conn: ClientConnection,
+    sock: TcpStream,
+}
 
 /// How long `connect` / `connect_tls` wait for the TCP handshake before
 /// giving up — a bounded default, since neither takes a timeout arg.
@@ -93,9 +102,10 @@ enum SocketKind {
     TcpStream { read: Mutex<TcpStream>, write: Mutex<TcpStream> },
     /// A UDP datagram socket. Its methods take `&self`.
     Udp(UdpSocket),
-    /// A connected TLS client stream — not split (rustls keeps a single
-    /// stateful connection), so one lock covers both directions.
-    Tls(Mutex<Box<TlsStream>>),
+    /// A connected TLS client stream. Not split — `rustls` keeps a
+    /// single stateful connection, so one lock covers both directions.
+    /// Boxed to keep the `SocketKind` enum small.
+    Tls(Mutex<Box<TlsState>>),
 }
 
 pub struct SocketInner {
@@ -211,18 +221,23 @@ fn tls_config() -> Arc<ClientConfig> {
 }
 
 /// Open a TLS-encrypted TCP connection to `host:port`. `host` doubles
-/// as the certificate-verification server name.
+/// as the certificate-verification server name. The handshake runs to
+/// completion here (this is offloaded to the worker pool, since DNS
+/// and the handshake are blocking); the resulting connection is then
+/// driven for steady-state data I/O on the reactor.
 pub fn connect_tls(host: &str, port: u16) -> Result<SocketHandle, NetError> {
     let addr = resolve(host, port)?;
-    let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
+    let mut tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
     let shutdown = tcp.try_clone()?;
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| NetError::Tls(format!("invalid server name '{host}': {e}")))?;
-    let conn = ClientConnection::new(tls_config(), server_name)
+    let mut conn = ClientConnection::new(tls_config(), server_name)
         .map_err(|e| NetError::Tls(e.to_string()))?;
-    let tls = StreamOwned::new(conn, tcp);
+    // Drive the handshake to completion against the blocking socket.
+    conn.complete_io(&mut tcp)
+        .map_err(|e| NetError::Tls(format!("handshake failed: {e}")))?;
     Ok(Arc::new(SocketInner {
-        kind: SocketKind::Tls(Mutex::new(Box::new(tls))),
+        kind: SocketKind::Tls(Mutex::new(Box::new(TlsState { conn, sock: tcp }))),
         closed: AtomicBool::new(false),
         nonblocking: AtomicBool::new(false),
         shutdown: Mutex::new(Some(shutdown)),
@@ -258,8 +273,9 @@ impl SocketInner {
                 Ok(stream.read(buf)?)
             }
             SocketKind::Tls(m) => {
-                let mut tls = m.lock().unwrap();
-                Ok(tls.read(buf)?)
+                let mut guard = m.lock().unwrap();
+                let st: &mut TlsState = &mut guard;
+                Ok(tls_read(st, buf)?)
             }
             SocketKind::TcpListener(_) | SocketKind::Udp(_) => Err(
                 NetError::WrongKind("read expects a connected stream".into()),
@@ -335,9 +351,13 @@ impl SocketInner {
                 Ok(())
             }
             SocketKind::Tls(m) => {
-                let mut tls = m.lock().unwrap();
-                tls.write_all(data)?;
-                tls.flush()?;
+                let mut guard = m.lock().unwrap();
+                let st: &mut TlsState = &mut guard;
+                let mut off = 0;
+                while off < data.len() {
+                    off += tls_write(st, &data[off..])?;
+                }
+                flush_tls(st)?;
                 Ok(())
             }
             SocketKind::TcpListener(_) | SocketKind::Udp(_) => Err(
@@ -469,17 +489,17 @@ impl SocketInner {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Can the reactor drive ops on this socket? True for a connected
-    /// `TcpStream`, a `TcpListener` (`accept`) and a `Udp` socket
-    /// (`recv_from`). A TLS socket stays on the worker pool until
-    /// sub-phase B4.
-    pub fn reactor_eligible(&self) -> bool {
-        !matches!(self.kind, SocketKind::Tls(_))
+    /// Is this a TLS socket? A TLS op oscillates between needing read
+    /// and write readiness as `rustls` drives its records, so the
+    /// reactor registers it for both interests at once.
+    pub fn is_tls(&self) -> bool {
+        matches!(self.kind, SocketKind::Tls(_))
     }
 
     /// The raw fd to register for a read-direction reactor op — the
     /// read half of a connected stream, the listener fd for `accept`,
-    /// or the datagram fd for `recv_from`. `None` for a TLS socket.
+    /// the datagram fd for `recv_from`, or the single TCP fd under a
+    /// TLS connection.
     pub fn read_raw_fd(&self) -> Option<RawFd> {
         match &self.kind {
             SocketKind::TcpStream { read, .. } => {
@@ -487,18 +507,20 @@ impl SocketInner {
             }
             SocketKind::TcpListener(l) => Some(l.as_raw_fd()),
             SocketKind::Udp(u) => Some(u.as_raw_fd()),
-            SocketKind::Tls(_) => None,
+            SocketKind::Tls(m) => Some(m.lock().unwrap().sock.as_raw_fd()),
         }
     }
 
-    /// The raw fd to register for a write-direction reactor op. The
-    /// write half is a distinct `dup`'d fd, so a concurrent read and
-    /// write on one socket register two independent fds.
+    /// The raw fd to register for a write-direction reactor op. For a
+    /// plain stream the write half is a distinct `dup`'d fd, so a
+    /// concurrent read and write register two independent fds; a TLS
+    /// connection has one fd, registered for both interests.
     pub fn write_raw_fd(&self) -> Option<RawFd> {
         match &self.kind {
             SocketKind::TcpStream { write, .. } => {
                 Some(write.lock().unwrap().as_raw_fd())
             }
+            SocketKind::Tls(m) => Some(m.lock().unwrap().sock.as_raw_fd()),
             _ => None,
         }
     }
@@ -526,9 +548,10 @@ impl SocketInner {
         Ok(())
     }
 
-    /// One non-blocking `read` syscall on the stream's read half.
-    /// `Ok(0)` is end-of-stream; `WouldBlock` means the reactor should
-    /// wait for the next readiness event.
+    /// Read decrypted plaintext (TLS) or raw bytes (plain stream)
+    /// without blocking. `Ok(0)` is end-of-stream; `WouldBlock` means
+    /// the reactor should wait for the next readiness event. For a TLS
+    /// socket this hand-drives `rustls` — see [`tls_read`].
     pub fn nb_read(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.kind {
             SocketKind::TcpStream { read, .. } => {
@@ -536,14 +559,24 @@ impl SocketInner {
                 let mut stream: &TcpStream = &guard;
                 stream.read(buf)
             }
-            _ => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "reactor read expects a connected TCP stream",
-            )),
+            SocketKind::Tls(m) => {
+                let mut guard = m.lock().unwrap();
+                let st: &mut TlsState = &mut guard;
+                tls_read(st, buf)
+            }
+            SocketKind::TcpListener(_) | SocketKind::Udp(_) => {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "reactor read expects a connected stream",
+                ))
+            }
         }
     }
 
-    /// One non-blocking `write` syscall on the stream's write half.
+    /// Write bytes without blocking, returning the count consumed. For
+    /// a TLS socket this buffers plaintext into `rustls` and pushes out
+    /// TLS records — see [`tls_write`]; the encrypted tail is drained
+    /// by [`nb_flush`].
     pub fn nb_write(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.kind {
             SocketKind::TcpStream { write, .. } => {
@@ -551,10 +584,33 @@ impl SocketInner {
                 let mut stream: &TcpStream = &guard;
                 stream.write(buf)
             }
-            _ => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "reactor write expects a connected TCP stream",
-            )),
+            SocketKind::Tls(m) => {
+                let mut guard = m.lock().unwrap();
+                let st: &mut TlsState = &mut guard;
+                tls_write(st, buf)
+            }
+            SocketKind::TcpListener(_) | SocketKind::Udp(_) => {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "reactor write expects a connected stream",
+                ))
+            }
+        }
+    }
+
+    /// Flush any bytes still buffered below the op's accounting. A
+    /// plain socket's `write` already reaches the kernel send buffer,
+    /// so this is a no-op for it; a TLS socket may hold encrypted
+    /// records `tls_write` could not push out yet. `WouldBlock` means
+    /// the reactor should wait for write readiness.
+    pub fn nb_flush(&self) -> io::Result<()> {
+        match &self.kind {
+            SocketKind::Tls(m) => {
+                let mut guard = m.lock().unwrap();
+                let st: &mut TlsState = &mut guard;
+                flush_tls(st)
+            }
+            _ => Ok(()),
         }
     }
 
@@ -600,6 +656,96 @@ impl SocketInner {
     /// Append freshly-received bytes to the read buffer.
     pub fn push_buffered(&self, data: &[u8]) {
         self.read_buf.lock().unwrap().extend_from_slice(data);
+    }
+}
+
+// ---------------------------------------------------------------------
+// TLS drive loop
+// ---------------------------------------------------------------------
+//
+// `rustls` is sans-IO: it owns the TLS state machine but performs no
+// syscalls. These helpers hand-drive it over the raw `TcpStream`, the
+// `tokio-rustls` pattern. They work whether `sock` is blocking (the
+// inline executor — a syscall simply blocks) or non-blocking (the
+// reactor — a syscall surfaces `WouldBlock` for the op to wait on).
+// Because a TLS op may need read *or* write readiness at any moment,
+// the reactor registers a TLS fd for both interests and re-drives the
+// loop on either; these helpers never have to choose an interest.
+
+/// Push every TLS record `rustls` currently wants to send. On a
+/// non-blocking socket a full send buffer surfaces as `WouldBlock`.
+fn flush_tls(st: &mut TlsState) -> io::Result<()> {
+    while st.conn.wants_write() {
+        if st.conn.write_tls(&mut st.sock)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "tls: socket accepted no bytes",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Drive `rustls` until it yields decrypted plaintext into `buf`.
+/// `Ok(0)` is a clean end-of-stream; an unclean close surfaces as an
+/// `io::Error`. `WouldBlock` (non-blocking socket) means the op should
+/// park until the fd is ready again.
+fn tls_read(st: &mut TlsState, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        // Hand back any plaintext rustls has already decrypted.
+        match st.conn.reader().read(buf) {
+            Ok(n) => return Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e),
+        }
+        // None buffered: push out any records rustls wants to send
+        // (handshake continuation, key update, alert), then pull more
+        // TLS bytes from the peer and process them.
+        flush_tls(st)?;
+        if !st.conn.wants_read() {
+            return Ok(0);
+        }
+        match st.conn.read_tls(&mut st.sock) {
+            Ok(0) => return Ok(0),
+            Ok(_) => {
+                st.conn.process_new_packets().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, e)
+                })?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Buffer plaintext from `buf` into `rustls` and push the resulting TLS
+/// records toward the socket. Returns the count of `buf` consumed —
+/// possibly partial when `rustls`'s send buffer fills against a slow
+/// peer. `Err(WouldBlock)` is returned only when *nothing* was
+/// consumed, so a retry never double-sends already-buffered plaintext.
+fn tls_write(st: &mut TlsState, buf: &[u8]) -> io::Result<usize> {
+    if buf.is_empty() {
+        return Ok(0);
+    }
+    let mut off = 0;
+    loop {
+        if off < buf.len() {
+            match st.conn.writer().write(&buf[off..]) {
+                Ok(n) => off += n,
+                Err(e) => return if off > 0 { Ok(off) } else { Err(e) },
+            }
+        }
+        // Push records out to free rustls's buffer for more plaintext.
+        match flush_tls(st) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                return if off > 0 { Ok(off) } else { Err(e) };
+            }
+            Err(e) => return if off > 0 { Ok(off) } else { Err(e) },
+        }
+        if off >= buf.len() {
+            return Ok(off);
+        }
+        // flush_tls drained the send buffer — loop to buffer the rest.
     }
 }
 

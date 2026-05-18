@@ -193,7 +193,10 @@ impl CompletionMailbox {
         std::mem::take(&mut *done)
     }
 
-    fn post(&self, id: u64, result: OffloadResult) {
+    /// Post a finished job. Called by a worker thread and by the
+    /// async-IO reactor thread ([`crate::vm::reactor`]) — both are
+    /// completion producers for the same actor mailbox.
+    pub(crate) fn post(&self, id: u64, result: OffloadResult) {
         let mut done = self.done.lock().unwrap();
         done.push((id, result));
         self.wake.notify_one();

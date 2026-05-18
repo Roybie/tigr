@@ -23,6 +23,12 @@ num-traits = "0.2"
 # goes stale — unlike a bundled `webpki-roots` snapshot.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
+# Phase B (v0.x green-threads) — the async-IO reactor. `mio` wraps
+# epoll / kqueue so one reactor thread can wait on thousands of socket
+# fds at once, instead of one worker thread per parked socket op.
+# `os-poll` gives `Poll`/`Waker`; `os-ext` gives `SourceFd` (we register
+# raw fds from `std::net` sockets rather than migrating to `mio::net`).
+mio = { version = "1", features = ["os-poll", "os-ext"] }
 
 [features]
 # Collect on every VM dispatch step — stress mode that turns any

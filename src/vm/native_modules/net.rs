@@ -20,11 +20,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
-use crate::vm::offload::{BlockingJob, OffloadErr, OffloadOk};
-use crate::vm::socket::{self, NetError, SocketHandle};
+use crate::vm::offload::{BlockingJob, OffloadErr, OffloadOk, OffloadResult};
+use crate::vm::socket::{self, NetError, ReactorOp, SocketHandle, SocketOp};
 use crate::vm::value::{Arity, Value};
 
-use super::{native, native_blocking, object};
+use super::{native, native_blocking, native_socket, object};
 
 pub fn module() -> Value {
     object(&[
@@ -39,13 +39,15 @@ pub fn module() -> Value {
         ("bind",        native("bind",        Arity::Exact(2), n_bind)),
         ("send_to",     native_blocking("send_to",   Arity::Exact(4), n_send_to)),
         ("recv_from",   native_blocking("recv_from", Arity::Exact(2), n_recv_from)),
-        // -- stream I/O --
-        ("read",        native_blocking("read",       Arity::Exact(2), n_read)),
-        ("write",       native_blocking("write",      Arity::Exact(2), n_write)),
-        ("read_exact",  native_blocking("read_exact", Arity::Exact(2), n_read_exact)),
-        ("read_line",   native_blocking("read_line",  Arity::Exact(1), n_read_line)),
-        ("read_until",  native_blocking("read_until", Arity::Exact(2), n_read_until)),
-        ("read_all",    native_blocking("read_all",   Arity::Exact(1), n_read_all)),
+        // -- stream I/O --  (steady-state socket reads / writes — driven
+        // on the async-IO reactor inside a green thread; see
+        // `crate::vm::reactor`.)
+        ("read",        native_socket("read",       Arity::Exact(2), n_read)),
+        ("write",       native_socket("write",      Arity::Exact(2), n_write)),
+        ("read_exact",  native_socket("read_exact", Arity::Exact(2), n_read_exact)),
+        ("read_line",   native_socket("read_line",  Arity::Exact(1), n_read_line)),
+        ("read_until",  native_socket("read_until", Arity::Exact(2), n_read_until)),
+        ("read_all",    native_socket("read_all",   Arity::Exact(1), n_read_all)),
         // -- addressing & lifecycle (all non-waiting — stay inline) --
         ("local_addr",  native("local_addr",  Arity::Exact(1), n_local_addr)),
         ("peer_addr",   native("peer_addr",   Arity::Exact(1), n_peer_addr)),
@@ -111,17 +113,46 @@ fn map_err(label: &str, e: NetError) -> RuntimeError {
 }
 
 /// Map a [`NetError`] to an [`OffloadErr`] — the POD error a worker
-/// thread posts back; [`crate::vm::offload::decode`] rebuilds the same
-/// `${kind, message}` or string error the inline call would raise.
-fn offload_err(label: &str, e: NetError) -> OffloadErr {
+/// thread (or the reactor thread) posts back;
+/// [`crate::vm::offload::decode`] rebuilds the same `${kind, message}`
+/// or string error the inline call would raise.
+pub(crate) fn offload_err(label: &str, e: NetError) -> OffloadErr {
     let (kind, message) = classify(label, e);
     OffloadErr { kind: kind.map(|k| k.to_string()), message }
 }
 
-/// A worker-side structured error raised directly (not from a
+/// An off-thread structured error raised directly (not from a
 /// `NetError`) — `Net.read_exact`'s `eof`, `Net.read_line`'s `decode`.
-fn offload_net_err(kind: &str, message: String) -> OffloadErr {
+pub(crate) fn offload_net_err(kind: &str, message: String) -> OffloadErr {
     OffloadErr { kind: Some(kind.to_string()), message }
+}
+
+/// Turn the raw bytes of one `read_until(b'\n')` into a `read_line`
+/// result: strip the trailing `\r\n` / `\n`, decode UTF-8. `None`
+/// (end-of-stream) decodes to `null`; invalid UTF-8 raises `decode`.
+/// Shared by the inline executor and the reactor's `ReadLine` op.
+pub(crate) fn finish_line(line: Option<Vec<u8>>) -> OffloadResult {
+    match line {
+        None => Ok(OffloadOk::StrOrNull(None)),
+        Some(mut line) => {
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            match String::from_utf8(line) {
+                Ok(s) => Ok(OffloadOk::StrOrNull(Some(s))),
+                Err(e) => Err(offload_net_err(
+                    "decode",
+                    format!(
+                        "Net.read_line: invalid UTF-8 at byte {}",
+                        e.utf8_error().valid_up_to()
+                    ),
+                )),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -321,116 +352,65 @@ fn n_recv_from(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
 
 /// `read(sock, n)` — read up to `n` bytes. An empty `Bytes` means the
 /// stream has ended.
-fn n_read(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "read")?;
+fn n_read(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "read")?;
     let n = expect_count(&args[1], "read")?;
-    Ok(Box::new(move || match sock.read_chunk(n) {
-        Ok(data) => Ok(OffloadOk::Bytes(data)),
-        Err(e) => Err(offload_err("read", e)),
-    }))
+    Ok(ReactorOp { socket, op: SocketOp::ReadChunk(n), label: "read" })
 }
 
 /// `write(sock, bytes)` — write every byte; returns the count written.
-fn n_write(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "write")?;
+fn n_write(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "write")?;
     let data = expect_bytes(&args[1], "write")?;
-    Ok(Box::new(move || match sock.write_all(&data) {
-        Ok(()) => Ok(OffloadOk::Int(data.len() as i64)),
-        Err(e) => Err(offload_err("write", e)),
-    }))
+    Ok(ReactorOp {
+        socket,
+        op: SocketOp::WriteAll { data, sent: 0 },
+        label: "write",
+    })
 }
 
-/// `read_exact(sock, n)` — read exactly `n` bytes, blocking until they
+/// `read_exact(sock, n)` — read exactly `n` bytes, waiting until they
 /// arrive. Raises `eof` if the stream ends first.
-fn n_read_exact(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "read_exact")?;
+fn n_read_exact(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "read_exact")?;
     let n = expect_count(&args[1], "read_exact")?;
-    Ok(Box::new(move || {
-        let mut out: Vec<u8> = Vec::new();
-        while out.len() < n {
-            let chunk = match sock.read_chunk(n - out.len()) {
-                Ok(c) => c,
-                Err(e) => return Err(offload_err("read_exact", e)),
-            };
-            if chunk.is_empty() {
-                return Err(offload_net_err(
-                    "eof",
-                    format!(
-                        "Net.read_exact: stream ended after {} of {n} bytes",
-                        out.len()
-                    ),
-                ));
-            }
-            out.extend(chunk);
-        }
-        Ok(OffloadOk::Bytes(out))
-    }))
+    Ok(ReactorOp {
+        socket,
+        op: SocketOp::ReadExact { need: n, got: Vec::new() },
+        label: "read_exact",
+    })
 }
 
 /// `read_line(sock)` — read one `\n`-terminated line as a String, with
 /// the trailing `\r\n` / `\n` stripped. Returns `null` at end-of-
 /// stream. Raises `decode` on invalid UTF-8.
-fn n_read_line(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "read_line")?;
-    Ok(Box::new(move || {
-        let line = match sock.read_until(b'\n') {
-            Ok(l) => l,
-            Err(e) => return Err(offload_err("read_line", e)),
-        };
-        match line {
-            None => Ok(OffloadOk::StrOrNull(None)),
-            Some(mut line) => {
-                if line.last() == Some(&b'\n') {
-                    line.pop();
-                }
-                if line.last() == Some(&b'\r') {
-                    line.pop();
-                }
-                match String::from_utf8(line) {
-                    Ok(s) => Ok(OffloadOk::StrOrNull(Some(s))),
-                    Err(e) => Err(offload_net_err(
-                        "decode",
-                        format!(
-                            "Net.read_line: invalid UTF-8 at byte {}",
-                            e.utf8_error().valid_up_to()
-                        ),
-                    )),
-                }
-            }
-        }
-    }))
+fn n_read_line(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "read_line")?;
+    Ok(ReactorOp { socket, op: SocketOp::ReadLine, label: "read_line" })
 }
 
 /// `read_until(sock, byte)` — read up to and including the next `byte`.
 /// Returns a `Bytes` (the delimiter included), or `null` at end-of-
 /// stream. Trailing data with no delimiter is returned as a final
 /// chunk.
-fn n_read_until(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "read_until")?;
+fn n_read_until(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "read_until")?;
     let delim = expect_byte(&args[1], "read_until")?;
-    Ok(Box::new(move || match sock.read_until(delim) {
-        Ok(opt) => Ok(OffloadOk::BytesOrNull(opt)),
-        Err(e) => Err(offload_err("read_until", e)),
-    }))
+    Ok(ReactorOp {
+        socket,
+        op: SocketOp::ReadUntil(delim),
+        label: "read_until",
+    })
 }
 
 /// `read_all(sock)` — read every remaining byte until end-of-stream.
-fn n_read_all(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "read_all")?;
-    Ok(Box::new(move || {
-        let mut out: Vec<u8> = Vec::new();
-        loop {
-            let chunk = match sock.read_chunk(65536) {
-                Ok(c) => c,
-                Err(e) => return Err(offload_err("read_all", e)),
-            };
-            if chunk.is_empty() {
-                break;
-            }
-            out.extend(chunk);
-        }
-        Ok(OffloadOk::Bytes(out))
-    }))
+fn n_read_all(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "read_all")?;
+    Ok(ReactorOp {
+        socket,
+        op: SocketOp::ReadAll(Vec::new()),
+        label: "read_all",
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -468,9 +448,11 @@ fn n_set_timeout(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// `close(sock)` — close the socket. Idempotent; unblocks a reader
 /// stuck mid-`read`, and an actor stuck in `accept` on a listener
-/// (which then raises `closed`).
+/// (which then raises `closed`). A coroutine parked on a reactor op
+/// for this socket is woken with a catchable `closed` error.
 fn n_close(args: &[Value]) -> Result<Value, RuntimeError> {
     let sock = as_socket(&args[0], "close")?;
     sock.close();
+    crate::vm::reactor::cancel(sock.id());
     Ok(Value::Null)
 }

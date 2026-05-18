@@ -1,0 +1,237 @@
+// tests/io_reactor_test.tg — the async-IO reactor for socket I/O.
+//
+// Phase A offloaded a parked socket call to a worker thread; that
+// removed the "a blocking call freezes its siblings" seam but cost one
+// OS thread per parked op. Phase B's reactor (a single epoll / kqueue
+// poll thread) drives steady-state socket reads and writes instead, so
+// thousands of coroutines parked in `Net.read` cost one thread between
+// them — not one each.
+//
+// From tigr's side nothing changes: a `go` coroutine doing socket I/O
+// still parks cooperatively and its siblings keep running. These tests
+// assert *outcomes*, never interleaving order — reactor timing is
+// nondeterministic.
+//
+// `listen` / `accept` / `connect` still take the worker pool in this
+// sub-phase; only the six steady-state stream natives (`read`,
+// `write`, `read_exact`, `read_line`, `read_until`, `read_all`) run on
+// the reactor.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test  := import 'Test';
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+// A connected loopback socket pair, both ends in this actor. `accept`
+// and `connect` are driven as green threads so the actor never blocks
+// waiting on itself.
+make_pair := fn() {
+    listener := Net.listen('127.0.0.1', 0);
+    port := Net.local_addr(listener).port;
+    server := null;
+    client := null;
+    go fn() { server = Net.accept(listener) };
+    go fn() { client = Net.connect('127.0.0.1', port) };
+    while (server == null || client == null) { yield };
+    Net.close(listener);
+    ${server: server, client: client}
+};
+
+[
+    Test.suite('reactor — stream round-trips', [
+        Test.case('read / write echo a chunk', fn() {
+            p := make_pair();
+            got := null;
+            go fn() { Net.write(p.client, Bytes.from_string('hello reactor')) };
+            go fn() { got = Net.read(p.server, 64) };
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got), 'hello reactor');
+            Net.close(p.server);
+            Net.close(p.client)
+        }),
+
+        Test.case('read_exact waits for every byte', fn() {
+            p := make_pair();
+            got := null;
+            // Two short writes — read_exact must span both.
+            go fn() {
+                Net.write(p.client, Bytes.from_string('abcd'));
+                Net.write(p.client, Bytes.from_string('efgh'))
+            };
+            go fn() { got = Net.read_exact(p.server, 8) };
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got), 'abcdefgh');
+            Net.close(p.server);
+            Net.close(p.client)
+        }),
+
+        Test.case('read_exact raises eof when the stream ends short', fn() {
+            p := make_pair();
+            outcome := null;
+            go fn() {
+                Net.write(p.client, Bytes.from_string('tiny'));
+                Net.close(p.client)
+            };
+            go fn() {
+                outcome = try {
+                    Net.read_exact(p.server, 64); 'no-error'
+                } catch (e) { e.kind }
+            };
+            while (outcome == null) { yield };
+            Test.assert_eq(outcome, 'eof');
+            Net.close(p.server)
+        }),
+
+        Test.case('read_line strips the newline', fn() {
+            p := make_pair();
+            got := null;
+            go fn() { Net.write(p.client, Bytes.from_string('one line\n')) };
+            go fn() { got = Net.read_line(p.server) };
+            while (got == null) { yield };
+            Test.assert_eq(got, 'one line');
+            Net.close(p.server);
+            Net.close(p.client)
+        }),
+
+        Test.case('read_until includes the delimiter', fn() {
+            p := make_pair();
+            got := null;
+            go fn() { Net.write(p.client, Bytes.from_string('field,rest')) };
+            go fn() { got = Net.read_until(p.server, 44) };  // 44 = ','
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got), 'field,');
+            Net.close(p.server);
+            Net.close(p.client)
+        }),
+
+        Test.case('read_all drains to end-of-stream', fn() {
+            p := make_pair();
+            got := null;
+            go fn() {
+                Net.write(p.client, Bytes.from_string('every last byte'));
+                Net.close(p.client)
+            };
+            go fn() { got = Net.read_all(p.server) };
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got), 'every last byte');
+            Net.close(p.server)
+        }),
+    ]),
+
+    Test.suite('reactor — cooperative parking', [
+        Test.case('a parked reactor read does not freeze a sibling', fn() {
+            p := make_pair();
+            got := null;
+            counter := 0;
+            // This read parks on the reactor — no data yet.
+            go fn() { got = Net.read_line(p.server) };
+            // The sibling must keep advancing while the read is parked.
+            go fn() { while (got == null) { counter = counter + 1; yield } };
+            // Only now does the line arrive.
+            go fn() { Net.write(p.client, Bytes.from_string('delayed\n')) };
+            while (got == null) { yield };
+            Test.assert_eq(got, 'delayed');
+            Test.assert(counter > 0,
+                'a sibling should run while the read is parked');
+            Net.close(p.server);
+            Net.close(p.client)
+        }),
+
+        Test.case('close while parked in read wakes the reader with closed', fn() {
+            p := make_pair();
+            caught := null;
+            // Reader parks on the reactor; nothing is ever sent.
+            go fn() {
+                caught = try {
+                    Net.read(p.server, 16); 'no-error'
+                } catch (e) { e.kind }
+            };
+            // A different coroutine closes the socket out from under it.
+            go fn() { Net.close(p.server) };
+            while (caught == null) { yield };
+            Test.assert_eq(caught, 'closed');
+            Net.close(p.client)
+        }),
+    ]),
+
+    Test.suite('reactor — concurrent connections scale', [
+        Test.case('many parked socket reads coexist on one reactor', fn() {
+            // A loopback echo server and N clients, every connection
+            // handled by its own coroutine. With all of them parked in
+            // `Net.read` at once, the point is they coexist on the one
+            // reactor thread — Phase A would have wanted N worker
+            // threads.
+            n := 40;
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            results := for[] (i, 0..n) { null };
+
+            // Server: accept n connections; echo a line on each.
+            go fn() {
+                for (i, 0..n) {
+                    conn := Net.accept(listener);
+                    go fn() {
+                        line := Net.read_line(conn);
+                        Net.write(conn, Bytes.from_string(line + '\n'));
+                        Net.close(conn)
+                    }
+                };
+                Net.close(listener)
+            };
+
+            // n clients, each its own coroutine, each parked in a read.
+            for (i, 0..n) {
+                go fn() {
+                    c := Net.connect('127.0.0.1', port);
+                    Net.write(c, Bytes.from_string(str(i) + '\n'));
+                    results[i] = Net.read_line(c);
+                    Net.close(c)
+                }
+            };
+
+            all_done := fn() {
+                done := true;
+                for (i, 0..n) {
+                    if results[i] == null { done = false }
+                };
+                done
+            };
+            while (!all_done()) { yield };
+
+            ok := true;
+            for (i, 0..n) {
+                if results[i] != str(i) { ok = false }
+            };
+            Test.assert(ok, 'every client should read back its own id')
+        }),
+    ]),
+
+    Test.suite('reactor — inline path (no green threads)', [
+        Test.case('a no-go client round-trips on the inline path', fn() {
+            // The peer runs in a separate actor, so this actor has no
+            // green threads — `connect` / `write` / `read_line` all run
+            // inline (blocking) on the actor thread, never the reactor.
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            done := spawn fn() {
+                // The actor re-imports its modules — a native module
+                // cannot be captured across the actor boundary. The
+                // `listener` socket, though, is sendable.
+                a_net := import 'Net';
+                a_bytes := import 'Bytes';
+                conn := a_net.accept(listener);
+                line := a_net.read_line(conn);
+                a_net.write(conn, a_bytes.from_string(line + '\n'));
+                a_net.close(conn)
+            };
+            c := Net.connect('127.0.0.1', port);
+            Net.write(c, Bytes.from_string('inline\n'));
+            echo := Net.read_line(c);
+            Net.close(c);
+            Net.close(listener);
+            join(done);
+            Test.assert_eq(echo, 'inline')
+        }),
+    ]),
+]

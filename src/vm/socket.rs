@@ -26,6 +26,7 @@ use std::io::{self, Read, Write};
 use std::net::{
     Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -42,11 +43,12 @@ type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 /// How long `connect` / `connect_tls` wait for the TCP handshake before
 /// giving up — a bounded default, since neither takes a timeout arg.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per-syscall read size for the delimiter-scanning helper.
-const CHUNK: usize = 8192;
+/// Per-syscall read size for the delimiter-scanning helper. Also the
+/// reactor's per-event read size — see [`crate::vm::reactor`].
+pub(crate) const CHUNK: usize = 8192;
 /// Cap on a single `read_chunk` syscall — a huge `n` must not allocate
 /// gigabytes up front. A short read is valid; the caller loops.
-const MAX_DIRECT_READ: usize = 65536;
+pub(crate) const MAX_DIRECT_READ: usize = 65536;
 /// Cap on a single UDP datagram receive buffer.
 const MAX_DATAGRAM: usize = 65536;
 /// Poll cadence for an interruptible `accept` — the wait between
@@ -95,6 +97,12 @@ pub struct SocketInner {
     kind: SocketKind,
     /// Set by `close`; every operation checks it and raises `Closed`.
     closed: AtomicBool,
+    /// Tracks whether the fd is currently in non-blocking mode. The
+    /// reactor sets it non-blocking to drive an op on the poll thread;
+    /// the inline blocking executor sets it back. Only meaningful for
+    /// reactor-managed kinds (a connected `TcpStream`); a redundant
+    /// fcntl is skipped when the mode already matches.
+    nonblocking: AtomicBool,
     /// A spare `TcpStream` clone held outside every I/O lock, used only
     /// by `close` to fire `shutdown(Both)` — that unblocks a reader
     /// stuck on a different clone. `None` for listeners / UDP.
@@ -134,6 +142,7 @@ fn tcp_stream_socket(stream: TcpStream) -> Result<SocketHandle, NetError> {
             write: Mutex::new(write),
         },
         closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
         // `stream` itself becomes the close-only shutdown handle.
         shutdown: Mutex::new(Some(stream)),
         read_buf: Mutex::new(Vec::new()),
@@ -150,6 +159,7 @@ pub fn listen(host: &str, port: u16) -> Result<SocketHandle, NetError> {
     Ok(Arc::new(SocketInner {
         kind: SocketKind::TcpListener(listener),
         closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
         shutdown: Mutex::new(None),
         read_buf: Mutex::new(Vec::new()),
         id: next_id(),
@@ -169,6 +179,7 @@ pub fn udp_bind(host: &str, port: u16) -> Result<SocketHandle, NetError> {
     Ok(Arc::new(SocketInner {
         kind: SocketKind::Udp(socket),
         closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
         shutdown: Mutex::new(None),
         read_buf: Mutex::new(Vec::new()),
         id: next_id(),
@@ -208,6 +219,7 @@ pub fn connect_tls(host: &str, port: u16) -> Result<SocketHandle, NetError> {
     Ok(Arc::new(SocketInner {
         kind: SocketKind::Tls(Mutex::new(Box::new(tls))),
         closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
         shutdown: Mutex::new(Some(shutdown)),
         read_buf: Mutex::new(Vec::new()),
         id: next_id(),
@@ -438,6 +450,168 @@ impl SocketInner {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
+
+    // -- reactor support ---------------------------------------------
+    //
+    // The reactor ([`crate::vm::reactor`]) drives a socket op on its
+    // poll thread with the fd in non-blocking mode. These primitives
+    // expose just enough of `SocketInner` for the reactor's state
+    // machine, and for the inline blocking executor to restore the
+    // blocking mode a prior reactor op may have left behind.
+
+    /// Has the socket been `close`d?
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Can the reactor drive ops on this socket? True for a connected
+    /// `TcpStream`. A TLS / listener / UDP socket stays on the worker
+    /// pool in sub-phase B1.
+    pub fn reactor_eligible(&self) -> bool {
+        matches!(self.kind, SocketKind::TcpStream { .. })
+    }
+
+    /// The raw fd to register for a read-direction reactor op (the read
+    /// half of a connected stream). `None` for a non-stream socket.
+    pub fn read_raw_fd(&self) -> Option<RawFd> {
+        match &self.kind {
+            SocketKind::TcpStream { read, .. } => {
+                Some(read.lock().unwrap().as_raw_fd())
+            }
+            _ => None,
+        }
+    }
+
+    /// The raw fd to register for a write-direction reactor op. The
+    /// write half is a distinct `dup`'d fd, so a concurrent read and
+    /// write on one socket register two independent fds.
+    pub fn write_raw_fd(&self) -> Option<RawFd> {
+        match &self.kind {
+            SocketKind::TcpStream { write, .. } => {
+                Some(write.lock().unwrap().as_raw_fd())
+            }
+            _ => None,
+        }
+    }
+
+    /// Toggle the fd's non-blocking mode. `O_NONBLOCK` lives on the
+    /// shared open file description, so setting it through any clone
+    /// (read / write / shutdown) affects every clone. A redundant
+    /// fcntl is skipped when the mode already matches.
+    pub fn set_nonblocking_mode(&self, nb: bool) -> io::Result<()> {
+        if self.nonblocking.load(Ordering::Acquire) == nb {
+            return Ok(());
+        }
+        match &self.kind {
+            SocketKind::TcpStream { read, .. } => {
+                read.lock().unwrap().set_nonblocking(nb)?;
+            }
+            SocketKind::Tls(m) => {
+                m.lock().unwrap().sock.set_nonblocking(nb)?;
+            }
+            SocketKind::Udp(u) => u.set_nonblocking(nb)?,
+            // The listener manages its own non-blocking mode.
+            SocketKind::TcpListener(_) => return Ok(()),
+        }
+        self.nonblocking.store(nb, Ordering::Release);
+        Ok(())
+    }
+
+    /// One non-blocking `read` syscall on the stream's read half.
+    /// `Ok(0)` is end-of-stream; `WouldBlock` means the reactor should
+    /// wait for the next readiness event.
+    pub fn nb_read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        match &self.kind {
+            SocketKind::TcpStream { read, .. } => {
+                let guard = read.lock().unwrap();
+                let mut stream: &TcpStream = &guard;
+                stream.read(buf)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "reactor read expects a connected TCP stream",
+            )),
+        }
+    }
+
+    /// One non-blocking `write` syscall on the stream's write half.
+    pub fn nb_write(&self, buf: &[u8]) -> io::Result<usize> {
+        match &self.kind {
+            SocketKind::TcpStream { write, .. } => {
+                let guard = write.lock().unwrap();
+                let mut stream: &TcpStream = &guard;
+                stream.write(buf)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "reactor write expects a connected TCP stream",
+            )),
+        }
+    }
+
+    /// Drain up to `n` bytes already buffered by an over-reading
+    /// `read_until`; an empty vec means the buffer is empty.
+    pub fn take_buffered(&self, n: usize) -> Vec<u8> {
+        let mut buf = self.read_buf.lock().unwrap();
+        let k = n.min(buf.len());
+        buf.drain(..k).collect()
+    }
+
+    /// Drain the buffer through the first `delim` byte (inclusive);
+    /// `None` when the delimiter is not buffered yet.
+    pub fn take_buffered_until(&self, delim: u8) -> Option<Vec<u8>> {
+        let mut buf = self.read_buf.lock().unwrap();
+        let pos = buf.iter().position(|&b| b == delim)?;
+        Some(buf.drain(..=pos).collect())
+    }
+
+    /// Drain every buffered byte.
+    pub fn take_buffered_all(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.read_buf.lock().unwrap())
+    }
+
+    /// Append freshly-received bytes to the read buffer.
+    pub fn push_buffered(&self, data: &[u8]) {
+        self.read_buf.lock().unwrap().extend_from_slice(data);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Declarative socket operations
+// ---------------------------------------------------------------------
+
+/// A socket operation, described declaratively so the *same* op can run
+/// two ways: inline (blocking, on the actor thread, when nothing else
+/// is waiting) or on the reactor (a non-blocking state machine). The
+/// read accumulators (`got`) and the write cursor (`sent`) let the
+/// reactor resume an op across several readiness events; the inline
+/// executor starts them fresh. Built by a `Net` `NativeKind::Socket`
+/// native; carried in a [`ReactorOp`].
+pub enum SocketOp {
+    /// `Net.read(sock, n)` — up to `n` bytes (empty = end-of-stream).
+    ReadChunk(usize),
+    /// `Net.read_exact(sock, n)` — exactly `need` bytes; `got` holds
+    /// what has arrived so far.
+    ReadExact { need: usize, got: Vec<u8> },
+    /// `Net.read_line(sock)` — one `\n`-terminated line, decoded.
+    ReadLine,
+    /// `Net.read_until(sock, byte)` — up to and including `delim`.
+    ReadUntil(u8),
+    /// `Net.read_all(sock)` — every byte until end-of-stream; `got`
+    /// accumulates across readiness events.
+    ReadAll(Vec<u8>),
+    /// `Net.write(sock, bytes)` — every byte of `data`; `sent` is the
+    /// count written so far.
+    WriteAll { data: Vec<u8>, sent: usize },
+}
+
+/// A [`SocketOp`] bound to the socket it runs against, plus a label for
+/// error messages. The unit a `NativeKind::Socket` native produces and
+/// the reactor (or the inline executor) consumes.
+pub struct ReactorOp {
+    pub socket: SocketHandle,
+    pub op: SocketOp,
+    pub label: &'static str,
 }
 
 #[cfg(test)]
@@ -449,8 +623,12 @@ mod tests {
     #[test]
     fn socket_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
+        fn assert_send<T: Send>() {}
         assert_send_sync::<SocketInner>();
         assert_send_sync::<SocketHandle>();
         assert_send_sync::<NetError>();
+        // A `ReactorOp` is handed to the reactor thread / worker pool.
+        assert_send::<SocketOp>();
+        assert_send::<ReactorOp>();
     }
 }

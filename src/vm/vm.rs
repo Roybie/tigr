@@ -33,6 +33,8 @@ use crate::vm::gc::{
 };
 use crate::vm::offload::{self, BlockingJob, CompletionMailbox};
 use crate::vm::opcode::OpCode;
+use crate::vm::reactor;
+use crate::vm::socket::ReactorOp;
 use crate::vm::scheduler::{
     GenStatus, GeneratorState, GreenHandle, GreenThread, ResumeOutcome, Scheduler,
 };
@@ -1020,6 +1022,9 @@ impl Vm {
                                 NativeKind::Blocking(f) => {
                                     self.dispatch_blocking(*f, args, line)?;
                                 }
+                                NativeKind::Socket(f) => {
+                                    self.dispatch_socket(*f, args, line)?;
+                                }
                             }
                             continue;
                         }
@@ -1115,6 +1120,9 @@ impl Vm {
                                 }
                                 NativeKind::Blocking(f) => {
                                     self.dispatch_blocking(*f, args, line)?;
+                                }
+                                NativeKind::Socket(f) => {
+                                    self.dispatch_socket(*f, args, line)?;
                                 }
                             }
                             continue;
@@ -1623,6 +1631,11 @@ impl Vm {
                                         *f, call_args, line,
                                     )?;
                                 }
+                                NativeKind::Socket(f) => {
+                                    self.dispatch_socket(
+                                        *f, call_args, line,
+                                    )?;
+                                }
                             }
                             continue;
                         }
@@ -2124,6 +2137,18 @@ impl Vm {
                             e
                         })
                     }
+                    NativeKind::Socket(f) => {
+                        let rop = f(&args).map_err(|mut e| {
+                            if e.line == 0 { e.line = line; }
+                            e
+                        })?;
+                        offload::decode(reactor::run_blocking(rop)).map_err(
+                            |mut e| {
+                                if e.line == 0 { e.line = line; }
+                                e
+                            },
+                        )
+                    }
                 }
             }
             Value::Function(c) => {
@@ -2389,6 +2414,57 @@ impl Vm {
         let job_id = self.next_job_id;
         self.next_job_id += 1;
         offload::submit(job_id, self.mailbox.clone(), job);
+        let parked = self.save_current(None);
+        self.scheduler.park_io(job_id, parked);
+        let next = self
+            .pick_next()
+            .expect("an io-blocked coroutine guarantees progress");
+        self.load_green(next)
+    }
+
+    /// Run a `Socket` native — a steady-state `Net` read / write. Like
+    /// [`dispatch_blocking`] it runs inline when the actor is idle, but
+    /// the offload path drives the op on the async-IO reactor (see
+    /// [`crate::vm::reactor`]) rather than tying up a worker thread.
+    /// Sockets the reactor cannot drive yet (TLS, in sub-phase B1) fall
+    /// back to the worker pool — the inline executor run off-thread.
+    fn dispatch_socket(
+        &mut self,
+        extract: fn(&[Value]) -> Result<ReactorOp, RuntimeError>,
+        args: Vec<Value>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let rop = extract(&args).map_err(|mut e| {
+            if e.line == 0 { e.line = line; }
+            e
+        })?;
+        // Inline fast path: nothing else is waiting, so the blocking
+        // call may as well run here. A generator body is pulled
+        // synchronously and likewise cannot offload-park.
+        if self.current_gen.is_some() || self.scheduler.is_idle() {
+            let result = offload::decode(reactor::run_blocking(rop))
+                .map_err(|mut e| {
+                    if e.line == 0 { e.line = line; }
+                    e
+                })?;
+            self.stack.push(result);
+            return Ok(());
+        }
+        // Offload path: park this coroutine until the completion is
+        // pumped back. A connected TCP stream goes to the reactor; any
+        // other socket kind (TLS) takes the worker pool, reusing the
+        // inline executor as the off-thread job.
+        let job_id = self.next_job_id;
+        self.next_job_id += 1;
+        if rop.socket.reactor_eligible() {
+            reactor::submit(job_id, self.mailbox.clone(), rop);
+        } else {
+            offload::submit(
+                job_id,
+                self.mailbox.clone(),
+                Box::new(move || reactor::run_blocking(rop)),
+            );
+        }
         let parked = self.save_current(None);
         self.scheduler.park_io(job_id, parked);
         let next = self

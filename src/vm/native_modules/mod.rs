@@ -34,6 +34,7 @@ use indexmap::IndexMap;
 use crate::vm::error::RuntimeError;
 use crate::vm::gc;
 use crate::vm::offload::BlockingJob;
+use crate::vm::socket::ReactorOp;
 use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 
 /// Look up a bare-name module. Returns `None` if no native module of
@@ -94,6 +95,23 @@ pub(crate) fn native_blocking(
         name,
         arity,
         kind: NativeKind::Blocking(func),
+    }))
+}
+
+/// Build a `Value::NativeFn` for a steady-state *socket* entry — a
+/// `Net` stream / datagram call the VM drives on the async-IO reactor
+/// instead of a worker thread (see [`crate::vm::reactor`]). `func` runs
+/// on the actor thread to validate arguments and build a
+/// [`ReactorOp`]; the reactor's poll thread carries it out.
+pub(crate) fn native_socket(
+    name: &'static str,
+    arity: Arity,
+    func: fn(&[Value]) -> Result<ReactorOp, RuntimeError>,
+) -> Value {
+    Value::NativeFn(Rc::new(NativeFn {
+        name,
+        arity,
+        kind: NativeKind::Socket(func),
     }))
 }
 

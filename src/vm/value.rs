@@ -411,6 +411,18 @@ pub enum NativeKind {
             crate::vm::error::RuntimeError,
         >,
     ),
+    /// A steady-state socket call (`Net` stream / datagram I/O). The
+    /// `fn` runs on the actor thread to validate arguments and build a
+    /// declarative [`crate::vm::socket::ReactorOp`]; the VM then drives
+    /// it on the async-IO reactor so thousands of parked socket ops
+    /// cost one poll thread, not one worker thread each. See
+    /// [`crate::vm::reactor`].
+    Socket(
+        fn(&[Value]) -> Result<
+            crate::vm::socket::ReactorOp,
+            crate::vm::error::RuntimeError,
+        >,
+    ),
 }
 
 #[allow(dead_code)] // AtLeast not used until later phases (e.g. fold)

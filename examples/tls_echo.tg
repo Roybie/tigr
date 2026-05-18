@@ -1,0 +1,107 @@
+// tls_echo.tg — a TLS echo server and clients in one process (v0.15).
+//
+// This is `tcp_echo.tg` over TLS. The only differences are at the two
+// endpoints: the server `listen_tls`es with a certificate and key, and
+// each client `connect_tls`es. The per-connection *handler* code —
+// `accept`, `read_line`, `write`, `close` — is byte-identical to the
+// plain-TCP version, because `accept` on a TLS listener transparently
+// yields an already-encrypted socket.
+//
+// It runs hermetically offline: the server presents a throwaway
+// self-signed certificate (the `TLS_CERT` / `TLS_KEY` constants below,
+// for `127.0.0.1`), and each client passes that same certificate as a
+// trusted CA so verification succeeds. Embedded as raw strings — `"…"`
+// neither interpolates nor escapes, so the PEM newlines pass through.
+
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+TLS_CERT := "-----BEGIN CERTIFICATE-----
+MIIDJDCCAgygAwIBAgIUHGaC7x8IAUhI5G7GcTFbJgCIiNMwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDUxODE1MzIwNVoYDzIxMjYw
+NDI0MTUzMjA1WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCtBIPv003IaEGG4vHfn2RHy9EYf6Y2wCn0km1ns5Ee
+Hh8eR9rVg++8DuldjqOF5yyz7QHJxfwppRY/BPmhCffX4vR/jbBz+x64YeIU6WV3
+D1n+9YrVrbtzVvN1fUbIPQ3Xl/mIYKAbMgiPTTpqZCthdzdMGi+aZBrWWnGouc9N
+Ia1c654e9XJqN1SeK++Aj5EoIx08smbDgf7qSRp1ZCMoOLHVxWIK+m9+AXofkbjw
+/V2fOgLG4YBbPrmQlCbABFmkgUm7zlqTRMU2uktaB1+GoyuKj4/TNDq+gYusqJjW
+9QhUTGE30gNdQt/M5SnrljwxUNMguFVvyqMeEwNkchUBAgMBAAGjbDBqMB0GA1Ud
+DgQWBBQzRnbOZzyrHYVTUffClvp7sWQrBzAfBgNVHSMEGDAWgBQzRnbOZzyrHYVT
+UffClvp7sWQrBzAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwDAYDVR0TAQH/
+BAIwADANBgkqhkiG9w0BAQsFAAOCAQEAMbMrmF9HbranBvsI3vVVl75cgqlG630a
+ybzTJK8il1Bz76Va3Q9uCKRBWm1LIdVKA9Z5xWNSG91hRjMwq5Z/opz3eDrtPg1p
+WL7moKP0oOsJVRdYxLdN90DeQ6Tzvy1R8ZARjNixl9SNZscrsvmXraedD+iT0mGn
+PRVEcp1vxBli9uf7LzJhmNcGG5XG1322MR/qI4NgnNvYs0rrkDTh4E2ZaceXBRbD
+JXXbIeDmC5v5UrQrtc08sgwkEmFbC6f7Che3ninNvmhHHOP3fSALfNetb6QxWVin
+Y/QOmRhZc0qIPTuTbaWNzYSHPhluJLAD4zZLXQAeRJFgA8gVBbC5cw==
+-----END CERTIFICATE-----
+";
+
+TLS_KEY := "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCtBIPv003IaEGG
+4vHfn2RHy9EYf6Y2wCn0km1ns5EeHh8eR9rVg++8DuldjqOF5yyz7QHJxfwppRY/
+BPmhCffX4vR/jbBz+x64YeIU6WV3D1n+9YrVrbtzVvN1fUbIPQ3Xl/mIYKAbMgiP
+TTpqZCthdzdMGi+aZBrWWnGouc9NIa1c654e9XJqN1SeK++Aj5EoIx08smbDgf7q
+SRp1ZCMoOLHVxWIK+m9+AXofkbjw/V2fOgLG4YBbPrmQlCbABFmkgUm7zlqTRMU2
+uktaB1+GoyuKj4/TNDq+gYusqJjW9QhUTGE30gNdQt/M5SnrljwxUNMguFVvyqMe
+EwNkchUBAgMBAAECggEADJgJoYf26g76sWlCFBYWVtU1bcGBlWEp/KaO8Po6ETWT
+QXaXWCzlIwIj3FPxFQ1gLI2khcMpU9UI4u1HXWtBaj/Cg9QKDiXZ6oUcz4sIqstd
+heiUzUZ64KOpj48JpggvAoHftPIG8svSzIQ21mk0W4Ecb5KauJ6E8emTSzs75XWJ
+U9VBfn2/QYNPgurVwldM0sgCC7fxKBywyBlVdbGQdgxMAnI3eKYWymZzQ/7GXjhL
+fBb2BfoiVnEn2g3jivA6Cxa7N7B9s8EEELJBER0JAfMfFwM3X7umCAmuPAJTixNa
+9/Et3R1y/pyWVzdtX9yOvnDB3gQGZ/b3AaFd6LqnNQKBgQDs02f2p1dUXVLmTQla
+yNHdZ+hA6nZkLe068Ss062GO4m10r5O96hOy8ybx6KOFmIkbcB4VO6z90srAG+Uu
+zG4el2Ssb1SJQwcpRcR0lkPERYroDXl7lgW44kV/tJk9srmiFag2yqNd0jPGYmjy
+8ZrD/Qkr2hdykXsIUaSe7lEsDQKBgQC7BpU3UGBSx3zYM6nyskp7JPP5pmA43x43
+5PNmhhGmhpszs0F0P98GiWsqb1+7+FZmwNrM7H59xU3RIkT1e7j88w1UoN+v0qaK
+guscIM7B84w4evRdwKcpRfRvcWwpJ3vxBZxdEdDU3NogXxuC/VS9EZlzx42hJNUd
+DvtCLakrxQKBgQCfYPLBawL5ksi8lrGp+CZMc6Y5MdE1QDc8CJvERHhmWXnCInsy
+Pzq8nqjh+mc5/FqhLYYBUiTsuRSbzuog4ZFmYwpshYwFyCcknoBE2e+HQinmW1Mb
+We5F63lMJXVPsVz+eMa5AQyKknEnnIj2nqRCK6MlcOOAxelfwtof31CfbQKBgCzq
+QM2e7PMUW4QkrCzP6pk2X61V6ofd9Yjg4B+AFR8T9pPs+cwsRqhwOh9fzfL7iex1
+ZlaOeTZFOxH9k+gMhXmh+VKYq/+yrDJZjJMdwenMTqGFzcfyK3L7DN/yslIT3G0e
+ttWXILruKyhZDudfZYlef6bRhs7rZI7s+SSEiLstAoGAeP4+Cug9rh/T9uWRKqop
+/TCAy0RWXC6HsI/2f0QYID+pNLny7S6uYD9mQZuMiRG16Yy/PYaCsnikvMlBPh6E
+1MjbLLo2z5DEiMJGwo+q0ZM5bJmicDwK8KPTujqA85xvLZHcJ1LNL+TECXe/ay6J
+M1Urz00ZnqiZaAmTqtdp2sg=
+-----END PRIVATE KEY-----
+";
+
+listener := Net.listen_tls('127.0.0.1', 0, TLS_CERT, TLS_KEY);
+port := Net.local_addr(listener).port;
+print('TLS echo server listening on 127.0.0.1:' + str(port));
+
+// The server: accept three connections, hand each to its own handler
+// actor, then join the handlers and stop. The handler body below is
+// the same as `tcp_echo.tg` — `accept` already returned a TLS socket.
+server := spawn fn() {
+    N := import 'Net';
+    handlers := for[] (i, 1..=3) {
+        conn := N.accept(listener);
+        spawn fn() {
+            M := import 'Net';
+            B := import 'Bytes';
+            line := M.read_line(conn);
+            M.write(conn, B.from_string('echo: ' + line + '\n'));
+            M.close(conn);
+            null
+        }
+    };
+    for (h, handlers) { join(h) };
+    N.close(listener);
+    null
+};
+
+// Three clients, each opening a TLS connection, sending one line and
+// reading the echo back. The 3rd `connect_tls` argument trusts the
+// server's self-signed certificate as a private CA.
+replies := for[] (i, 1..=3) {
+    client := Net.connect_tls('127.0.0.1', port, TLS_CERT);
+    Net.write(client, Bytes.from_string('hello ' + str(i) + '\n'));
+    reply := Net.read_line(client);
+    Net.close(client);
+    reply
+};
+
+print('clients received:', replies);
+join(server);

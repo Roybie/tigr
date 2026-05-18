@@ -1280,7 +1280,8 @@ actor.
 | `listen`      | `listen(host, port) -> socket`             | A TCP listener bound to `host:port`; port `0` lets the OS assign one  |
 | `accept`      | `accept(listener) -> socket`               | Block for the next inbound connection                                 |
 | `connect`     | `connect(host, port) -> socket`            | Open a TCP stream to `host:port`                                       |
-| `connect_tls` | `connect_tls(host, port) -> socket`        | Open a TLS stream; `host` is verified against the server certificate  |
+| `connect_tls` | `connect_tls(host, port, [ca_pem]) -> socket` | Open a TLS stream; `host` is verified against the server certificate; optional `ca_pem` adds trusted roots |
+| `listen_tls`  | `listen_tls(host, port, cert_pem, key_pem) -> socket` | A TLS server listener; `accept` yields encrypted server sockets   |
 | `bind`        | `bind(host, port) -> socket`               | A UDP datagram socket bound to `host:port`                             |
 | `send_to`     | `send_to(sock, bytes, host, port) -> Int`  | Send one UDP datagram; returns the byte count sent                     |
 | `recv_from`   | `recv_from(sock, n) -> Object`             | Receive one datagram (≤ `n` bytes) as `${data: Bytes, host, port}`     |
@@ -2232,7 +2233,10 @@ Additive changes:
     reads/writes; `close` is idempotent and unblocks a reader stuck
     mid-`read` (and an actor stuck in `accept`, which then raises
     `closed`). `connect_tls` verifies the server certificate against
-    the host OS trust store. `select` is *not* extended to sockets —
+    the host OS trust store (plus an optional extra-CA PEM argument);
+    `listen_tls` is the TLS *server* side — its `accept` yields
+    encrypted server sockets, so `Http.serve(Net.listen_tls(...))` is
+    an HTTPS server. `select` is *not* extended to sockets —
     bridge a socket to a channel with a reader actor to multiplex. The
     `Bytes` buffer (v0.13) is the enabler this was the prerequisite
     for.

@@ -31,21 +31,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, RootCertStore};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::{
+    ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig,
+    ServerConnection,
+};
 
 /// A shared, `Send` socket handle. Cloning bumps the `Arc` refcount.
 pub type SocketHandle = Arc<SocketInner>;
 
-/// A TLS client connection in unbundled form: the sans-IO `rustls`
-/// state machine plus the raw `TcpStream` it drives. The reactor sets
-/// `sock` non-blocking and hand-drives `rustls` ([`tls_read`] /
-/// [`tls_write`]); the inline executor drives the same loop against a
-/// blocking `sock`. One `Mutex` covers the pair on [`SocketKind::Tls`]
-/// — `rustls` keeps a single stateful connection, so reads and writes
-/// share it.
+/// A TLS connection in unbundled form: the sans-IO `rustls` state
+/// machine plus the raw `TcpStream` it drives. The reactor sets `sock`
+/// non-blocking and hand-drives `rustls` ([`tls_read`] / [`tls_write`]);
+/// the inline executor drives the same loop against a blocking `sock`.
+/// One `Mutex` covers the pair on [`SocketKind::Tls`] — `rustls` keeps a
+/// single stateful connection, so reads and writes share it. `conn` is
+/// the `rustls` enum over client and server connections, so one
+/// [`SocketKind::Tls`] serves both a `connect_tls` client and an
+/// `accept`ed server socket.
 struct TlsState {
-    conn: ClientConnection,
+    conn: Connection,
     sock: TcpStream,
 }
 
@@ -102,10 +108,14 @@ enum SocketKind {
     TcpStream { read: Mutex<TcpStream>, write: Mutex<TcpStream> },
     /// A UDP datagram socket. Its methods take `&self`.
     Udp(UdpSocket),
-    /// A connected TLS client stream. Not split — `rustls` keeps a
-    /// single stateful connection, so one lock covers both directions.
-    /// Boxed to keep the `SocketKind` enum small.
+    /// A connected TLS stream (client or server side). Not split —
+    /// `rustls` keeps a single stateful connection, so one lock covers
+    /// both directions. Boxed to keep the `SocketKind` enum small.
     Tls(Mutex<Box<TlsState>>),
+    /// A listening TLS server socket. `accept` performs the TCP accept,
+    /// then wraps the stream in a server-side `rustls` connection built
+    /// from `config`.
+    TlsListener { listener: TcpListener, config: Arc<ServerConfig> },
 }
 
 pub struct SocketInner {
@@ -220,24 +230,146 @@ fn tls_config() -> Arc<ClientConfig> {
         .clone()
 }
 
+/// Build a TLS client config. With no `extra_ca` this is the shared,
+/// cached [`tls_config`]. With `extra_ca` (a PEM bundle of additional
+/// trusted certificates) a fresh, uncached config is built whose root
+/// store holds the OS trust roots *plus* those certificates — used to
+/// connect to a private-CA or self-signed service (e.g. tigr's own
+/// `listen_tls` server in the test suite).
+fn tls_client_config(
+    extra_ca: Option<&[u8]>,
+) -> Result<Arc<ClientConfig>, NetError> {
+    let Some(ca_pem) = extra_ca else {
+        return Ok(tls_config());
+    };
+    let mut roots = RootCertStore::empty();
+    let loaded = rustls_native_certs::load_native_certs();
+    roots.add_parsable_certificates(loaded.certs);
+    let extra: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(ca_pem)
+            .collect::<Result<_, _>>()
+            .map_err(|e| NetError::Tls(format!("trusted CA PEM: {e}")))?;
+    if extra.is_empty() {
+        return Err(NetError::Tls(
+            "trusted CA PEM contained no certificates".into(),
+        ));
+    }
+    for cert in extra {
+        roots
+            .add(cert)
+            .map_err(|e| NetError::Tls(format!("trusted CA: {e}")))?;
+    }
+    let provider = rustls::crypto::ring::default_provider();
+    let config = ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .expect("ring provider supports the default TLS versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
 /// Open a TLS-encrypted TCP connection to `host:port`. `host` doubles
-/// as the certificate-verification server name. The handshake runs to
-/// completion here (this is offloaded to the worker pool, since DNS
-/// and the handshake are blocking); the resulting connection is then
-/// driven for steady-state data I/O on the reactor.
-pub fn connect_tls(host: &str, port: u16) -> Result<SocketHandle, NetError> {
+/// as the certificate-verification server name. `extra_ca_pem`, when
+/// given, adds trusted root certificates beyond the OS trust store. The
+/// handshake runs to completion here (this is offloaded to the worker
+/// pool, since DNS and the handshake are blocking); the resulting
+/// connection is then driven for steady-state data I/O on the reactor.
+pub fn connect_tls(
+    host: &str,
+    port: u16,
+    extra_ca_pem: Option<&[u8]>,
+) -> Result<SocketHandle, NetError> {
+    // Build the config first — bad CA PEM fails before we touch the net.
+    let config = tls_client_config(extra_ca_pem)?;
     let addr = resolve(host, port)?;
     let mut tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
     let shutdown = tcp.try_clone()?;
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| NetError::Tls(format!("invalid server name '{host}': {e}")))?;
-    let mut conn = ClientConnection::new(tls_config(), server_name)
+    let mut conn = ClientConnection::new(config, server_name)
         .map_err(|e| NetError::Tls(e.to_string()))?;
     // Drive the handshake to completion against the blocking socket.
     conn.complete_io(&mut tcp)
         .map_err(|e| NetError::Tls(format!("handshake failed: {e}")))?;
     Ok(Arc::new(SocketInner {
-        kind: SocketKind::Tls(Mutex::new(Box::new(TlsState { conn, sock: tcp }))),
+        kind: SocketKind::Tls(Mutex::new(Box::new(TlsState {
+            conn: Connection::Client(conn),
+            sock: tcp,
+        }))),
+        closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
+        shutdown: Mutex::new(Some(shutdown)),
+        read_buf: Mutex::new(Vec::new()),
+        id: next_id(),
+    }))
+}
+
+/// Build a TLS server config from a PEM certificate chain and a PEM
+/// private key. A bad PEM, an empty chain, or a cert / key mismatch all
+/// surface as [`NetError::Tls`].
+fn tls_server_config(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<Arc<ServerConfig>, NetError> {
+    let chain: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(cert_pem)
+            .collect::<Result<_, _>>()
+            .map_err(|e| NetError::Tls(format!("certificate PEM: {e}")))?;
+    if chain.is_empty() {
+        return Err(NetError::Tls(
+            "certificate PEM contained no certificates".into(),
+        ));
+    }
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| NetError::Tls(format!("private key PEM: {e}")))?;
+    let provider = rustls::crypto::ring::default_provider();
+    let config = ServerConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .expect("ring provider supports the default TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .map_err(|e| NetError::Tls(format!("certificate / key: {e}")))?;
+    Ok(Arc::new(config))
+}
+
+/// Bind a listening TLS server socket. The certificate and key are PEM
+/// content (not file paths), keeping `Net` filesystem-free. The config
+/// is built *before* binding, so a bad cert / key fails fast.
+pub fn listen_tls(
+    host: &str,
+    port: u16,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<SocketHandle, NetError> {
+    let config = tls_server_config(cert_pem, key_pem)?;
+    let listener = TcpListener::bind((host, port))?;
+    // Non-blocking, exactly like `listen` — see `SocketInner::accept`.
+    listener.set_nonblocking(true)?;
+    Ok(Arc::new(SocketInner {
+        kind: SocketKind::TlsListener { listener, config },
+        closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
+        shutdown: Mutex::new(None),
+        read_buf: Mutex::new(Vec::new()),
+        id: next_id(),
+    }))
+}
+
+/// Wrap a freshly-accepted `TcpStream` in a server-side TLS socket. The
+/// `rustls` handshake is *not* run here — it completes lazily on the
+/// first reactor-driven I/O (see [`tls_read`] / [`pump_handshake`]).
+fn tls_server_socket(
+    stream: TcpStream,
+    config: Arc<ServerConfig>,
+) -> Result<SocketHandle, NetError> {
+    let shutdown = stream.try_clone()?;
+    let conn = ServerConnection::new(config)
+        .map_err(|e| NetError::Tls(e.to_string()))?;
+    Ok(Arc::new(SocketInner {
+        kind: SocketKind::Tls(Mutex::new(Box::new(TlsState {
+            conn: Connection::Server(conn),
+            sock: stream,
+        }))),
         closed: AtomicBool::new(false),
         nonblocking: AtomicBool::new(false),
         shutdown: Mutex::new(Some(shutdown)),
@@ -277,9 +409,11 @@ impl SocketInner {
                 let st: &mut TlsState = &mut guard;
                 Ok(tls_read(st, buf)?)
             }
-            SocketKind::TcpListener(_) | SocketKind::Udp(_) => Err(
-                NetError::WrongKind("read expects a connected stream".into()),
-            ),
+            SocketKind::TcpListener(_)
+            | SocketKind::Udp(_)
+            | SocketKind::TlsListener { .. } => Err(NetError::WrongKind(
+                "read expects a connected stream".into(),
+            )),
         }
     }
 
@@ -360,9 +494,11 @@ impl SocketInner {
                 flush_tls(st)?;
                 Ok(())
             }
-            SocketKind::TcpListener(_) | SocketKind::Udp(_) => Err(
-                NetError::WrongKind("write expects a connected stream".into()),
-            ),
+            SocketKind::TcpListener(_)
+            | SocketKind::Udp(_)
+            | SocketKind::TlsListener { .. } => Err(NetError::WrongKind(
+                "write expects a connected stream".into(),
+            )),
         }
     }
 
@@ -372,25 +508,36 @@ impl SocketInner {
     /// within `ACCEPT_POLL` and raising `Closed` — rather than parking
     /// in a syscall that `close` could not interrupt.
     pub fn accept(&self) -> Result<SocketHandle, NetError> {
-        match &self.kind {
-            SocketKind::TcpListener(l) => loop {
-                if self.closed.load(Ordering::Acquire) {
-                    return Err(NetError::Closed);
+        let (listener, config) = match &self.kind {
+            SocketKind::TcpListener(l) => (l, None),
+            SocketKind::TlsListener { listener, config } => {
+                (listener, Some(config))
+            }
+            _ => {
+                return Err(NetError::WrongKind(
+                    "accept expects a listener".into(),
+                ));
+            }
+        };
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return Err(NetError::Closed);
+            }
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    // The listener is non-blocking; hand back a blocking
+                    // stream (its clones inherit the mode).
+                    stream.set_nonblocking(false)?;
+                    return match config {
+                        Some(cfg) => tls_server_socket(stream, cfg.clone()),
+                        None => tcp_stream_socket(stream),
+                    };
                 }
-                match l.accept() {
-                    Ok((stream, _addr)) => {
-                        // The listener is non-blocking; hand back a
-                        // blocking stream (its clones inherit the mode).
-                        stream.set_nonblocking(false)?;
-                        return tcp_stream_socket(stream);
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(ACCEPT_POLL);
-                    }
-                    Err(e) => return Err(e.into()),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(ACCEPT_POLL);
                 }
-            },
-            _ => Err(NetError::WrongKind("accept expects a listener".into())),
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -426,6 +573,7 @@ impl SocketInner {
             }
             SocketKind::Udp(u) => u.local_addr()?,
             SocketKind::Tls(m) => m.lock().unwrap().sock.local_addr()?,
+            SocketKind::TlsListener { listener, .. } => listener.local_addr()?,
         })
     }
 
@@ -436,9 +584,11 @@ impl SocketInner {
                 Ok(read.lock().unwrap().peer_addr()?)
             }
             SocketKind::Tls(m) => Ok(m.lock().unwrap().sock.peer_addr()?),
-            SocketKind::TcpListener(_) | SocketKind::Udp(_) => Err(
-                NetError::WrongKind("peer_addr expects a connected stream".into()),
-            ),
+            SocketKind::TcpListener(_)
+            | SocketKind::Udp(_)
+            | SocketKind::TlsListener { .. } => Err(NetError::WrongKind(
+                "peer_addr expects a connected stream".into(),
+            )),
         }
     }
 
@@ -461,9 +611,11 @@ impl SocketInner {
                 tls.sock.set_write_timeout(dur)?;
                 Ok(())
             }
-            SocketKind::TcpListener(_) => Err(NetError::WrongKind(
-                "set_timeout is not supported on a listener socket".into(),
-            )),
+            SocketKind::TcpListener(_) | SocketKind::TlsListener { .. } => {
+                Err(NetError::WrongKind(
+                    "set_timeout is not supported on a listener socket".into(),
+                ))
+            }
         }
     }
 
@@ -508,6 +660,9 @@ impl SocketInner {
             SocketKind::TcpListener(l) => Some(l.as_raw_fd()),
             SocketKind::Udp(u) => Some(u.as_raw_fd()),
             SocketKind::Tls(m) => Some(m.lock().unwrap().sock.as_raw_fd()),
+            SocketKind::TlsListener { listener, .. } => {
+                Some(listener.as_raw_fd())
+            }
         }
     }
 
@@ -541,8 +696,11 @@ impl SocketInner {
                 m.lock().unwrap().sock.set_nonblocking(nb)?;
             }
             SocketKind::Udp(u) => u.set_nonblocking(nb)?,
-            // The listener manages its own non-blocking mode.
-            SocketKind::TcpListener(_) => return Ok(()),
+            // A listener manages its own non-blocking mode (it is bound
+            // permanently non-blocking — see `listen` / `listen_tls`).
+            SocketKind::TcpListener(_) | SocketKind::TlsListener { .. } => {
+                return Ok(());
+            }
         }
         self.nonblocking.store(nb, Ordering::Release);
         Ok(())
@@ -564,12 +722,12 @@ impl SocketInner {
                 let st: &mut TlsState = &mut guard;
                 tls_read(st, buf)
             }
-            SocketKind::TcpListener(_) | SocketKind::Udp(_) => {
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "reactor read expects a connected stream",
-                ))
-            }
+            SocketKind::TcpListener(_)
+            | SocketKind::Udp(_)
+            | SocketKind::TlsListener { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "reactor read expects a connected stream",
+            )),
         }
     }
 
@@ -589,12 +747,12 @@ impl SocketInner {
                 let st: &mut TlsState = &mut guard;
                 tls_write(st, buf)
             }
-            SocketKind::TcpListener(_) | SocketKind::Udp(_) => {
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "reactor write expects a connected stream",
-                ))
-            }
+            SocketKind::TcpListener(_)
+            | SocketKind::Udp(_)
+            | SocketKind::TlsListener { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "reactor write expects a connected stream",
+            )),
         }
     }
 
@@ -625,6 +783,11 @@ impl SocketInner {
                 let (stream, _addr) = l.accept()?;
                 stream.set_nonblocking(false)?;
                 tcp_stream_socket(stream)
+            }
+            SocketKind::TlsListener { listener, config } => {
+                let (stream, _addr) = listener.accept()?;
+                stream.set_nonblocking(false)?;
+                tls_server_socket(stream, config.clone())
             }
             _ => Err(NetError::WrongKind(
                 "accept expects a listener".into(),
@@ -686,11 +849,62 @@ fn flush_tls(st: &mut TlsState) -> io::Result<()> {
     Ok(())
 }
 
+/// Drive a TLS handshake — both directions — until it completes. A
+/// freshly-`accept`ed server connection has not processed the peer's
+/// ClientHello yet: a `tls_write` on it would buffer plaintext that
+/// `flush_tls` has nothing to push, deadlocking a protocol where the
+/// server speaks first. Running this prelude completes the handshake
+/// organically. A no-op once the handshake is already done. On a
+/// non-blocking socket `WouldBlock` surfaces when neither side can make
+/// progress — the reactor parks until the fd is ready again.
+fn pump_handshake(st: &mut TlsState) -> io::Result<()> {
+    while st.conn.is_handshaking() {
+        // Push whatever the handshake currently wants to send.
+        flush_tls(st)?;
+        if !st.conn.is_handshaking() {
+            break;
+        }
+        if !st.conn.wants_read() {
+            // Still handshaking, nothing left to send, yet rustls does
+            // not want to read either — the peer has gone away
+            // mid-handshake (e.g. a `close_notify`). Surface that as an
+            // EOF, never as a `WouldBlock`: a blocking caller would
+            // misread `WouldBlock` as a timeout, and it would never make
+            // progress. `WouldBlock` here comes only from `read_tls`
+            // itself, so `pump_handshake` stays mode-agnostic — like
+            // `tls_read` / `tls_write`.
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "tls: peer closed during handshake",
+            ));
+        }
+        match st.conn.read_tls(&mut st.sock) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "tls: peer closed during handshake",
+                ));
+            }
+            Ok(_) => {
+                st.conn.process_new_packets().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, e)
+                })?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// Drive `rustls` until it yields decrypted plaintext into `buf`.
 /// `Ok(0)` is a clean end-of-stream; an unclean close surfaces as an
 /// `io::Error`. `WouldBlock` (non-blocking socket) means the op should
 /// park until the fd is ready again.
 fn tls_read(st: &mut TlsState, buf: &mut [u8]) -> io::Result<usize> {
+    // Complete a still-pending handshake first — defensive; the loop
+    // below would also drive it, but a server connection that has never
+    // been written to may still be mid-handshake here.
+    pump_handshake(st)?;
     loop {
         // Hand back any plaintext rustls has already decrypted.
         match st.conn.reader().read(buf) {
@@ -726,6 +940,10 @@ fn tls_write(st: &mut TlsState, buf: &[u8]) -> io::Result<usize> {
     if buf.is_empty() {
         return Ok(0);
     }
+    // Complete a pending handshake before buffering any plaintext. This
+    // runs before `buf` is touched, so a `WouldBlock` here still means
+    // "nothing consumed" — the `WriteAll` retry contract holds.
+    pump_handshake(st)?;
     let mut off = 0;
     loop {
         if off < buf.len() {

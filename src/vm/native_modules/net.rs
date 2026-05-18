@@ -34,8 +34,10 @@ pub fn module() -> Value {
         ("listen",      native("listen",      Arity::Exact(2), n_listen)),
         ("accept",      native_socket("accept",    Arity::Exact(1), n_accept)),
         ("connect",     native_blocking("connect", Arity::Exact(2), n_connect)),
-        // -- TLS --
-        ("connect_tls", native_blocking("connect_tls", Arity::Exact(2), n_connect_tls)),
+        // -- TLS --  (`listen_tls` binds without waiting — the PEM
+        // parse is CPU-only; `connect_tls` waits on the worker pool.)
+        ("listen_tls",  native("listen_tls",  Arity::Exact(4), n_listen_tls)),
+        ("connect_tls", native_blocking("connect_tls", Arity::Range(2, 3), n_connect_tls)),
         // -- UDP --  (`recv_from` waits for a datagram — reactor-driven;
         // `send_to` resolves its target with DNS, so it stays pooled.)
         ("bind",        native("bind",        Arity::Exact(2), n_bind)),
@@ -287,14 +289,38 @@ fn n_connect(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
 // TLS
 // ---------------------------------------------------------------------
 
-/// `connect_tls(host, port)` — open a TLS-encrypted stream. `host` is
-/// also the name verified against the server certificate.
+/// `listen_tls(host, port, cert_pem, key_pem)` — a TLS server listener
+/// bound to `host:port`. `cert_pem` / `key_pem` are PEM *content*
+/// (certificate chain and private key), not file paths. `accept` on the
+/// returned listener yields server-side TLS sockets, so
+/// `Http.serve(Net.listen_tls(...), handler)` is an HTTPS server.
+fn n_listen_tls(args: &[Value]) -> Result<Value, RuntimeError> {
+    let host = expect_str(&args[0], "listen_tls")?;
+    let port = expect_port(&args[1], "listen_tls")?;
+    let cert = expect_str(&args[2], "listen_tls")?;
+    let key = expect_str(&args[3], "listen_tls")?;
+    let sock = socket::listen_tls(host, port, cert.as_bytes(), key.as_bytes())
+        .map_err(|e| map_err("listen_tls", e))?;
+    Ok(Value::Socket(sock))
+}
+
+/// `connect_tls(host, port, [ca_pem])` — open a TLS-encrypted stream.
+/// `host` is also the name verified against the server certificate. The
+/// optional `ca_pem` adds trusted root certificates beyond the OS trust
+/// store — needed to connect to a private-CA or self-signed service.
 fn n_connect_tls(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
     let host = expect_str(&args[0], "connect_tls")?.to_string();
     let port = expect_port(&args[1], "connect_tls")?;
-    Ok(Box::new(move || match socket::connect_tls(&host, port) {
-        Ok(sock) => Ok(OffloadOk::Socket(sock)),
-        Err(e) => Err(offload_err("connect_tls", e)),
+    let ca: Option<String> = match args.get(2) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(expect_str(v, "connect_tls")?.to_string()),
+    };
+    Ok(Box::new(move || {
+        let extra = ca.as_deref().map(str::as_bytes);
+        match socket::connect_tls(&host, port, extra) {
+            Ok(sock) => Ok(OffloadOk::Socket(sock)),
+            Err(e) => Err(offload_err("connect_tls", e)),
+        }
     }))
 }
 

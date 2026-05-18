@@ -1,8 +1,10 @@
 // tests/net_test.tg — v0.15 networking: the `Net` module.
 //
 // Every case runs in-process over the loopback interface, so the suite
-// stays offline — no case touches the public network. TLS is exercised
-// only by `examples/http_get.tg`, which `tigr test` does not run.
+// stays offline — no case touches the public network. The TLS-server
+// suite is hermetic too: it `listen_tls`es with a throwaway self-signed
+// certificate (the `TEST_CERT` / `TEST_KEY` constants below) and a
+// matching `connect_tls(..., TEST_CERT)` trusts it as a private CA.
 //
 // The echo and close-unblocks cases pass a socket into a `spawn`ed
 // actor, exercising `Transfer::Socket` across the actor boundary. An
@@ -15,6 +17,94 @@ Net   := import 'Net';
 Test  := import 'Test';
 Bytes := import 'Bytes';
 Time  := import 'Time';
+
+// A throwaway self-signed certificate for `localhost` / `127.0.0.1`,
+// generated once with `openssl req -x509` (valid ~100 years, so the
+// suite never expires; `CA:FALSE`, so it is valid as a server leaf).
+// Embedded as raw strings — `"…"` does not interpolate or escape, so
+// the PEM's literal newlines pass through.
+TEST_CERT := "-----BEGIN CERTIFICATE-----
+MIIDJDCCAgygAwIBAgIUHGaC7x8IAUhI5G7GcTFbJgCIiNMwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDUxODE1MzIwNVoYDzIxMjYw
+NDI0MTUzMjA1WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCtBIPv003IaEGG4vHfn2RHy9EYf6Y2wCn0km1ns5Ee
+Hh8eR9rVg++8DuldjqOF5yyz7QHJxfwppRY/BPmhCffX4vR/jbBz+x64YeIU6WV3
+D1n+9YrVrbtzVvN1fUbIPQ3Xl/mIYKAbMgiPTTpqZCthdzdMGi+aZBrWWnGouc9N
+Ia1c654e9XJqN1SeK++Aj5EoIx08smbDgf7qSRp1ZCMoOLHVxWIK+m9+AXofkbjw
+/V2fOgLG4YBbPrmQlCbABFmkgUm7zlqTRMU2uktaB1+GoyuKj4/TNDq+gYusqJjW
+9QhUTGE30gNdQt/M5SnrljwxUNMguFVvyqMeEwNkchUBAgMBAAGjbDBqMB0GA1Ud
+DgQWBBQzRnbOZzyrHYVTUffClvp7sWQrBzAfBgNVHSMEGDAWgBQzRnbOZzyrHYVT
+UffClvp7sWQrBzAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwDAYDVR0TAQH/
+BAIwADANBgkqhkiG9w0BAQsFAAOCAQEAMbMrmF9HbranBvsI3vVVl75cgqlG630a
+ybzTJK8il1Bz76Va3Q9uCKRBWm1LIdVKA9Z5xWNSG91hRjMwq5Z/opz3eDrtPg1p
+WL7moKP0oOsJVRdYxLdN90DeQ6Tzvy1R8ZARjNixl9SNZscrsvmXraedD+iT0mGn
+PRVEcp1vxBli9uf7LzJhmNcGG5XG1322MR/qI4NgnNvYs0rrkDTh4E2ZaceXBRbD
+JXXbIeDmC5v5UrQrtc08sgwkEmFbC6f7Che3ninNvmhHHOP3fSALfNetb6QxWVin
+Y/QOmRhZc0qIPTuTbaWNzYSHPhluJLAD4zZLXQAeRJFgA8gVBbC5cw==
+-----END CERTIFICATE-----
+";
+
+TEST_KEY := "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCtBIPv003IaEGG
+4vHfn2RHy9EYf6Y2wCn0km1ns5EeHh8eR9rVg++8DuldjqOF5yyz7QHJxfwppRY/
+BPmhCffX4vR/jbBz+x64YeIU6WV3D1n+9YrVrbtzVvN1fUbIPQ3Xl/mIYKAbMgiP
+TTpqZCthdzdMGi+aZBrWWnGouc9NIa1c654e9XJqN1SeK++Aj5EoIx08smbDgf7q
+SRp1ZCMoOLHVxWIK+m9+AXofkbjw/V2fOgLG4YBbPrmQlCbABFmkgUm7zlqTRMU2
+uktaB1+GoyuKj4/TNDq+gYusqJjW9QhUTGE30gNdQt/M5SnrljwxUNMguFVvyqMe
+EwNkchUBAgMBAAECggEADJgJoYf26g76sWlCFBYWVtU1bcGBlWEp/KaO8Po6ETWT
+QXaXWCzlIwIj3FPxFQ1gLI2khcMpU9UI4u1HXWtBaj/Cg9QKDiXZ6oUcz4sIqstd
+heiUzUZ64KOpj48JpggvAoHftPIG8svSzIQ21mk0W4Ecb5KauJ6E8emTSzs75XWJ
+U9VBfn2/QYNPgurVwldM0sgCC7fxKBywyBlVdbGQdgxMAnI3eKYWymZzQ/7GXjhL
+fBb2BfoiVnEn2g3jivA6Cxa7N7B9s8EEELJBER0JAfMfFwM3X7umCAmuPAJTixNa
+9/Et3R1y/pyWVzdtX9yOvnDB3gQGZ/b3AaFd6LqnNQKBgQDs02f2p1dUXVLmTQla
+yNHdZ+hA6nZkLe068Ss062GO4m10r5O96hOy8ybx6KOFmIkbcB4VO6z90srAG+Uu
+zG4el2Ssb1SJQwcpRcR0lkPERYroDXl7lgW44kV/tJk9srmiFag2yqNd0jPGYmjy
+8ZrD/Qkr2hdykXsIUaSe7lEsDQKBgQC7BpU3UGBSx3zYM6nyskp7JPP5pmA43x43
+5PNmhhGmhpszs0F0P98GiWsqb1+7+FZmwNrM7H59xU3RIkT1e7j88w1UoN+v0qaK
+guscIM7B84w4evRdwKcpRfRvcWwpJ3vxBZxdEdDU3NogXxuC/VS9EZlzx42hJNUd
+DvtCLakrxQKBgQCfYPLBawL5ksi8lrGp+CZMc6Y5MdE1QDc8CJvERHhmWXnCInsy
+Pzq8nqjh+mc5/FqhLYYBUiTsuRSbzuog4ZFmYwpshYwFyCcknoBE2e+HQinmW1Mb
+We5F63lMJXVPsVz+eMa5AQyKknEnnIj2nqRCK6MlcOOAxelfwtof31CfbQKBgCzq
+QM2e7PMUW4QkrCzP6pk2X61V6ofd9Yjg4B+AFR8T9pPs+cwsRqhwOh9fzfL7iex1
+ZlaOeTZFOxH9k+gMhXmh+VKYq/+yrDJZjJMdwenMTqGFzcfyK3L7DN/yslIT3G0e
+ttWXILruKyhZDudfZYlef6bRhs7rZI7s+SSEiLstAoGAeP4+Cug9rh/T9uWRKqop
+/TCAy0RWXC6HsI/2f0QYID+pNLny7S6uYD9mQZuMiRG16Yy/PYaCsnikvMlBPh6E
+1MjbLLo2z5DEiMJGwo+q0ZM5bJmicDwK8KPTujqA85xvLZHcJ1LNL+TECXe/ay6J
+M1Urz00ZnqiZaAmTqtdp2sg=
+-----END PRIVATE KEY-----
+";
+
+// A second, unrelated private key — pairs with no certificate, so
+// `listen_tls(TEST_CERT, MISMATCH_KEY)` is a genuine cert/key mismatch.
+MISMATCH_KEY := "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDQnsL7uR1mOuOv
+XeX/4Od30LucbeUn79F2d5X0bnZjdl3ttXTwFNaHRElNmq9vCubJJOLMhmdNBFXs
+MU/qkbzF9RLuxSr9i8vO/aILJL59Bs0W3/8t9Lq0CtJhvt2U8nkjn/fFht3m+3z1
+OJcKxztpGh9y//ZN/Gj9E8rrb83QtLScIAu8YTjwDkuh0hBQ93BPy7o/35nOeOEG
+G8A6X4gnOPmSwarQrt9f7zhzXJYBk7BeDxiJWu7oZK6/4uqcQxvq1evws+4MQg1b
+G5c356fOnLOK5XKrZcShWT9CcI07gbeAgWYIuR5sbII7pNHqXrjO2LVo9VNCXJu8
+5WW3F1rJAgMBAAECgf8K96MIg2goQlr159nPjzib8+fpBrNQBiuHhCyTTRCsP0Ib
+h7k+EIUMAhWtyWlaTRhqOqYxr7R+jVvMWaCklETNo19Qw3d0ci+kvMYSupEebDJx
+TBVTin9w4kttGBD4uPE6uOODCYlg5e0LzI3O4z/G/A3rMx71D+/1CLVXlekcBPZR
+87t9mePRjNilSXa/2ZE8UiU5bCz/0/qUHTD9bdY+PpUn3om721lybqaxgzM6bNZV
+jOM6nDyBNXDrp2St/Podddbwa7bcBvxNuDumt5VRu9aSEJYqEHcMwyR5HOcvWSPr
+EY2L7r3NS6qgjNuyFatYc0J6K7GauU1X175iMKECgYEA8YOXRBiaRGHmgMm9UWam
+azyPZfCx9k2cxrxf2+IEgYUzB+0niWfD4pP0WteHE9o2cy6vI9CNDUyCQartn6wn
+qg3sqX8EGidQLI3l6tFsp6uQcD9V7QlI75SvEQiHM7TXTdiflxig5cCGHfEEYq3b
+PMWrGRUaSjcd8GSZBKhCYiECgYEA3SIXPHHXfmeqmfFJWZEg/Ruz5H1wh6oALxYJ
+Lz8UnFLN0KwQgCRhFSKPlkPqjjgA2STVAA2mHtOdteq7A5pi922O+drmxEKg0DRN
+i/ujt1IequGd+CkmQqFOjAcVtiOR/yODP6tqt8bvtc+eVfPkXnRHWYveH401WgV+
+PqK4M6kCgYEA61Zz7uoeYOYZC4QJ06k4HyTLAuWxNDXawBlNO2EZTPBzkpS4Qv92
+9HGB2YdNW7318vUZusd8uunDv6OEm2PQ3rdk1qEraSTHzjKTSOa7fwMB4y8EVs8G
+YFa85Ncvj+X3KyccE8ru9hJNXh2+TT3mdWiUWgOjM5BTvyz3on8m+KECgYEA0rzC
+WCBFtXkl5D9GH81nGs9jyMSikSc5taXSauw6wB9JdSwFLZl9y558KD/hMFe+tzGa
+q8pWHdqd2dgxEWX4GsSWFRbABRlaGBFANb9CblocT81jtjPA+o6vRFMcJdAQOo2l
+bu/1a95yY1nREyiy4jD+LiBVNsxjo77IaPi5gsECgYEAsrqTmt+OrqoD4ZtaFVOT
+2fuQ3sMjiVU4AJ5mnziY/6/BqCwFGCJpzsBSv+b/zfhkNkplCR/KYwnJX8tMmPfo
+lbEK+IVWX16HsVh03K1RMvGUFAPFaUgtD8qpyyB7o0l/oQg5GnzmdLQvygT4NNgk
+wypv62iNeb1AbzrW9ZV13KI=
+-----END PRIVATE KEY-----
+";
 
 [
     Test.suite('Net — TCP connect / listen', [
@@ -188,6 +278,150 @@ Time  := import 'Time';
 
         Test.case('a port outside 0..=65535 is rejected', fn() {
             Test.assert_raises(fn() { Net.connect('127.0.0.1', 99999) })
+        }),
+    ]),
+
+    Test.suite('Net — TLS server', [
+        Test.case('listen_tls binds and reports its OS-assigned port', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            Net.close(listener);
+            Test.assert(port > 0, 'port 0 should resolve to a real port')
+        }),
+
+        // This case `spawn`s the server, so each actor holds a single
+        // coroutine — every socket call runs blocking on the inline
+        // executor, never the reactor. The `go`-based suite below is
+        // what drives the reactor TLS-server path.
+        Test.case('a TLS client and TLS server round-trip a line', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);      // yields a TLS socket
+                line := N.read_line(conn);
+                N.write(conn, B.from_string('echo: ' + line + '\n'));
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            // The 3rd arg trusts TEST_CERT as a private CA, so the
+            // self-signed server certificate verifies.
+            client := Net.connect_tls('127.0.0.1', port, TEST_CERT);
+            Net.write(client, Bytes.from_string('ping\n'));
+            reply := Net.read_line(client);
+            Net.close(client);
+            join(server);
+            Test.assert_eq(reply, 'echo: ping')
+        }),
+
+        Test.case('listen_tls raises tls on a malformed certificate', fn() {
+            Test.assert_raises(
+                fn() { Net.listen_tls('127.0.0.1', 0, 'not a pem', TEST_KEY) },
+                'tls')
+        }),
+
+        Test.case('listen_tls raises tls on a cert/key mismatch', fn() {
+            Test.assert_raises(
+                fn() { Net.listen_tls('127.0.0.1', 0, TEST_CERT, MISMATCH_KEY) },
+                'tls')
+        }),
+
+        Test.case('connect_tls without the CA arg rejects a self-signed server', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                // The client aborts the handshake (untrusted cert);
+                // driving a read surfaces that — swallow it, shut down.
+                try { N.read_line(conn) } catch (e) { null };
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            Test.assert_raises(
+                fn() { Net.connect_tls('127.0.0.1', port) }, 'tls');
+            join(server)
+        }),
+    ]),
+
+    // Driving a TLS server on the async-IO reactor. Each case keeps
+    // both endpoints in this one actor as `go` coroutines, so the actor
+    // is never idle when a TLS call dispatches — that routes every
+    // `accept` / `read` / `write` to the reactor instead of the inline
+    // executor. The accepted server socket starts un-handshaked: the
+    // handshake completes lazily on the first reactor-driven I/O, so
+    // these cases exercise the lazy handshake (`pump_handshake`) and
+    // the `TlsListener` accept path that the `spawn`ed suite does not.
+    Test.suite('Net — TLS on the reactor', [
+        Test.case('a client-speaks-first TLS round-trip on the reactor', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            reply := null;
+            // Server: the first op on the accepted socket is a read, so
+            // the handshake is driven through `tls_read`.
+            go fn() {
+                conn := Net.accept(listener);
+                line := Net.read_line(conn);
+                Net.write(conn, Bytes.from_string('echo: ' + line + '\n'));
+                Net.close(conn);
+                Net.close(listener)
+            };
+            go fn() {
+                client := Net.connect_tls('127.0.0.1', port, TEST_CERT);
+                Net.write(client, Bytes.from_string('ping\n'));
+                reply = Net.read_line(client);
+                Net.close(client)
+            };
+            while (reply == null) { yield };
+            Test.assert_eq(reply, 'echo: ping')
+        }),
+
+        Test.case('a server-speaks-first TLS exchange completes the handshake', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            greeting := null;
+            // Server: the first op is a write — on an un-handshaked
+            // server connection that needs `pump_handshake` inside
+            // `tls_write`, or this would deadlock.
+            go fn() {
+                conn := Net.accept(listener);
+                Net.write(conn, Bytes.from_string('server speaks first\n'));
+                Net.close(conn);
+                Net.close(listener)
+            };
+            go fn() {
+                client := Net.connect_tls('127.0.0.1', port, TEST_CERT);
+                greeting = Net.read_line(client);
+                Net.close(client)
+            };
+            while (greeting == null) { yield };
+            Test.assert_eq(greeting, 'server speaks first')
+        }),
+
+        Test.case('a parked TLS read does not freeze a sibling coroutine', fn() {
+            listener := Net.listen_tls('127.0.0.1', 0, TEST_CERT, TEST_KEY);
+            port := Net.local_addr(listener).port;
+            got := null;
+            counter := 0;
+            go fn() {
+                conn := Net.accept(listener);
+                got = Net.read_line(conn);       // parks on the reactor
+                Net.close(conn);
+                Net.close(listener)
+            };
+            go fn() { while (got == null) { counter = counter + 1; yield } };
+            go fn() {
+                client := Net.connect_tls('127.0.0.1', port, TEST_CERT);
+                Net.write(client, Bytes.from_string('delayed\n'));
+                Net.close(client)
+            };
+            while (got == null) { yield };
+            Test.assert_eq(got, 'delayed');
+            Test.assert(counter > 0,
+                'a sibling should run while the TLS read is parked')
         }),
     ]),
 ]

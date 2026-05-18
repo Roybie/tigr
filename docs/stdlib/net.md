@@ -5,7 +5,7 @@
 
 The `Net` module does TCP, UDP, and TLS networking. A socket is a value type in its own right: `type(s)` is `'socket'`, and a socket is sendable across actor boundaries the same way a channel is, so an accepted connection can be passed into a `spawn`ed per-connection handler. Import the module with `Net := import 'Net'`. Reads come in two layers. The low-level `read(sock, n)` returns up to `n` bytes, with an empty `Bytes` meaning end-of-stream. On top of it sit the framed helpers `read_exact`, `read_line`, `read_until`, and `read_all`; the socket carries an internal buffer, so a helper that reads past a frame boundary keeps the surplus for the next call. A failure raises a structured `${kind, message}` error, where `kind` is one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`, `addr_in_use`, `decode`, or `io`.
 
-The waiting calls are offloaded when they run inside a green thread, so a coroutine waiting on the network does not stall the actor's siblings (see [concurrency](../language/concurrency.md)). Steady-state socket I/O (`accept`, `read`, `write`, `read_exact`, `read_line`, `read_until`, `read_all`, and `recv_from`) is driven on a single async-I/O reactor thread, so one actor can keep tens of thousands of connections open at once. `connect`, `connect_tls`, and `send_to` go to a worker pool instead, since each may need a blocking DNS lookup. The non-waiting calls (`listen`, `bind`, `local_addr`, `peer_addr`, `set_timeout`, `close`) run inline.
+The waiting calls are offloaded when they run inside a green thread, so a coroutine waiting on the network does not stall the actor's siblings (see [concurrency](../language/concurrency.md)). Steady-state socket I/O (`accept`, `read`, `write`, `read_exact`, `read_line`, `read_until`, `read_all`, and `recv_from`) is driven on a single async-I/O reactor thread, so one actor can keep tens of thousands of connections open at once. `connect`, `connect_tls`, and `send_to` go to a worker pool instead, since each may need a blocking DNS lookup. The non-waiting calls (`listen`, `listen_tls`, `bind`, `local_addr`, `peer_addr`, `set_timeout`, `close`) run inline.
 
 ```tigr
 Net := import 'Net';
@@ -94,12 +94,13 @@ Net.close(client);
 join(server);
 ```
 
-### `connect_tls(host, port) -> Socket`
+### `connect_tls(host, port, [ca_pem]) -> Socket`
 
 Opens a TLS-encrypted stream. The `host` is also the name checked against the server's certificate.
 
 - `host` *(String)*: the remote host name, verified against the server certificate.
 - `port` *(Int)*: the remote port, from 0 to 65535.
+- `ca_pem` *(String, optional)*: extra trusted root certificates, as PEM content. They are trusted in addition to the operating system trust store — pass this to reach a private-CA or self-signed service (for example a tigr `listen_tls` server).
 
 **Returns:** a connected, encrypted stream `Socket`.
 **Raises:** a structured error, for example `tls` if the certificate fails verification, or `dns` if the host name does not resolve.
@@ -113,6 +114,29 @@ Net.write(conn, Bytes.from_string('GET / HTTP/1.0\r\nHost: example.com\r\n\r\n')
 status := Net.read_line(conn);
 print(status);                          // => HTTP/1.1 200 OK
 Net.close(conn);
+```
+
+### `listen_tls(host, port, cert_pem, key_pem) -> Socket`
+
+Creates a TLS server listener bound to `host:port`. `accept` on the returned listener performs the TCP accept *and* the TLS handshake, so it yields an already-encrypted server `Socket` — the same kind `read` / `write` / `close` already handle. Because `accept` is transparent, `Http.serve(Net.listen_tls(...), handler)` is an HTTPS server with no other change.
+
+- `host` *(String)*: the local address to bind. Pass port `0` to let the OS pick a free port, then read it back with `local_addr`.
+- `port` *(Int)*: the local port, from 0 to 65535.
+- `cert_pem` *(String)*: the server certificate chain, as PEM content (not a file path).
+- `key_pem` *(String)*: the matching private key, as PEM content (not a file path).
+
+**Returns:** a TLS listener `Socket`.
+**Raises:** `tls` if the certificate or key PEM is malformed, the chain is empty, or the certificate and key do not match; `addr_in_use` if the port is taken.
+
+```tigr
+Net := import 'Net';
+
+// `cert` and `key` are PEM strings — read them from a file or embed them.
+listener := Net.listen_tls('127.0.0.1', 8443, cert, key);
+conn := Net.accept(listener);           // a TLS server socket
+request := Net.read_line(conn);
+Net.close(conn);
+Net.close(listener);
 ```
 
 ### `bind(host, port) -> Socket`

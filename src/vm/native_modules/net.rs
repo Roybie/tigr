@@ -20,32 +20,33 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
-use crate::vm::gc;
+use crate::vm::offload::{BlockingJob, OffloadErr, OffloadOk};
 use crate::vm::socket::{self, NetError, SocketHandle};
 use crate::vm::value::{Arity, Value};
 
-use super::{native, object};
+use super::{native, native_blocking, object};
 
 pub fn module() -> Value {
     object(&[
-        // -- TCP --
+        // -- TCP --  (`listen` binds without waiting; `accept` and
+        // `connect` wait, so they are offloaded inside a green thread.)
         ("listen",      native("listen",      Arity::Exact(2), n_listen)),
-        ("accept",      native("accept",      Arity::Exact(1), n_accept)),
-        ("connect",     native("connect",     Arity::Exact(2), n_connect)),
+        ("accept",      native_blocking("accept",  Arity::Exact(1), n_accept)),
+        ("connect",     native_blocking("connect", Arity::Exact(2), n_connect)),
         // -- TLS --
-        ("connect_tls", native("connect_tls", Arity::Exact(2), n_connect_tls)),
+        ("connect_tls", native_blocking("connect_tls", Arity::Exact(2), n_connect_tls)),
         // -- UDP --
         ("bind",        native("bind",        Arity::Exact(2), n_bind)),
-        ("send_to",     native("send_to",     Arity::Exact(4), n_send_to)),
-        ("recv_from",   native("recv_from",   Arity::Exact(2), n_recv_from)),
+        ("send_to",     native_blocking("send_to",   Arity::Exact(4), n_send_to)),
+        ("recv_from",   native_blocking("recv_from", Arity::Exact(2), n_recv_from)),
         // -- stream I/O --
-        ("read",        native("read",        Arity::Exact(2), n_read)),
-        ("write",       native("write",       Arity::Exact(2), n_write)),
-        ("read_exact",  native("read_exact",  Arity::Exact(2), n_read_exact)),
-        ("read_line",   native("read_line",   Arity::Exact(1), n_read_line)),
-        ("read_until",  native("read_until",  Arity::Exact(2), n_read_until)),
-        ("read_all",    native("read_all",    Arity::Exact(1), n_read_all)),
-        // -- addressing & lifecycle --
+        ("read",        native_blocking("read",       Arity::Exact(2), n_read)),
+        ("write",       native_blocking("write",      Arity::Exact(2), n_write)),
+        ("read_exact",  native_blocking("read_exact", Arity::Exact(2), n_read_exact)),
+        ("read_line",   native_blocking("read_line",  Arity::Exact(1), n_read_line)),
+        ("read_until",  native_blocking("read_until", Arity::Exact(2), n_read_until)),
+        ("read_all",    native_blocking("read_all",   Arity::Exact(1), n_read_all)),
+        // -- addressing & lifecycle (all non-waiting — stay inline) --
         ("local_addr",  native("local_addr",  Arity::Exact(1), n_local_addr)),
         ("peer_addr",   native("peer_addr",   Arity::Exact(1), n_peer_addr)),
         ("set_timeout", native("set_timeout", Arity::Exact(2), n_set_timeout)),
@@ -72,17 +73,18 @@ fn net_err(kind: &str, msg: String) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::Raised(obj), 0)
 }
 
-/// Map a [`NetError`] from the socket layer to a structured tigr error.
-fn map_err(label: &str, e: NetError) -> RuntimeError {
+/// Classify a [`NetError`] from the socket layer into a structured
+/// error `kind` and a message. A `None` kind means a plain
+/// string-valued error — a wrong-kind call (e.g. `read` on a listener)
+/// is a program bug, not a runtime condition.
+fn classify(label: &str, e: NetError) -> (Option<&'static str>, String) {
     match e {
         NetError::Closed => {
-            net_err("closed", format!("Net.{label}: socket is closed"))
+            (Some("closed"), format!("Net.{label}: socket is closed"))
         }
-        // A wrong-kind call (e.g. `read` on a listener) is a program
-        // bug, not a runtime condition — surface it as a plain error.
-        NetError::WrongKind(msg) => err(format!("Net.{label}: {msg}")),
-        NetError::Dns(msg) => net_err("dns", format!("Net.{label}: {msg}")),
-        NetError::Tls(msg) => net_err("tls", format!("Net.{label}: {msg}")),
+        NetError::WrongKind(msg) => (None, format!("Net.{label}: {msg}")),
+        NetError::Dns(msg) => (Some("dns"), format!("Net.{label}: {msg}")),
+        NetError::Tls(msg) => (Some("tls"), format!("Net.{label}: {msg}")),
         NetError::Io(io_err) => {
             let kind = match io_err.kind() {
                 io::ErrorKind::ConnectionRefused => "refused",
@@ -94,9 +96,32 @@ fn map_err(label: &str, e: NetError) -> RuntimeError {
                 | io::ErrorKind::NotConnected => "closed",
                 _ => "io",
             };
-            net_err(kind, format!("Net.{label}: {io_err}"))
+            (Some(kind), format!("Net.{label}: {io_err}"))
         }
     }
+}
+
+/// Map a [`NetError`] to a tigr `RuntimeError` — used by the inline
+/// (non-offloaded) natives.
+fn map_err(label: &str, e: NetError) -> RuntimeError {
+    match classify(label, e) {
+        (Some(kind), msg) => net_err(kind, msg),
+        (None, msg) => err(msg),
+    }
+}
+
+/// Map a [`NetError`] to an [`OffloadErr`] — the POD error a worker
+/// thread posts back; [`crate::vm::offload::decode`] rebuilds the same
+/// `${kind, message}` or string error the inline call would raise.
+fn offload_err(label: &str, e: NetError) -> OffloadErr {
+    let (kind, message) = classify(label, e);
+    OffloadErr { kind: kind.map(|k| k.to_string()), message }
+}
+
+/// A worker-side structured error raised directly (not from a
+/// `NetError`) — `Net.read_exact`'s `eof`, `Net.read_line`'s `decode`.
+fn offload_net_err(kind: &str, message: String) -> OffloadErr {
+    OffloadErr { kind: Some(kind.to_string()), message }
 }
 
 // ---------------------------------------------------------------------
@@ -118,6 +143,13 @@ fn as_socket<'a>(
             0,
         )),
     }
+}
+
+/// Extract an owned socket handle for a blocking native — the worker
+/// closure outlives the borrowed `Value`. `SocketHandle` is an `Arc`,
+/// so this is a cheap refcount bump.
+fn take_socket(v: &Value, label: &str) -> Result<SocketHandle, RuntimeError> {
+    as_socket(v, label).cloned()
 }
 
 fn expect_str<'a>(v: &'a Value, label: &str) -> Result<&'a str, RuntimeError> {
@@ -203,18 +235,22 @@ fn n_listen(args: &[Value]) -> Result<Value, RuntimeError> {
 /// `accept(listener)` — block for the next inbound connection.
 /// Raises `closed` if the listener is closed, including by another
 /// actor while this `accept` is waiting.
-fn n_accept(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "accept")?;
-    let conn = sock.accept().map_err(|e| map_err("accept", e))?;
-    Ok(Value::Socket(conn))
+fn n_accept(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "accept")?;
+    Ok(Box::new(move || match sock.accept() {
+        Ok(conn) => Ok(OffloadOk::Socket(conn)),
+        Err(e) => Err(offload_err("accept", e)),
+    }))
 }
 
 /// `connect(host, port)` — open a TCP stream to `host:port`.
-fn n_connect(args: &[Value]) -> Result<Value, RuntimeError> {
-    let host = expect_str(&args[0], "connect")?;
+fn n_connect(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let host = expect_str(&args[0], "connect")?.to_string();
     let port = expect_port(&args[1], "connect")?;
-    let sock = socket::connect(host, port).map_err(|e| map_err("connect", e))?;
-    Ok(Value::Socket(sock))
+    Ok(Box::new(move || match socket::connect(&host, port) {
+        Ok(sock) => Ok(OffloadOk::Socket(sock)),
+        Err(e) => Err(offload_err("connect", e)),
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -223,12 +259,13 @@ fn n_connect(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// `connect_tls(host, port)` — open a TLS-encrypted stream. `host` is
 /// also the name verified against the server certificate.
-fn n_connect_tls(args: &[Value]) -> Result<Value, RuntimeError> {
-    let host = expect_str(&args[0], "connect_tls")?;
+fn n_connect_tls(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let host = expect_str(&args[0], "connect_tls")?.to_string();
     let port = expect_port(&args[1], "connect_tls")?;
-    let sock =
-        socket::connect_tls(host, port).map_err(|e| map_err("connect_tls", e))?;
-    Ok(Value::Socket(sock))
+    Ok(Box::new(move || match socket::connect_tls(&host, port) {
+        Ok(sock) => Ok(OffloadOk::Socket(sock)),
+        Err(e) => Err(offload_err("connect_tls", e)),
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -245,29 +282,37 @@ fn n_bind(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// `send_to(sock, bytes, host, port)` — send one UDP datagram; returns
 /// the number of bytes sent.
-fn n_send_to(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "send_to")?;
+fn n_send_to(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "send_to")?;
     let data = expect_bytes(&args[1], "send_to")?;
-    let host = expect_str(&args[2], "send_to")?;
+    let host = expect_str(&args[2], "send_to")?.to_string();
     let port = expect_port(&args[3], "send_to")?;
-    let addr = socket::resolve(host, port).map_err(|e| map_err("send_to", e))?;
-    let sent = sock
-        .send_to(&data, addr)
-        .map_err(|e| map_err("send_to", e))?;
-    Ok(Value::Int(sent as i64))
+    Ok(Box::new(move || {
+        // DNS resolution waits too — keep it on the worker thread.
+        let addr = match socket::resolve(&host, port) {
+            Ok(a) => a,
+            Err(e) => return Err(offload_err("send_to", e)),
+        };
+        match sock.send_to(&data, addr) {
+            Ok(sent) => Ok(OffloadOk::Int(sent as i64)),
+            Err(e) => Err(offload_err("send_to", e)),
+        }
+    }))
 }
 
 /// `recv_from(sock, n)` — receive one UDP datagram (up to `n` bytes).
 /// Returns `${data: Bytes, host: String, port: Int}`.
-fn n_recv_from(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "recv_from")?;
+fn n_recv_from(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "recv_from")?;
     let n = expect_count(&args[1], "recv_from")?;
-    let (data, addr) = sock.recv_from(n).map_err(|e| map_err("recv_from", e))?;
-    Ok(object(&[
-        ("data", Value::Bytes(gc::alloc_bytes(data))),
-        ("host", Value::Str(addr.ip().to_string().into())),
-        ("port", Value::Int(addr.port() as i64)),
-    ]))
+    Ok(Box::new(move || match sock.recv_from(n) {
+        Ok((data, addr)) => Ok(OffloadOk::RecvFrom {
+            data,
+            host: addr.ip().to_string(),
+            port: addr.port(),
+        }),
+        Err(e) => Err(offload_err("recv_from", e)),
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -276,98 +321,116 @@ fn n_recv_from(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// `read(sock, n)` — read up to `n` bytes. An empty `Bytes` means the
 /// stream has ended.
-fn n_read(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "read")?;
+fn n_read(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "read")?;
     let n = expect_count(&args[1], "read")?;
-    let data = sock.read_chunk(n).map_err(|e| map_err("read", e))?;
-    Ok(Value::Bytes(gc::alloc_bytes(data)))
+    Ok(Box::new(move || match sock.read_chunk(n) {
+        Ok(data) => Ok(OffloadOk::Bytes(data)),
+        Err(e) => Err(offload_err("read", e)),
+    }))
 }
 
 /// `write(sock, bytes)` — write every byte; returns the count written.
-fn n_write(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "write")?;
+fn n_write(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "write")?;
     let data = expect_bytes(&args[1], "write")?;
-    sock.write_all(&data).map_err(|e| map_err("write", e))?;
-    Ok(Value::Int(data.len() as i64))
+    Ok(Box::new(move || match sock.write_all(&data) {
+        Ok(()) => Ok(OffloadOk::Int(data.len() as i64)),
+        Err(e) => Err(offload_err("write", e)),
+    }))
 }
 
 /// `read_exact(sock, n)` — read exactly `n` bytes, blocking until they
 /// arrive. Raises `eof` if the stream ends first.
-fn n_read_exact(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "read_exact")?;
+fn n_read_exact(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "read_exact")?;
     let n = expect_count(&args[1], "read_exact")?;
-    let mut out: Vec<u8> = Vec::new();
-    while out.len() < n {
-        let chunk = sock
-            .read_chunk(n - out.len())
-            .map_err(|e| map_err("read_exact", e))?;
-        if chunk.is_empty() {
-            return Err(net_err(
-                "eof",
-                format!(
-                    "Net.read_exact: stream ended after {} of {n} bytes",
-                    out.len()
-                ),
-            ));
+    Ok(Box::new(move || {
+        let mut out: Vec<u8> = Vec::new();
+        while out.len() < n {
+            let chunk = match sock.read_chunk(n - out.len()) {
+                Ok(c) => c,
+                Err(e) => return Err(offload_err("read_exact", e)),
+            };
+            if chunk.is_empty() {
+                return Err(offload_net_err(
+                    "eof",
+                    format!(
+                        "Net.read_exact: stream ended after {} of {n} bytes",
+                        out.len()
+                    ),
+                ));
+            }
+            out.extend(chunk);
         }
-        out.extend(chunk);
-    }
-    Ok(Value::Bytes(gc::alloc_bytes(out)))
+        Ok(OffloadOk::Bytes(out))
+    }))
 }
 
 /// `read_line(sock)` — read one `\n`-terminated line as a String, with
 /// the trailing `\r\n` / `\n` stripped. Returns `null` at end-of-
 /// stream. Raises `decode` on invalid UTF-8.
-fn n_read_line(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "read_line")?;
-    match sock.read_until(b'\n').map_err(|e| map_err("read_line", e))? {
-        None => Ok(Value::Null),
-        Some(mut line) => {
-            if line.last() == Some(&b'\n') {
-                line.pop();
-            }
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            match String::from_utf8(line) {
-                Ok(s) => Ok(Value::Str(s.into())),
-                Err(e) => Err(net_err(
-                    "decode",
-                    format!(
-                        "Net.read_line: invalid UTF-8 at byte {}",
-                        e.utf8_error().valid_up_to()
-                    ),
-                )),
+fn n_read_line(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "read_line")?;
+    Ok(Box::new(move || {
+        let line = match sock.read_until(b'\n') {
+            Ok(l) => l,
+            Err(e) => return Err(offload_err("read_line", e)),
+        };
+        match line {
+            None => Ok(OffloadOk::StrOrNull(None)),
+            Some(mut line) => {
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                }
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                match String::from_utf8(line) {
+                    Ok(s) => Ok(OffloadOk::StrOrNull(Some(s))),
+                    Err(e) => Err(offload_net_err(
+                        "decode",
+                        format!(
+                            "Net.read_line: invalid UTF-8 at byte {}",
+                            e.utf8_error().valid_up_to()
+                        ),
+                    )),
+                }
             }
         }
-    }
+    }))
 }
 
 /// `read_until(sock, byte)` — read up to and including the next `byte`.
 /// Returns a `Bytes` (the delimiter included), or `null` at end-of-
 /// stream. Trailing data with no delimiter is returned as a final
 /// chunk.
-fn n_read_until(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "read_until")?;
+fn n_read_until(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "read_until")?;
     let delim = expect_byte(&args[1], "read_until")?;
-    match sock.read_until(delim).map_err(|e| map_err("read_until", e))? {
-        None => Ok(Value::Null),
-        Some(buf) => Ok(Value::Bytes(gc::alloc_bytes(buf))),
-    }
+    Ok(Box::new(move || match sock.read_until(delim) {
+        Ok(opt) => Ok(OffloadOk::BytesOrNull(opt)),
+        Err(e) => Err(offload_err("read_until", e)),
+    }))
 }
 
 /// `read_all(sock)` — read every remaining byte until end-of-stream.
-fn n_read_all(args: &[Value]) -> Result<Value, RuntimeError> {
-    let sock = as_socket(&args[0], "read_all")?;
-    let mut out: Vec<u8> = Vec::new();
-    loop {
-        let chunk = sock.read_chunk(65536).map_err(|e| map_err("read_all", e))?;
-        if chunk.is_empty() {
-            break;
+fn n_read_all(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let sock = take_socket(&args[0], "read_all")?;
+    Ok(Box::new(move || {
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let chunk = match sock.read_chunk(65536) {
+                Ok(c) => c,
+                Err(e) => return Err(offload_err("read_all", e)),
+            };
+            if chunk.is_empty() {
+                break;
+            }
+            out.extend(chunk);
         }
-        out.extend(chunk);
-    }
-    Ok(Value::Bytes(gc::alloc_bytes(out)))
+        Ok(OffloadOk::Bytes(out))
+    }))
 }
 
 // ---------------------------------------------------------------------

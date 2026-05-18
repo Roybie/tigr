@@ -21,6 +21,7 @@ use std::thread;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
+use crate::vm::socket::SocketHandle;
 use crate::vm::value::Value;
 
 /// The closure a `Blocking` native hands to the worker pool. Runs on a
@@ -38,14 +39,22 @@ pub type OffloadResult = Result<OffloadOk, OffloadErr>;
 pub enum OffloadOk {
     /// A call with no meaningful result — decodes to `null`.
     Unit,
+    /// An integer result (a byte count).
+    Int(i64),
     /// A string result (file contents, working directory, ...).
     Str(String),
     /// A byte-buffer result.
     Bytes(Vec<u8>),
+    /// An optional byte buffer — `None` decodes to `null` (end-of-stream).
+    BytesOrNull(Option<Vec<u8>>),
     /// A list of strings (directory entries).
     StrList(Vec<String>),
-    /// An optional string — `None` decodes to `null` (e.g. stdin EOF).
+    /// An optional string — `None` decodes to `null` (EOF / end-of-stream).
     StrOrNull(Option<String>),
+    /// A socket result (`Net.accept` / `connect` / `connect_tls`).
+    Socket(SocketHandle),
+    /// `Net.recv_from` — one UDP datagram plus its sender's address.
+    RecvFrom { data: Vec<u8>, host: String, port: u16 },
     /// `Os.run` — child-process exit code plus captured output.
     Run { code: i64, stdout: String, stderr: String },
 }
@@ -72,8 +81,13 @@ pub fn decode(result: OffloadResult) -> Result<Value, RuntimeError> {
 fn decode_ok(ok: OffloadOk) -> Value {
     match ok {
         OffloadOk::Unit => Value::Null,
+        OffloadOk::Int(n) => Value::Int(n),
         OffloadOk::Str(s) => Value::Str(s.into()),
         OffloadOk::Bytes(b) => Value::Bytes(gc::alloc_bytes(b)),
+        OffloadOk::BytesOrNull(o) => match o {
+            Some(b) => Value::Bytes(gc::alloc_bytes(b)),
+            None => Value::Null,
+        },
         OffloadOk::StrList(items) => {
             let arr: Vec<Value> =
                 items.into_iter().map(|s| Value::Str(s.into())).collect();
@@ -83,6 +97,14 @@ fn decode_ok(ok: OffloadOk) -> Value {
             Some(s) => Value::Str(s.into()),
             None => Value::Null,
         },
+        OffloadOk::Socket(h) => Value::Socket(h),
+        OffloadOk::RecvFrom { data, host, port } => {
+            crate::vm::native_modules::object(&[
+                ("data", Value::Bytes(gc::alloc_bytes(data))),
+                ("host", Value::Str(host.into())),
+                ("port", Value::Int(port as i64)),
+            ])
+        }
         OffloadOk::Run { code, stdout, stderr } => {
             crate::vm::native_modules::object(&[
                 ("code", Value::Int(code)),

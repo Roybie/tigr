@@ -19,6 +19,7 @@ Test  := import 'Test';
 Os    := import 'Os';
 Time  := import 'Time';
 IO    := import 'IO';
+Net   := import 'Net';
 Bytes := import 'Bytes';
 Array := import 'Array';
 
@@ -176,6 +177,51 @@ Array := import 'Array';
             go fn() {
                 result = try {
                     IO.read_file('.tigr-no-such-file-xyzzy'); 'no-error'
+                } catch (e) { 'caught' }
+            };
+            go fn() { yield };
+            while (result == null) { yield };
+            Test.assert_eq(result, 'caught')
+        }),
+    ]),
+
+    Test.suite('Net — offloaded from green threads', [
+        Test.case('a TCP echo round-trips between coroutines', fn() {
+            // Server, client and a counter all run as green threads in
+            // one actor. `accept`, `connect`, `read_line` and `write`
+            // all offload, so the counter coroutine keeps advancing
+            // while the socket calls are in flight.
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            got := null;
+            counter := 0;
+
+            go fn() {
+                conn := Net.accept(listener);
+                line := Net.read_line(conn);
+                Net.write(conn, Bytes.from_string(line + '\n'));
+                Net.close(conn);
+                Net.close(listener)
+            };
+            go fn() {
+                c := Net.connect('127.0.0.1', port);
+                Net.write(c, Bytes.from_string('ping\n'));
+                got = Net.read_line(c);
+                Net.close(c)
+            };
+            go fn() { while (got == null) { counter = counter + 1; yield } };
+
+            while (got == null) { yield };
+            Test.assert_eq(got, 'ping');
+            Test.assert(counter > 0,
+                'a sibling should run while socket calls are offloaded')
+        }),
+
+        Test.case('an offloaded connect failure is catchable in the go', fn() {
+            result := null;
+            go fn() {
+                result = try {
+                    Net.connect('127.0.0.1', 1); 'no-error'
                 } catch (e) { 'caught' }
             };
             go fn() { yield };

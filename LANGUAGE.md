@@ -42,10 +42,14 @@ sensitive. Keywords are reserved and cannot be used as identifiers.
 ```
 fn  if  else  for  while  break  continue  return  import  try  catch
 raise  match  null  true  false
+spawn  select  parallel  go  yield  gen
 ```
 
 Note: `floor`, `ceil`, `rand`, `for[]`, `while[]` are no longer keywords — see
-§13. The `[]` suffix on `for`/`while` is now a separate token.
+§13. The `[]` suffix on `for`/`while` is now a separate token. The
+concurrency keywords on the third line are `spawn`/`select`/`parallel`
+(actors, Appendix L) and `go`/`yield`/`gen` (green threads and
+generators, Appendix P).
 
 ### 2.4 Operators and punctuation
 
@@ -1610,6 +1614,7 @@ Primary     ::= Literal
               | 'return' ReturnValue?
               | 'import' Expr
               | Try | Raise | Match
+              | Spawn | Go | Yield | Select | Parallel
 
 Try         ::= 'try' LogicAnd ('catch' '(' Identifier ')' Scope)?
 Raise       ::= 'raise' Expr
@@ -1625,12 +1630,19 @@ MatchArrayPat  ::= '[' (MatchPat (',' MatchPat)* )? ('...' Identifier)? ']'
 MatchObjectPat ::= '$' '{' (MatchField (',' MatchField)*)? ('...' Identifier)? '}'
 MatchField  ::= Identifier (':' MatchPat)?
 
+Spawn       ::= 'spawn' Expr
+Go          ::= 'go' Expr
+Yield       ::= 'yield' Expr?
+Select      ::= 'select' '{' (SelectArm (',' SelectArm)* ','?)? '}'
+SelectArm   ::= Identifier ':=' Expr '=>' Expr | 'else' '=>' Expr
+Parallel    ::= 'parallel' '[' ']' '(' ForVars ',' Expr ')' Scope
+
 Literal     ::= Integer | Float | String | 'true' | 'false' | 'null'
 ArrayLit    ::= '[' (Element (',' Element)* ','?)? ']'
 Element     ::= '...' Expr | Expr
 ObjectLit   ::= '$' '{' (ObjMember (',' ObjMember)* ','?)? '}'
 ObjMember   ::= '...' Expr | Identifier ':' Expr | String ':' Expr | Identifier   // shorthand
-FunctionLit ::= 'fn' '(' Params? ')' '{' Block '}'
+FunctionLit ::= 'gen'? 'fn' '(' Params? ')' '{' Block '}'   // 'gen' = generator
 Params      ::= Param (',' Param)*
 Param       ::= '...' Identifier | Pattern | Identifier '=' Expr
 
@@ -1659,6 +1671,9 @@ Some notes:
   iterable that is anything else iterates that collection.
 - Object literals and patterns share `${ ... }`; disambiguation is by
   context (LHS of `:=` / parameter position vs. expression position).
+- `spawn`/`select`/`parallel[]` (actors) and `go`/`yield`/`gen fn`
+  (green threads and generators) are the concurrency constructs — see
+  Appendices L and P.
 
 ---
 
@@ -2314,3 +2329,92 @@ Additive changes:
     form. Intended use: JSON and code templates, glob/format specs,
     and Windows-style paths — text that would otherwise need a `\{`
     on every brace.
+
+## Appendix P — Green threads, generators, and IO offload
+
+The v0.14 actor model (Appendix L) is one concurrency axis: real
+parallelism across cores, one OS thread and one heap per actor, messages
+deep-copied. This appendix adds the second axis — *green threads*,
+lightweight coroutines that share one actor's heap and are scheduled
+cooperatively — together with generator functions and a runtime that
+keeps a blocking call from freezing an actor's coroutines. (Landed after
+v0.17; not separately version-numbered in the roadmap.)
+
+59. **Green threads: `go` and `yield`** (§concurrency). `go fn` runs a
+    function as a *coroutine* inside the current actor and evaluates
+    immediately to a **green-thread handle**. Unlike `spawn` — one OS
+    thread and one heap per actor, with deep-copied messages — a `go`
+    coroutine shares the actor's heap, so it needs no copying and no
+    channels, and it is scheduled cooperatively onto the actor's single
+    OS thread. Scheduling has no preemption: a coroutine runs until it
+    `yield`s or returns, then the scheduler hands control to the next
+    ready one, round-robin. A bare `yield` with nothing else ready
+    resumes at once. The actor's main program is itself coroutine zero,
+    so the idiom `while (!done) { yield }` pumps the scheduler until a
+    coroutine has finished its work; a coroutine that never yields
+    starves the rest. The `join` built-in is extended from `Task`s to
+    green-thread handles: `join(handle)` cooperatively parks the caller —
+    its siblings keep running — until the coroutine returns, then
+    evaluates to that return value, and may be called repeatedly. An
+    uncaught `raise` in a `go` body aborts the whole actor, so a
+    fallible body should `catch` internally and return a tagged value
+    for the joiner to inspect. Two-level model: `spawn` is parallelism
+    across cores with separate heaps and copied messages; `go` is cheap
+    concurrency on one core with a shared heap and cooperative hand-off.
+
+60. **Intra-actor channels: `LocalChannel`** (§concurrency).
+    `import 'LocalChannel'` is a channel *between green threads* of one
+    actor. Because every coroutine shares the actor's heap a message
+    moves directly — no deep copy, no transfer-encoding (contrast the
+    cross-actor `Channel` of Appendix L, which copies). `new()` takes no
+    capacity: the channel is unbounded and `send` never blocks; `recv`
+    on an empty channel `yield`s the coroutine until a value or a close
+    arrives. `recv` / `try_recv` return `${value: v}`, `${closed: true}`
+    once the channel is closed and drained, or — `try_recv` only —
+    `${empty: true}`; `send` on a closed channel raises the catchable
+    `channel_closed`. `type` is `'local_channel'`; a `LocalChannel` is
+    neither sendable across actors nor JSON-serializable.
+
+61. **Generators: `gen fn`** (§concurrency). `gen fn (params) { body }`
+    is a generator-function literal. *Calling* it does not run the body;
+    it builds a paused coroutine and returns an iterator object
+    `${next: fn()}`. Each `next()` runs the body to the next `yield`,
+    which produces a value as `${done: false, value}`; once the body
+    returns, `next()` reports `${done: true}` from then on. Because a
+    generator speaks the ordinary iterator protocol it drives a `for`
+    loop, the spread forms `[...g]` and `f(...g)`, and the whole `Iter`
+    module directly — and `Iter` is itself built from `gen fn`
+    generators, so a generator you write drops straight into an `Iter`
+    pipeline. A `gen fn` with `while true` is the natural way to write
+    an infinite or streaming sequence: each value is computed only when
+    pulled. A `raise` escaping a generator body surfaces at the `next()`
+    call site, catchable with an ordinary `try` around the pull. `yield`
+    thus serves both coroutine forms: in a `go` body it hands control to
+    the scheduler; in a `gen fn` body it produces the next value.
+
+62. **Blocking-call offload: worker pool and async-I/O reactor**
+    (§concurrency). A blocking call — a child process, file, or socket
+    I/O — made while other coroutines are live no longer freezes the
+    actor. The call is moved off the actor thread, the calling coroutine
+    cooperatively parks, and its siblings keep running until the result
+    is ready; the call then resumes the coroutine exactly as a normal
+    return (or `raise`). With nothing else to schedule the call simply
+    runs inline on the actor thread, so a program that uses no `go` is
+    unaffected. Two backends share the work. A *worker pool* handles
+    short blocking work — `Os.run` / `Os.cwd`, the waiting `IO` file and
+    directory calls, the calls that may need a blocking name lookup
+    (`connect`, `connect_tls`, `send_to`), and the cross-actor waits
+    `Channel.send` / `Channel.recv` / `select` / `join` on a `Task`.
+    Steady-state socket I/O runs instead on a single *async-I/O reactor*
+    thread built on the operating system's `epoll` or `kqueue` —
+    `accept`, `read`, `write`, `read_exact`, `read_line`, `read_until`,
+    `read_all`, and `recv_from`. The difference shows at scale: a
+    coroutine parked in `read` on the reactor costs one table entry, so
+    one actor can hold tens of thousands of idle connections open at
+    once. Fast non-waiting calls (`IO.exists` / `is_dir` / `is_file` /
+    `stat`, `Net.listen` / `bind` / `local_addr` / `peer_addr` /
+    `set_timeout` / `close`, `Channel.try_recv` / `close`) stay inline.
+    One consequence of cooperative parking: a green thread may
+    `Channel.recv` from a sibling green thread in the same actor without
+    deadlocking, because the receive parks the coroutine rather than
+    sleeping the shared OS thread.

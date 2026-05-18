@@ -80,11 +80,14 @@ result := Iter.from(1..=1000)
 print(result);                         // [4, 16, 36]
 ```
 
-**Concurrency is OS-thread actors that share no mutable state.** `spawn` starts one, `join` waits for its result.
+**Concurrency has two axes.** `spawn` starts an OS-thread actor with its own heap that shares no mutable state; `go` starts a lightweight green thread — a coroutine — inside the current actor, sharing its heap. `join` waits on either.
 
 ```tigr
 worker := spawn fn() { 6 * 7 };
 print(join(worker));                   // 42
+
+handle := go fn() { 1 + 2 + 3 };
+print(join(handle));                   // 6
 ```
 
 ---
@@ -100,14 +103,14 @@ Tigr's documentation comes in three layers.
 Start here:
 
 - [Language reference](docs/README.md#language): expressions, control flow, functions, errors, concurrency, and more
-- [Standard library](docs/stdlib/README.md): all 21 modules and the global builtins
+- [Standard library](docs/stdlib/README.md): all 22 modules and the global builtins
 - [ROADMAP.md](ROADMAP.md): planned work beyond the current release
 
 ---
 
 ## Status
 
-tigr is feature-complete. 637 Rust tests and 271 tigr tests pass. It runs on a bytecode VM with:
+tigr is feature-complete. 638 Rust tests and 369 tigr tests pass. It runs on a bytecode VM with:
 
 - closures with Lox-style upvalues, first-class lazy ranges, destructuring patterns, pipe `|>`, spread `...`, and string interpolation;
 - `try` / `catch` / `raise` with structured errors. `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object;
@@ -115,9 +118,9 @@ tigr is feature-complete. 637 Rust tests and 271 tigr tests pass. It runs on a b
 - a `match` expression with refutable patterns, bitwise operators, and extended number literals (`0xFF`, `1e6`, `.5`, `_`);
 - lazy `Iter` iterators whose pipelines never materialize intermediate arrays, in-place array growth, and `for` and spread consuming iterator objects directly;
 - integer-overflow checks, tail-call optimization, and bounded recursion;
-- concurrency built on OS-thread actors (`spawn` and `join`), message-passing `Channel`s, a `select` block, and the structured `parallel[]` fan-out. Actors share no mutable state, so the model is race-free by construction;
+- concurrency on two axes: OS-thread actors (`spawn` and `join`), message-passing `Channel`s, a `select` block, and the structured `parallel[]` fan-out — actors share no mutable state, so that model is race-free by construction — plus lightweight green threads (`go` and `yield`) that share one actor's heap, `gen fn` generator functions, intra-actor `LocalChannel`s, and a runtime that offloads a blocking call onto a worker pool or an async-I/O reactor so it never freezes an actor's other coroutines;
 - a tracing mark-sweep garbage collector. The mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a collector over a per-thread heap, so reference cycles are reclaimed rather than leaked. Collection is automatic, running at VM safepoints once the heap crosses a size threshold, and the `gc()` builtin exposes the collector's counters;
-- a standard library of 21 modules spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Channel`, `Url`, `Http`, and a `Test` framework, all written in tigr itself, plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, `Bytes`, `BigInt`, `Net` (TCP/UDP/TLS sockets), and seedable `Random` modules.
+- a standard library of 22 modules spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Channel`, `LocalChannel`, `Url`, `Http`, and a `Test` framework, all written in tigr itself, plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, `Bytes`, `BigInt`, `Net` (TCP/UDP/TLS sockets), and seedable `Random` modules.
 
 See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it is not currently wired into the build.
 

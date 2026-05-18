@@ -247,9 +247,19 @@ impl Pool {
     fn submit(&'static self, job: OffloadJob) {
         let mut inner = self.inner.lock().unwrap();
         inner.queue.push_back(job);
-        // Spawn a fresh worker only when none is parked to take the
-        // job and the soft cap leaves room.
-        if inner.idle == 0 && inner.total < WORKER_SOFT_CAP {
+        // Spawn a fresh worker whenever there are more queued jobs than
+        // parked workers to take them (and the soft cap leaves room).
+        //
+        // Comparing counts is race-free where testing `idle == 0` is
+        // not: a worker decrements `idle` only after it wakes from
+        // `wait` and reacquires this lock, so a burst of `submit`s that
+        // outruns the workers waking would all see the same stale
+        // `idle` and decline to spawn — leaving one worker to run the
+        // whole burst serially. A notified-but-not-yet-woken worker is
+        // still counted in `idle`, and the job it will take is still
+        // counted in `queue.len()`, so the comparison stays balanced;
+        // only a genuine surplus of jobs triggers a new worker.
+        if inner.queue.len() > inner.idle && inner.total < WORKER_SOFT_CAP {
             inner.total += 1;
             thread::spawn(move || self.worker());
         }

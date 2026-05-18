@@ -586,6 +586,7 @@ impl<'src> Lexer<'src> {
         let expr_start = self.pos;
         let mut depth: i32 = 1;
         let mut in_str = false;
+        let mut in_raw = false;
         let mut escape = false;
         loop {
             let c = match self.advance() {
@@ -607,9 +608,17 @@ impl<'src> Lexer<'src> {
                     '\'' => in_str = false,
                     _ => {}
                 }
+            } else if in_raw {
+                // A `"…"` raw string: no escapes, so a `{` / `}` inside
+                // it must not move the brace depth — only its closing
+                // `"` matters.
+                if c == '"' {
+                    in_raw = false;
+                }
             } else {
                 match c {
                     '\'' => in_str = true,
+                    '"' => in_raw = true,
                     '{' => depth += 1,
                     '}' => {
                         depth -= 1;

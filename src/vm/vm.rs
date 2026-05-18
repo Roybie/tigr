@@ -3045,9 +3045,13 @@ fn arith_div(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
         (Int(_), Int(0)) => Err(RuntimeError::new(RuntimeErrorKind::DivisionByZero, line)),
-        (Int(x), Int(y)) => {
-            if x % y == 0 { Ok(Int(x / y)) } else { Ok(Float(x as f64 / y as f64)) }
-        }
+        (Int(x), Int(y)) => match x.checked_rem(y) {
+            // `i64::MIN / -1` overflows the bare `/` and `%` (a hardware
+            // trap, not a wrap) — raise `overflow`, like `+` / `-` / `*`.
+            None => Err(overflow_err(line)),
+            Some(0) => Ok(Int(x / y)),
+            Some(_) => Ok(Float(x as f64 / y as f64)),
+        },
         (Int(x), Float(y)) => Ok(Float(x as f64 / y)),
         (Float(x), Int(y)) => Ok(Float(x / y as f64)),
         (Float(x), Float(y)) => Ok(Float(x / y)),
@@ -3064,7 +3068,8 @@ fn arith_mod(a: Value, b: Value, line: u32) -> Result<Value, RuntimeError> {
     use Value::*;
     match (a, b) {
         (Int(_), Int(0)) => Err(RuntimeError::new(RuntimeErrorKind::DivisionByZero, line)),
-        (Int(x), Int(y)) => Ok(Int(x % y)),
+        // `i64::MIN % -1` overflows the bare `%`; the true remainder is 0.
+        (Int(x), Int(y)) => Ok(Int(x.checked_rem(y).unwrap_or(0))),
         (Int(x), Float(y)) => Ok(Float(x as f64 % y)),
         (Float(x), Int(y)) => Ok(Float(x % y as f64)),
         (Float(x), Float(y)) => Ok(Float(x % y)),

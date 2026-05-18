@@ -229,13 +229,13 @@ fn fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<Expr> {
         // so it is left unfolded.
         Div => match (lhs, rhs) {
             (Int(_), Int(0)) => None,
-            (Int(x), Int(y)) => {
-                if x % y == 0 {
-                    Some(Int(x / y))
-                } else {
-                    Some(Float(*x as f64 / *y as f64))
-                }
-            }
+            (Int(x), Int(y)) => match x.checked_rem(*y) {
+                // `i64::MIN / -1` overflows — leave it unfolded for the
+                // VM to raise `overflow`.
+                None => None,
+                Some(0) => Some(Int(x / y)),
+                Some(_) => Some(Float(*x as f64 / *y as f64)),
+            },
             (Int(x), Float(y)) => Some(Float(*x as f64 / y)),
             (Float(x), Int(y)) => Some(Float(x / *y as f64)),
             (Float(x), Float(y)) => Some(Float(x / y)),
@@ -243,7 +243,7 @@ fn fold_binop(op: BinOp, lhs: &Expr, rhs: &Expr) -> Option<Expr> {
         },
         Mod => match (lhs, rhs) {
             (Int(_), Int(0)) => None,
-            (Int(x), Int(y)) => Some(Int(x % y)),
+            (Int(x), Int(y)) => Some(Int(x.checked_rem(*y).unwrap_or(0))),
             (Int(x), Float(y)) => Some(Float(*x as f64 % y)),
             (Float(x), Int(y)) => Some(Float(x % *y as f64)),
             (Float(x), Float(y)) => Some(Float(x % y)),

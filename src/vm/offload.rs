@@ -20,6 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::gc;
 use crate::vm::value::Value;
 
 /// The closure a `Blocking` native hands to the worker pool. Runs on a
@@ -35,6 +36,16 @@ pub type OffloadResult = Result<OffloadOk, OffloadErr>;
 /// [`decode`] turns each variant into a `Value` on the actor thread.
 /// Grows one variant at a time as more natives are converted.
 pub enum OffloadOk {
+    /// A call with no meaningful result — decodes to `null`.
+    Unit,
+    /// A string result (file contents, working directory, ...).
+    Str(String),
+    /// A byte-buffer result.
+    Bytes(Vec<u8>),
+    /// A list of strings (directory entries).
+    StrList(Vec<String>),
+    /// An optional string — `None` decodes to `null` (e.g. stdin EOF).
+    StrOrNull(Option<String>),
     /// `Os.run` — child-process exit code plus captured output.
     Run { code: i64, stdout: String, stderr: String },
 }
@@ -60,6 +71,18 @@ pub fn decode(result: OffloadResult) -> Result<Value, RuntimeError> {
 
 fn decode_ok(ok: OffloadOk) -> Value {
     match ok {
+        OffloadOk::Unit => Value::Null,
+        OffloadOk::Str(s) => Value::Str(s.into()),
+        OffloadOk::Bytes(b) => Value::Bytes(gc::alloc_bytes(b)),
+        OffloadOk::StrList(items) => {
+            let arr: Vec<Value> =
+                items.into_iter().map(|s| Value::Str(s.into())).collect();
+            Value::Array(gc::alloc_array(arr))
+        }
+        OffloadOk::StrOrNull(o) => match o {
+            Some(s) => Value::Str(s.into()),
+            None => Value::Null,
+        },
         OffloadOk::Run { code, stdout, stderr } => {
             crate::vm::native_modules::object(&[
                 ("code", Value::Int(code)),

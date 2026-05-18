@@ -5,6 +5,8 @@
 
 `IO` covers file and stdio access, imported with `import 'IO'`. The fallible operations (reading, writing, listing, removing, `stat`) raise a catchable string-valued error when the underlying syscall fails, so wrap them in `try` when the path may be missing or unwritable. The predicate entries (`exists`, `is_dir`, `is_file`) never raise; they just report `false` for a path that does not exist.
 
+The waiting calls — `read_file`, `write_file`, `append_file`, the `_bytes` variants, `list_dir`, `mkdir`, `remove`, and `read_line` — are *blocking* natives: inside a green thread they are offloaded to a worker pool so file IO does not stall the actor's other coroutines (see [concurrency](../language/concurrency.md)). The metadata-only calls (`exists`, `is_dir`, `is_file`, `stat`) stay inline — offloading them would cost more than it saves.
+
 ## Functions
 
 ### `read_file(path) -> String`

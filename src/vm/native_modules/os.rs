@@ -23,7 +23,7 @@ pub fn module() -> Value {
     object(&[
         ("args", args),
         ("env",  native("env",  Arity::Exact(1),   env)),
-        ("cwd",  native("cwd",  Arity::Exact(0),   cwd)),
+        ("cwd",  native_blocking("cwd", Arity::Exact(0), cwd)),
         // `run` spawns a child process and waits for it — a blocking
         // call, so it is offloaded to the worker pool when other green
         // threads are live (see `crate::vm::offload`).
@@ -56,10 +56,16 @@ fn env(args: &[Value]) -> Result<Value, RuntimeError> {
     }
 }
 
-fn cwd(_args: &[Value]) -> Result<Value, RuntimeError> {
-    std::env::current_dir()
-        .map(|p| Value::Str(p.to_string_lossy().to_string().into()))
-        .map_err(|e| raise(format!("Os.cwd: {e}")))
+fn cwd(_args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    Ok(Box::new(|| {
+        match std::env::current_dir() {
+            Ok(p) => Ok(OffloadOk::Str(p.to_string_lossy().into_owned())),
+            Err(e) => Err(OffloadErr {
+                kind: None,
+                message: format!("Os.cwd: {e}"),
+            }),
+        }
+    }))
 }
 
 /// `run(cmd, ...args)` — a blocking native. The actor-thread half here

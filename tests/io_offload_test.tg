@@ -15,9 +15,12 @@
 //
 // Evaluates to an array of suites so `tigr test` aggregates each tally.
 
-Test := import 'Test';
-Os   := import 'Os';
-Time := import 'Time';
+Test  := import 'Test';
+Os    := import 'Os';
+Time  := import 'Time';
+IO    := import 'IO';
+Bytes := import 'Bytes';
+Array := import 'Array';
 
 [
     Test.suite('Os.run — correctness (inline, no green threads)', [
@@ -100,6 +103,84 @@ Time := import 'Time';
             b := go fn() { Os.run('echo', 'B').stdout };
             Test.assert_eq(join(a), 'A\n');
             Test.assert_eq(join(b), 'B\n')
+        }),
+    ]),
+
+    Test.suite('IO files — offloaded from green threads', [
+        Test.case('write / read / append round-trip when offloaded', fn() {
+            // A unique scratch directory keeps parallel runs apart.
+            dir := '.tigr_io_offload_' + str(Time.now_ns());
+            file := dir + '/note.txt';
+            result := null;
+            go fn() {
+                IO.mkdir(dir);
+                IO.write_file(file, 'first');
+                IO.append_file(file, ' second');
+                result = IO.read_file(file);
+                IO.remove(dir)
+            };
+            go fn() { yield };
+            while (result == null) { yield };
+            Test.assert_eq(result, 'first second')
+        }),
+
+        Test.case('bytes round-trip when offloaded', fn() {
+            dir := '.tigr_io_offload_' + str(Time.now_ns());
+            file := dir + '/blob.bin';
+            got := null;
+            go fn() {
+                IO.mkdir(dir);
+                IO.write_bytes(file, Bytes.from_array([1, 2, 3, 250]));
+                got = IO.read_bytes(file);
+                IO.remove(dir)
+            };
+            go fn() { yield };
+            while (got == null) { yield };
+            Test.assert_eq(got, Bytes.from_array([1, 2, 3, 250]))
+        }),
+
+        Test.case('list_dir sees files created in the same coroutine', fn() {
+            dir := '.tigr_io_offload_' + str(Time.now_ns());
+            names := null;
+            go fn() {
+                IO.mkdir(dir);
+                IO.write_file(dir + '/x', '');
+                IO.write_file(dir + '/y', '');
+                names = Array.sort(IO.list_dir(dir));
+                IO.remove(dir)
+            };
+            go fn() { yield };
+            while (names == null) { yield };
+            Test.assert_eq(names, ['x', 'y'])
+        }),
+
+        Test.case('a file read does not freeze a sibling', fn() {
+            // The reading coroutine offloads and parks, so a sibling
+            // must get at least one turn while the read is in flight.
+            dir := '.tigr_io_offload_' + str(Time.now_ns());
+            file := dir + '/data.txt';
+            IO.mkdir(dir);
+            IO.write_file(file, 'payload');
+            done := false;
+            counter := 0;
+            go fn() { IO.read_file(file); done = true };
+            go fn() { while (!done) { counter = counter + 1; yield } };
+            while (!done) { yield };
+            IO.remove(dir);
+            Test.assert(counter > 0,
+                'sibling should run while the offloaded read is parked')
+        }),
+
+        Test.case('an offloaded read error is catchable inside the go', fn() {
+            result := null;
+            go fn() {
+                result = try {
+                    IO.read_file('.tigr-no-such-file-xyzzy'); 'no-error'
+                } catch (e) { 'caught' }
+            };
+            go fn() { yield };
+            while (result == null) { yield };
+            Test.assert_eq(result, 'caught')
         }),
     ]),
 ]

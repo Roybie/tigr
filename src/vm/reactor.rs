@@ -117,6 +117,18 @@ pub fn run_blocking(rop: ReactorOp) -> OffloadResult {
             Ok(()) => Ok(OffloadOk::Int(data.len() as i64)),
             Err(e) => Err(net::offload_err(label, e)),
         },
+        SocketOp::Accept => match socket.accept() {
+            Ok(conn) => Ok(OffloadOk::Socket(conn)),
+            Err(e) => Err(net::offload_err(label, e)),
+        },
+        SocketOp::RecvFrom(n) => match socket.recv_from(n) {
+            Ok((data, addr)) => Ok(OffloadOk::RecvFrom {
+                data,
+                host: addr.ip().to_string(),
+                port: addr.port(),
+            }),
+            Err(e) => Err(net::offload_err(label, e)),
+        },
     }
 }
 
@@ -148,6 +160,20 @@ fn advance(op: &mut SocketOp, socket: &SocketInner, label: &'static str) -> Adva
         return Advance::Done(Err(net::offload_err(label, NetError::Closed)));
     }
     match op {
+        SocketOp::Accept => match socket.nb_accept() {
+            Ok(conn) => Advance::Done(Ok(OffloadOk::Socket(conn))),
+            Err(NetError::Io(e)) if would_block(&e) => Advance::Pending,
+            Err(e) => Advance::Done(Err(net::offload_err(label, e))),
+        },
+        SocketOp::RecvFrom(n) => match socket.recv_from(*n) {
+            Ok((data, addr)) => Advance::Done(Ok(OffloadOk::RecvFrom {
+                data,
+                host: addr.ip().to_string(),
+                port: addr.port(),
+            })),
+            Err(NetError::Io(e)) if would_block(&e) => Advance::Pending,
+            Err(e) => Advance::Done(Err(net::offload_err(label, e))),
+        },
         SocketOp::ReadChunk(n) => {
             let n = *n;
             if n == 0 {

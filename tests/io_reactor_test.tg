@@ -207,6 +207,78 @@ make_pair := fn() {
         }),
     ]),
 
+    Test.suite('reactor — accept and UDP', [
+        Test.case('close while parked in accept wakes it with closed', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            caught := null;
+            // The accept parks on the reactor — no client ever connects.
+            go fn() {
+                caught = try {
+                    Net.accept(listener); 'no-error'
+                } catch (e) { e.kind }
+            };
+            // A sibling closes the listener out from under it.
+            go fn() { Net.close(listener) };
+            while (caught == null) { yield };
+            Test.assert_eq(caught, 'closed')
+        }),
+
+        Test.case('a parked accept does not freeze a sibling', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            conn := null;
+            counter := 0;
+            // accept parks until the connect lands.
+            go fn() { conn = Net.accept(listener) };
+            go fn() { while (conn == null) { counter = counter + 1; yield } };
+            go fn() { Net.connect('127.0.0.1', port) };
+            while (conn == null) { yield };
+            Test.assert(counter > 0,
+                'a sibling should run while accept is parked');
+            Net.close(conn);
+            Net.close(listener)
+        }),
+
+        Test.case('UDP send_to / recv_from round-trip a datagram', fn() {
+            receiver := Net.bind('127.0.0.1', 0);
+            rport := Net.local_addr(receiver).port;
+            sender := Net.bind('127.0.0.1', 0);
+            got := null;
+            // recv_from parks on the reactor; send_to (DNS-capable)
+            // stays on the worker pool.
+            go fn() { got = Net.recv_from(receiver, 1024) };
+            go fn() {
+                Net.send_to(sender, Bytes.from_string('datagram'),
+                            '127.0.0.1', rport)
+            };
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got.data), 'datagram');
+            Test.assert_eq(got.host, '127.0.0.1');
+            Net.close(sender);
+            Net.close(receiver)
+        }),
+
+        Test.case('a parked recv_from does not freeze a sibling', fn() {
+            receiver := Net.bind('127.0.0.1', 0);
+            rport := Net.local_addr(receiver).port;
+            sender := Net.bind('127.0.0.1', 0);
+            got := null;
+            counter := 0;
+            go fn() { got = Net.recv_from(receiver, 1024) };
+            go fn() { while (got == null) { counter = counter + 1; yield } };
+            go fn() {
+                Net.send_to(sender, Bytes.from_string('late'),
+                            '127.0.0.1', rport)
+            };
+            while (got == null) { yield };
+            Test.assert_eq(Bytes.to_string(got.data), 'late');
+            Test.assert(counter > 0,
+                'a sibling should run while recv_from is parked');
+            Net.close(sender);
+            Net.close(receiver)
+        }),
+    ]),
+
     Test.suite('reactor — inline path (no green threads)', [
         Test.case('a no-go client round-trips on the inline path', fn() {
             // The peer runs in a separate actor, so this actor has no

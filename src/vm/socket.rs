@@ -51,12 +51,17 @@ pub(crate) const CHUNK: usize = 8192;
 pub(crate) const MAX_DIRECT_READ: usize = 65536;
 /// Cap on a single UDP datagram receive buffer.
 const MAX_DATAGRAM: usize = 65536;
-/// Poll cadence for an interruptible `accept` — the wait between
-/// retries while no connection is pending. A listener has no
+/// Poll cadence for the blocking [`SocketInner::accept`] — the wait
+/// between retries while no connection is pending. A listener has no
 /// `shutdown`, so `close` cannot wake a blocked `accept` directly;
 /// instead `accept` polls a non-blocking listener and observes the
 /// `closed` flag within this bound. It only sleeps while *idle* —
 /// queued connections are returned at once.
+///
+/// Since sub-phase B2 a `go` coroutine's `accept` is driven on the
+/// async-IO reactor ([`crate::vm::reactor`]) — readiness-based, no
+/// polling. This blocking form is the inline fallback for an `accept`
+/// run with no green threads (or inside a generator).
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
 /// An operation failure, mapped to a structured tigr error by `net.rs`.
@@ -465,20 +470,24 @@ impl SocketInner {
     }
 
     /// Can the reactor drive ops on this socket? True for a connected
-    /// `TcpStream`. A TLS / listener / UDP socket stays on the worker
-    /// pool in sub-phase B1.
+    /// `TcpStream`, a `TcpListener` (`accept`) and a `Udp` socket
+    /// (`recv_from`). A TLS socket stays on the worker pool until
+    /// sub-phase B4.
     pub fn reactor_eligible(&self) -> bool {
-        matches!(self.kind, SocketKind::TcpStream { .. })
+        !matches!(self.kind, SocketKind::Tls(_))
     }
 
-    /// The raw fd to register for a read-direction reactor op (the read
-    /// half of a connected stream). `None` for a non-stream socket.
+    /// The raw fd to register for a read-direction reactor op — the
+    /// read half of a connected stream, the listener fd for `accept`,
+    /// or the datagram fd for `recv_from`. `None` for a TLS socket.
     pub fn read_raw_fd(&self) -> Option<RawFd> {
         match &self.kind {
             SocketKind::TcpStream { read, .. } => {
                 Some(read.lock().unwrap().as_raw_fd())
             }
-            _ => None,
+            SocketKind::TcpListener(l) => Some(l.as_raw_fd()),
+            SocketKind::Udp(u) => Some(u.as_raw_fd()),
+            SocketKind::Tls(_) => None,
         }
     }
 
@@ -549,6 +558,24 @@ impl SocketInner {
         }
     }
 
+    /// One non-blocking `accept` attempt. The listener is permanently
+    /// non-blocking, so `WouldBlock` (surfaced as `NetError::Io`) means
+    /// no connection is pending — the reactor waits for the next
+    /// readiness event. A successful accept hands back a blocking
+    /// stream socket.
+    pub fn nb_accept(&self) -> Result<SocketHandle, NetError> {
+        match &self.kind {
+            SocketKind::TcpListener(l) => {
+                let (stream, _addr) = l.accept()?;
+                stream.set_nonblocking(false)?;
+                tcp_stream_socket(stream)
+            }
+            _ => Err(NetError::WrongKind(
+                "accept expects a listener".into(),
+            )),
+        }
+    }
+
     /// Drain up to `n` bytes already buffered by an over-reading
     /// `read_until`; an empty vec means the buffer is empty.
     pub fn take_buffered(&self, n: usize) -> Vec<u8> {
@@ -588,6 +615,11 @@ impl SocketInner {
 /// executor starts them fresh. Built by a `Net` `NativeKind::Socket`
 /// native; carried in a [`ReactorOp`].
 pub enum SocketOp {
+    /// `Net.accept(listener)` — the next inbound connection.
+    Accept,
+    /// `Net.recv_from(sock, n)` — one UDP datagram (up to `n` bytes)
+    /// plus its sender's address.
+    RecvFrom(usize),
     /// `Net.read(sock, n)` — up to `n` bytes (empty = end-of-stream).
     ReadChunk(usize),
     /// `Net.read_exact(sock, n)` — exactly `need` bytes; `got` holds

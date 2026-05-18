@@ -28,17 +28,19 @@ use super::{native, native_blocking, native_socket, object};
 
 pub fn module() -> Value {
     object(&[
-        // -- TCP --  (`listen` binds without waiting; `accept` and
-        // `connect` wait, so they are offloaded inside a green thread.)
+        // -- TCP --  (`listen` binds without waiting. `accept` is
+        // driven on the async-IO reactor inside a green thread;
+        // `connect` waits on the worker pool — DNS has no async form.)
         ("listen",      native("listen",      Arity::Exact(2), n_listen)),
-        ("accept",      native_blocking("accept",  Arity::Exact(1), n_accept)),
+        ("accept",      native_socket("accept",    Arity::Exact(1), n_accept)),
         ("connect",     native_blocking("connect", Arity::Exact(2), n_connect)),
         // -- TLS --
         ("connect_tls", native_blocking("connect_tls", Arity::Exact(2), n_connect_tls)),
-        // -- UDP --
+        // -- UDP --  (`recv_from` waits for a datagram — reactor-driven;
+        // `send_to` resolves its target with DNS, so it stays pooled.)
         ("bind",        native("bind",        Arity::Exact(2), n_bind)),
-        ("send_to",     native_blocking("send_to",   Arity::Exact(4), n_send_to)),
-        ("recv_from",   native_blocking("recv_from", Arity::Exact(2), n_recv_from)),
+        ("send_to",     native_blocking("send_to", Arity::Exact(4), n_send_to)),
+        ("recv_from",   native_socket("recv_from", Arity::Exact(2), n_recv_from)),
         // -- stream I/O --  (steady-state socket reads / writes — driven
         // on the async-IO reactor inside a green thread; see
         // `crate::vm::reactor`.)
@@ -263,15 +265,12 @@ fn n_listen(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Socket(sock))
 }
 
-/// `accept(listener)` — block for the next inbound connection.
-/// Raises `closed` if the listener is closed, including by another
-/// actor while this `accept` is waiting.
-fn n_accept(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "accept")?;
-    Ok(Box::new(move || match sock.accept() {
-        Ok(conn) => Ok(OffloadOk::Socket(conn)),
-        Err(e) => Err(offload_err("accept", e)),
-    }))
+/// `accept(listener)` — wait for the next inbound connection. Raises
+/// `closed` if the listener is closed, including by another actor
+/// while this `accept` is waiting.
+fn n_accept(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "accept")?;
+    Ok(ReactorOp { socket, op: SocketOp::Accept, label: "accept" })
 }
 
 /// `connect(host, port)` — open a TCP stream to `host:port`.
@@ -333,17 +332,14 @@ fn n_send_to(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
 
 /// `recv_from(sock, n)` — receive one UDP datagram (up to `n` bytes).
 /// Returns `${data: Bytes, host: String, port: Int}`.
-fn n_recv_from(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    let sock = take_socket(&args[0], "recv_from")?;
+fn n_recv_from(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
+    let socket = take_socket(&args[0], "recv_from")?;
     let n = expect_count(&args[1], "recv_from")?;
-    Ok(Box::new(move || match sock.recv_from(n) {
-        Ok((data, addr)) => Ok(OffloadOk::RecvFrom {
-            data,
-            host: addr.ip().to_string(),
-            port: addr.port(),
-        }),
-        Err(e) => Err(offload_err("recv_from", e)),
-    }))
+    Ok(ReactorOp {
+        socket,
+        op: SocketOp::RecvFrom(n),
+        label: "recv_from",
+    })
 }
 
 // ---------------------------------------------------------------------

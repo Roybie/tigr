@@ -1,0 +1,71 @@
+// Many concurrent connections on the async-IO reactor.
+//
+// Steady-state socket reads do not each cost an OS thread. A green
+// thread parked in `Net.read` is registered with a single async-IO
+// reactor thread (epoll / kqueue under the hood), so a parked read
+// costs one table entry. One actor can therefore carry far more live
+// connections than it has threads.
+//
+// This example serves a thousand loopback connections, each handled
+// by its own green-thread coroutine. The work runs in batches so the
+// listener's accept backlog never overflows; within a batch every
+// client and handler coroutine is parked in `Net.read_line` at once,
+// all of them multiplexed onto the one reactor thread.
+
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+BATCHES   := 10;
+PER_BATCH := 100;          // kept under the listen backlog (128)
+
+served  := 0;
+correct := 0;
+
+for (b, 0..BATCHES) {
+    listener := Net.listen('127.0.0.1', 0);
+    port := Net.local_addr(listener).port;
+    replies := for[] (i, 0..PER_BATCH) { null };
+
+    // The server: accept this batch's connections, and hand each to
+    // its own coroutine that reads one line and echoes it back.
+    go fn() {
+        for (i, 0..PER_BATCH) {
+            conn := Net.accept(listener);
+            go fn() {
+                line := Net.read_line(conn);
+                Net.write(conn, Bytes.from_string(line + '\n'));
+                Net.close(conn)
+            }
+        };
+        Net.close(listener)
+    };
+
+    // The clients: each its own coroutine. It connects, sends its id,
+    // then parks in `read_line` waiting for the reactor to deliver the
+    // echo back.
+    for (i, 0..PER_BATCH) {
+        go fn() {
+            c := Net.connect('127.0.0.1', port);
+            Net.write(c, Bytes.from_string(str(i) + '\n'));
+            replies[i] = Net.read_line(c);
+            Net.close(c)
+        }
+    };
+
+    // Pump the scheduler until every client in the batch has replied.
+    pending := fn() {
+        n := 0;
+        for (i, 0..PER_BATCH) { if replies[i] == null { n = n + 1 } };
+        n
+    };
+    while (pending() > 0) { yield };
+
+    // Tally: every client should read back exactly the id it sent.
+    for (i, 0..PER_BATCH) {
+        served = served + 1;
+        if replies[i] == str(i) { correct = correct + 1 }
+    }
+};
+
+print('reactor soak: served {served} connections in {BATCHES} batches');
+print('{correct} of {served} echoed back correctly');

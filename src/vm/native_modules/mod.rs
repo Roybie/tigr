@@ -14,6 +14,7 @@ pub mod channel;
 pub mod datetime;
 pub mod io;
 pub mod json;
+pub mod local_channel;
 pub mod map;
 pub mod math;
 pub mod net;
@@ -32,7 +33,8 @@ use indexmap::IndexMap;
 
 use crate::vm::error::RuntimeError;
 use crate::vm::gc;
-use crate::vm::value::{Arity, NativeFn, Value};
+use crate::vm::offload::BlockingJob;
+use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 
 /// Look up a bare-name module. Returns `None` if no native module of
 /// that name exists — callers should then fall back to filesystem
@@ -53,6 +55,7 @@ pub fn resolve(name: &str) -> Option<Value> {
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
         "_NativeChannel" => Some(channel::module()),
+        "_NativeLocalChannel" => Some(local_channel::module()),
         "_NativeArray" => Some(array::module()),
         "_NativeMap" => Some(map::module()),
         "_NativeMath" => Some(math::module()),
@@ -63,13 +66,35 @@ pub fn resolve(name: &str) -> Option<Value> {
     }
 }
 
-/// Build a `Value::NativeFn` for a module entry.
+/// Build a `Value::NativeFn` for an ordinary (non-blocking) module
+/// entry — runs inline on the actor thread.
 pub(crate) fn native(
     name: &'static str,
     arity: Arity,
     func: fn(&[Value]) -> Result<Value, RuntimeError>,
 ) -> Value {
-    Value::NativeFn(Rc::new(NativeFn { name, arity, func }))
+    Value::NativeFn(Rc::new(NativeFn {
+        name,
+        arity,
+        kind: NativeKind::Pure(func),
+    }))
+}
+
+/// Build a `Value::NativeFn` for a *blocking* module entry — a call
+/// that may wait, which the VM can offload to a worker pool so a green
+/// thread doing IO does not stall its siblings. `func` runs on the
+/// actor thread to validate arguments and extract `Send` POD; the
+/// closure it returns runs on a pool thread. See [`crate::vm::offload`].
+pub(crate) fn native_blocking(
+    name: &'static str,
+    arity: Arity,
+    func: fn(&[Value]) -> Result<BlockingJob, RuntimeError>,
+) -> Value {
+    Value::NativeFn(Rc::new(NativeFn {
+        name,
+        arity,
+        kind: NativeKind::Blocking(func),
+    }))
 }
 
 /// Build a `Value::Object` from a list of (key, value) pairs in source

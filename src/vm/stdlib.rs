@@ -18,7 +18,7 @@ use crate::vm::gc;
 use crate::vm::rng;
 use crate::vm::task::JoinOutcome;
 use crate::vm::transfer::{decode, TransferError};
-use crate::vm::value::{bigint_to_f64, Arity, NativeFn, Value};
+use crate::vm::value::{bigint_to_f64, Arity, NativeFn, NativeKind, Value};
 
 /// Returns the ordered list of built-in names. The compiler uses this
 /// to assign slot indices; the VM uses [`builtins`] to populate the
@@ -34,7 +34,7 @@ pub fn builtins() -> Vec<Value> {
         .map(|nf| Value::NativeFn(Rc::new(NativeFn {
             name: nf.name,
             arity: nf.arity,
-            func: nf.func,
+            kind: NativeKind::Pure(nf.func),
         })))
         .collect()
 }

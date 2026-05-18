@@ -1,0 +1,105 @@
+// tests/io_offload_test.tg — blocking-IO offload for green threads.
+//
+// A green thread doing a blocking call (here `Os.run`, which spawns a
+// child process and waits for it) no longer freezes its sibling
+// coroutines. The VM hands the blocking work to a worker-thread pool
+// and cooperatively parks the calling coroutine until it finishes —
+// the other coroutines keep running meanwhile.
+//
+// A program that uses no `go` is unaffected: with nothing else to run,
+// a blocking call still runs inline on the actor thread.
+//
+// These tests assert *outcomes*, not interleaving order — offload
+// timing is nondeterministic. The concurrency proof is by wall-clock:
+// N coroutines each sleeping T seconds finish in about T, not N * T.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test := import 'Test';
+Os   := import 'Os';
+Time := import 'Time';
+
+[
+    Test.suite('Os.run — correctness (inline, no green threads)', [
+        Test.case('captures stdout and a zero exit code', fn() {
+            r := Os.run('echo', 'hello');
+            Test.assert_eq(r.code, 0);
+            Test.assert_eq(r.stdout, 'hello\n')
+        }),
+
+        Test.case('reports a non-zero exit code', fn() {
+            r := Os.run('sh', '-c', 'exit 3');
+            Test.assert_eq(r.code, 3)
+        }),
+
+        Test.case('a missing command raises, catchably', fn() {
+            Test.assert_raises(fn() {
+                Os.run('tigr-no-such-command-xyzzy')
+            })
+        }),
+    ]),
+
+    Test.suite('Os.run — offloaded from a green thread', [
+        Test.case('result is correct when offloaded', fn() {
+            // A sibling coroutine is live, so the `Os.run` is offloaded
+            // rather than run inline — the result must be unchanged.
+            out := null;
+            go fn() { out = Os.run('echo', 'offloaded').stdout };
+            go fn() { yield };
+            while (out == null) { yield };
+            Test.assert_eq(out, 'offloaded\n')
+        }),
+
+        Test.case('a blocking call does not freeze a sibling', fn() {
+            // While one coroutine waits on a 0.2s child process, a
+            // sibling keeps incrementing a counter. If the IO froze
+            // the actor the counter would never advance.
+            io_done := false;
+            counter := 0;
+            go fn() { Os.run('sleep', '0.2'); io_done = true };
+            go fn() {
+                while (!io_done) { counter = counter + 1; yield }
+            };
+            while (!io_done) { yield };
+            Test.assert(counter > 0,
+                'sibling counter should advance during blocking IO')
+        }),
+
+        Test.case('an offloaded failure is catchable inside the go', fn() {
+            // The error must surface against the coroutine's own `try`,
+            // not whichever coroutine happened to be running when the
+            // worker thread finished.
+            result := null;
+            go fn() {
+                result = try {
+                    Os.run('tigr-no-such-command-xyzzy'); 'no-error'
+                } catch (e) { 'caught' }
+            };
+            go fn() { yield };
+            while (result == null) { yield };
+            Test.assert_eq(result, 'caught')
+        }),
+    ]),
+
+    Test.suite('Os.run — concurrency proof by timing', [
+        Test.case('four 0.2s sleeps run concurrently, not serially', fn() {
+            start := Time.now_ms();
+            handles := for[] (i, 0..4) { go fn() { Os.run('sleep', '0.2') } };
+            for (h, handles) { join(h) };
+            elapsed := Time.now_ms() - start;
+            // Serial would be ~800ms; concurrent is ~200ms. A generous
+            // ceiling still proves the sleeps overlapped.
+            Test.assert(elapsed < 600,
+                'four concurrent 0.2s sleeps took ' + str(elapsed) + 'ms');
+            Test.assert(elapsed > 150,
+                'the sleeps should actually have run (' + str(elapsed) + 'ms)')
+        }),
+
+        Test.case('join delivers each coroutine its own result', fn() {
+            a := go fn() { Os.run('echo', 'A').stdout };
+            b := go fn() { Os.run('echo', 'B').stdout };
+            Test.assert_eq(join(a), 'A\n');
+            Test.assert_eq(join(b), 'B\n')
+        }),
+    ]),
+]

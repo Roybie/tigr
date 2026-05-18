@@ -1,5 +1,6 @@
 //! Embedded tigr-source stdlib modules (`Array`, `Channel`, `Http`,
-//! `Iter`, `Map`, `Math`, `Object`, `Set`, `String`, `Test`, `Url`).
+//! `Iter`, `LocalChannel`, `Map`, `Math`, `Object`, `Set`, `String`,
+//! `Test`, `Url`).
 //!
 //! These are `.tg` files at the repo's `stdlib/` directory, embedded
 //! at compile time via `include_str!`. Bare-name imports check this
@@ -18,6 +19,7 @@ pub fn source(name: &str) -> Option<&'static str> {
         "Channel" => Some(include_str!("../../stdlib/Channel.tg")),
         "Http"   => Some(include_str!("../../stdlib/Http.tg")),
         "Iter"   => Some(include_str!("../../stdlib/Iter.tg")),
+        "LocalChannel" => Some(include_str!("../../stdlib/LocalChannel.tg")),
         "Map"    => Some(include_str!("../../stdlib/Map.tg")),
         "Math"   => Some(include_str!("../../stdlib/Math.tg")),
         "Object" => Some(include_str!("../../stdlib/Object.tg")),

@@ -1,0 +1,42 @@
+// Concurrent blocking IO with green threads.
+//
+// A blocking call — here `Os.run`, which spawns a child process and
+// waits for it — would once freeze every coroutine in the actor: they
+// share one OS thread. Now the VM offloads the blocking work to a
+// worker-thread pool and cooperatively parks just the calling
+// coroutine, so its siblings keep running.
+//
+// The proof is wall-clock: four child processes that each sleep for
+// 0.25s finish together in about a quarter-second, not a full second.
+
+Os   := import 'Os';
+Time := import 'Time';
+
+// --- four blocking sleeps, run concurrently -------------------------
+
+start := Time.now_ms();
+
+// `go` spawns a green thread; it evaluates to a handle `join` waits on.
+handles := for[] (i, 1..=4) {
+    go fn() {
+        Os.run('sleep', '0.25');
+        'worker {i} done'
+    }
+};
+
+// `join` cooperatively waits — while one coroutine is parked on its
+// child process, the others run their `Os.run` on the worker pool too.
+for (h, handles) {
+    print(join(h))
+};
+
+elapsed := Time.now_ms() - start;
+print('four 0.25s sleeps finished in {elapsed}ms (serial would be ~1000ms)');
+
+// --- a blocking call with no green threads runs inline --------------
+//
+// With nothing else to schedule, the offload machinery steps aside and
+// the call runs straight on the actor thread — zero overhead.
+
+greeting := Os.run('echo', 'hello from a child process').stdout;
+print('inline: {greeting}');

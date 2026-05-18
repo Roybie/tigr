@@ -31,7 +31,8 @@ use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
 
-use crate::vm::scheduler::GeneratorState;
+use crate::vm::local_channel::LocalChannel;
+use crate::vm::scheduler::{GeneratorState, GreenHandle};
 use crate::vm::value::{Closure, IterState, MapKey, Upvalue, Value};
 
 /// Object-count the heap starts (and never drops below) as a collection
@@ -282,6 +283,10 @@ pub struct Heap {
     upvalues: Arena<Upvalue>,
     /// green threads — parked generator coroutines.
     generators: Arena<GeneratorState>,
+    /// green threads — `go` result handles (Phase 4).
+    green_handles: Arena<GreenHandle>,
+    /// green threads — intra-actor channels (Phase 4).
+    local_channels: Arena<LocalChannel>,
     /// Live object count across all arenas — the collection trigger.
     live: usize,
     /// `live` value at which the next collection fires.
@@ -303,6 +308,8 @@ impl Heap {
             closures: Arena::new(),
             upvalues: Arena::new(),
             generators: Arena::new(),
+            green_handles: Arena::new(),
+            local_channels: Arena::new(),
             live: 0,
             threshold: MIN_THRESHOLD,
             collections: 0,
@@ -331,6 +338,8 @@ impl Heap {
             + self.closures.sweep()
             + self.upvalues.sweep()
             + self.generators.sweep()
+            + self.green_handles.sweep()
+            + self.local_channels.sweep()
     }
 }
 
@@ -357,6 +366,8 @@ macro_rules! gc_kind {
 
         impl GcRef<$kind> {
             /// Shared borrow of the heap object. Panics on a stale handle.
+            // Part of every handle's API; some kinds only ever mutate.
+            #[allow(dead_code)]
             pub fn borrow(self) -> GcReadGuard<$payload> {
                 let cell = HEAP.with(|h| h.borrow().$arena.cell(self.index, self.generation));
                 read_guard(cell)
@@ -393,6 +404,8 @@ gc_kind!(IterKind, IterState, iters, alloc_iter);
 gc_kind!(ClosureKind, Closure, closures, alloc_closure);
 gc_kind!(UpvalueKind, Upvalue, upvalues, alloc_upvalue);
 gc_kind!(GeneratorKind, GeneratorState, generators, alloc_generator);
+gc_kind!(GreenHandleKind, GreenHandle, green_handles, alloc_green_handle);
+gc_kind!(LocalChannelKind, LocalChannel, local_channels, alloc_local_channel);
 
 // ---------------------------------------------------------------------
 // Tracing: the `Trace` trait, the `Marker`, and `collect`
@@ -414,6 +427,8 @@ enum AnyRef {
     Closure(GcRef<ClosureKind>),
     Upvalue(GcRef<UpvalueKind>),
     Generator(GcRef<GeneratorKind>),
+    GreenHandle(GcRef<GreenHandleKind>),
+    LocalChannel(GcRef<LocalChannelKind>),
 }
 
 /// Drives the mark phase. Carries the heap plus an explicit worklist —
@@ -473,6 +488,16 @@ impl<'h> Marker<'h> {
             self.worklist.push(AnyRef::Generator(r));
         }
     }
+    pub fn mark_green_handle(&mut self, r: GcRef<GreenHandleKind>) {
+        if self.heap.green_handles.mark(r.index, r.generation) {
+            self.worklist.push(AnyRef::GreenHandle(r));
+        }
+    }
+    pub fn mark_local_channel(&mut self, r: GcRef<LocalChannelKind>) {
+        if self.heap.local_channels.mark(r.index, r.generation) {
+            self.worklist.push(AnyRef::LocalChannel(r));
+        }
+    }
 
     /// Drain the worklist, tracing each freshly-marked object.
     fn run(&mut self) {
@@ -508,6 +533,15 @@ impl<'h> Marker<'h> {
                     let cell = self.heap.generators.cell(r.index, r.generation);
                     cell.borrow().trace(self);
                 }
+                AnyRef::GreenHandle(r) => {
+                    let cell = self.heap.green_handles.cell(r.index, r.generation);
+                    cell.borrow().trace(self);
+                }
+                AnyRef::LocalChannel(r) => {
+                    let cell =
+                        self.heap.local_channels.cell(r.index, r.generation);
+                    cell.borrow().trace(self);
+                }
             }
         }
     }
@@ -524,6 +558,8 @@ impl Trace for Value {
             Value::Iter(r) => m.mark_iter(*r),
             Value::Function(r) => m.mark_closure(*r),
             Value::Generator(r) => m.mark_generator(*r),
+            Value::GreenHandle(r) => m.mark_green_handle(*r),
+            Value::LocalChannel(r) => m.mark_local_channel(*r),
             Value::Null
             | Value::Bool(_)
             | Value::Int(_)
@@ -544,6 +580,27 @@ impl Trace for Value {
 impl Trace for Vec<Value> {
     fn trace(&self, m: &mut Marker) {
         for v in self {
+            v.trace(m);
+        }
+    }
+}
+
+/// A `go` handle roots the green thread's recorded return value so it
+/// survives a collection between the coroutine finishing and a `join`
+/// reading it.
+impl Trace for GreenHandle {
+    fn trace(&self, m: &mut Marker) {
+        if let Some(v) = &self.result {
+            v.trace(m);
+        }
+    }
+}
+
+/// An intra-actor channel roots every buffered, not-yet-received
+/// message.
+impl Trace for LocalChannel {
+    fn trace(&self, m: &mut Marker) {
+        for v in &self.queue {
             v.trace(m);
         }
     }

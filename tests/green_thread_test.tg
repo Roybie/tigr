@@ -18,8 +18,11 @@ Test := import 'Test';
 
 [
     Test.suite('go — basics', [
-        Test.case('go evaluates to null', fn() {
-            Test.assert_eq(go fn() { 42 }, null)
+        Test.case('go evaluates to a green-thread handle', fn() {
+            // the handle is opaque; `join` reads the coroutine's
+            // return value once it finishes.
+            h := go fn() { 42 };
+            Test.assert_eq(join(h), 42)
         }),
 
         Test.case('a coroutine runs and reports completion', fn() {
@@ -36,9 +39,9 @@ Test := import 'Test';
             Test.assert_eq(log, ['from coroutine'])
         }),
 
-        Test.case('go returns a value the coroutine discards', fn() {
-            // a coroutine's return value is dropped in v1 (no handle);
-            // it communicates only through shared state.
+        Test.case('a coroutine can communicate through shared state', fn() {
+            // besides its return value, a coroutine can simply mutate
+            // a captured variable — no handle needed.
             seen := 0;
             go fn() { seen = 7; 999 };
             while (seen == 0) { yield };
@@ -130,6 +133,63 @@ Test := import 'Test';
             };
             while (result == null) { yield };
             Test.assert_eq(result, 'caught: boom')
+        }),
+    ]),
+
+    Test.suite('join — waiting on a coroutine', [
+        Test.case('join waits for a still-running coroutine', fn() {
+            // the coroutine has not started; join pumps it through
+            // both yields to completion and yields its return value.
+            h := go fn() { yield; yield; 'done' };
+            Test.assert_eq(join(h), 'done')
+        }),
+
+        Test.case('join on an already-finished coroutine', fn() {
+            h := go fn() { 7 };
+            yield;   // let the coroutine run and return
+            Test.assert_eq(join(h), 7)
+        }),
+
+        Test.case('join yields a value the coroutine computed', fn() {
+            h := go fn() {
+                x := 0;
+                for (i, 1..=5) { x = x + i };
+                x
+            };
+            Test.assert_eq(join(h), 15)
+        }),
+
+        Test.case('a handle can be joined more than once', fn() {
+            h := go fn() { 99 };
+            a := join(h);
+            b := join(h);
+            Test.assert_eq([a, b], [99, 99])
+        }),
+
+        Test.case('a coroutine can join another coroutine', fn() {
+            result := null;
+            go fn() {
+                inner := go fn() { 21 * 2 };
+                result = join(inner)
+            };
+            while (result == null) { yield };
+            Test.assert_eq(result, 42)
+        }),
+
+        Test.case('joining many coroutines collects each result', fn() {
+            handles := for[] (i, 1..=6) { go fn() { i * 10 } };
+            results := for[] (h, handles) { join(h) };
+            Test.assert_eq(results, [10, 20, 30, 40, 50, 60])
+        }),
+
+        Test.case('join surfaces a raise from the coroutine body', fn() {
+            // an uncaught raise in a `go` body aborts the actor, so a
+            // body that might fail should catch internally and return
+            // a tagged result for the joiner to inspect.
+            h := go fn() {
+                try { raise 'oops' } catch (e) { ${ error: e } }
+            };
+            Test.assert_eq(join(h), ${ error: 'oops' })
         }),
     ]),
 ]

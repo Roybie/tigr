@@ -467,7 +467,9 @@ fn write_value(
         | Value::Channel(_)
         | Value::Task(_)
         | Value::Socket(_)
-        | Value::Generator(_) => {
+        | Value::Generator(_)
+        | Value::GreenHandle(_)
+        | Value::LocalChannel(_) => {
             return Err(raise(format!(
                 "JSON.stringify: cannot serialize {}",
                 v.type_name()

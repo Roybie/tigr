@@ -1,0 +1,64 @@
+// Green threads: `go`, `yield`, `join`, and `LocalChannel`.
+//
+// A green thread is a coroutine that runs *inside* the current actor,
+// sharing its heap. `go fn` spawns one; the scheduler runs them
+// cooperatively on the one OS thread, switching at `yield` points and
+// when a coroutine returns. Contrast `spawn`, which starts a whole
+// separate actor (OS thread + heap) — see spawn.tg.
+
+LC := import 'LocalChannel';
+
+// --- go + yield: cooperative interleaving ---------------------------
+//
+// Two coroutines and the main program take turns at their `yield`s.
+
+log := [];
+go fn() {
+    log = log + ['coroutine: step 1'];
+    yield;
+    log = log + ['coroutine: step 2'];
+};
+log = log + ['main: before yield'];
+yield;
+log = log + ['main: after yield'];
+yield;
+for (line, log) { print(line) };
+
+// --- join: waiting for a coroutine's result -------------------------
+//
+// `go` evaluates to a handle; `join` cooperatively waits for the
+// coroutine and returns whatever its body evaluated to.
+
+sum := go fn() {
+    total := 0;
+    for (i, 1..=100) { total = total + i };
+    total
+};
+print('sum 1..100 = {join(sum)}');      // => 5050
+
+// Fan out work across coroutines, then collect every result.
+squares := for[] (n, 1..=8) { go fn() { n * n } };
+print(for[] (h, squares) { join(h) });  // => [1, 4, 9, 16, 25, 36, 49, 64]
+
+// --- LocalChannel: no-copy messaging between coroutines -------------
+//
+// A producer coroutine sends through a channel; the consumer `recv`s.
+// `recv` on an empty channel yields, so the producer gets to run.
+
+ch := LC.new();
+producer := go fn() {
+    for (i, 1..=5) { LC.send(ch, i * 10) };
+    LC.close(ch);
+};
+received := [];
+draining := true;
+while draining {
+    msg := LC.recv(ch);
+    if msg.closed == true {
+        draining = false
+    } else {
+        received = received + [msg.value]
+    }
+};
+join(producer);
+print('received: {received}');          // => received: [10, 20, 30, 40, 50]

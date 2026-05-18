@@ -21,8 +21,8 @@ use crate::vm::socket::SocketHandle;
 use crate::vm::task::TaskHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc::{
-    ArrayKind, BytesKind, ClosureKind, GcRef, GeneratorKind, IterKind, MapKind,
-    ObjectKind, SetKind, UpvalueKind,
+    ArrayKind, BytesKind, ClosureKind, GcRef, GeneratorKind, GreenHandleKind,
+    IterKind, LocalChannelKind, MapKind, ObjectKind, SetKind, UpvalueKind,
 };
 
 #[derive(Clone)]
@@ -90,6 +90,17 @@ pub enum Value {
     // the coroutine's frames/stack are reclaimed when the wrapping
     // object becomes unreachable, even if the generator is undrained.
     Generator(GcRef<GeneratorKind>),
+
+    // green threads (Phase 4) — a handle to a coroutine spawned with
+    // `go`. `join(handle)` cooperatively waits for the coroutine and
+    // yields its return value. GC-managed: the handle holds the
+    // recorded result. Identity equality.
+    GreenHandle(GcRef<GreenHandleKind>),
+
+    // green threads (Phase 4) — an intra-actor channel. Unlike
+    // `Channel` it never leaves this heap, so it carries `Value`s
+    // directly (no transfer-encoding). GC-managed; identity equality.
+    LocalChannel(GcRef<LocalChannelKind>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -377,7 +388,28 @@ pub enum Upvalue {
 pub struct NativeFn {
     pub name: &'static str,
     pub arity: Arity,
-    pub func: fn(&[Value]) -> Result<Value, crate::vm::error::RuntimeError>,
+    pub kind: NativeKind,
+}
+
+/// How a [`NativeFn`] is run. Most natives are `Pure` — fast,
+/// non-blocking, run inline on the actor thread exactly as before.
+/// `Blocking` natives wrap a call that may wait (a child process, file
+/// or network IO); the VM can offload them to a worker pool so a green
+/// thread doing IO does not stall its siblings (see
+/// [`crate::vm::offload`]).
+pub enum NativeKind {
+    /// Runs inline on the actor thread — the historical behaviour.
+    Pure(fn(&[Value]) -> Result<Value, crate::vm::error::RuntimeError>),
+    /// A blocking call. The `fn` runs on the actor thread: it validates
+    /// arguments and extracts `Send` POD from them, returning a closure
+    /// the worker pool runs off-thread. Bad arguments raise immediately,
+    /// before any offload.
+    Blocking(
+        fn(&[Value]) -> Result<
+            crate::vm::offload::BlockingJob,
+            crate::vm::error::RuntimeError,
+        >,
+    ),
 }
 
 #[allow(dead_code)] // AtLeast not used until later phases (e.g. fold)
@@ -434,6 +466,8 @@ impl Value {
             Value::Task(_) => "task",
             Value::Socket(_) => "socket",
             Value::Generator(_) => "generator",
+            Value::GreenHandle(_) => "green_thread",
+            Value::LocalChannel(_) => "local_channel",
         }
     }
 
@@ -471,6 +505,8 @@ impl PartialEq for Value {
             (Task(a), Task(b)) => Arc::ptr_eq(a, b),
             (Socket(a), Socket(b)) => Arc::ptr_eq(a, b),
             (Generator(a), Generator(b)) => a == b,
+            (GreenHandle(a), GreenHandle(b)) => a == b,
+            (LocalChannel(a), LocalChannel(b)) => a == b,
             (BigInt(a), BigInt(b)) => a == b,
             // A `BigInt` and an `Int` of equal value compare equal,
             // mirroring `Int`/`Float` cross-type equality above.
@@ -608,6 +644,8 @@ impl fmt::Display for Value {
             Value::Task(_) => f.write_str("<task>"),
             Value::Socket(s) => write!(f, "<socket #{}>", s.id()),
             Value::Generator(_) => f.write_str("<generator>"),
+            Value::GreenHandle(_) => f.write_str("<green thread>"),
+            Value::LocalChannel(_) => f.write_str("<local channel>"),
         }
     }
 }

@@ -1,0 +1,53 @@
+// Tigr stdlib — `import 'LocalChannel'`.
+//
+// A `LocalChannel` carries messages between green threads of one
+// actor (Phase 4 concurrency). Unlike a cross-actor `Channel`, it
+// never leaves the actor's heap, so messages move directly — no
+// deep copy, no transfer-encoding. Use it to hand values between
+// coroutines spawned with `go`.
+//
+// `recv` and `try_recv` return an object to pattern-match on:
+//   ${value: v}      — a message `v`
+//   ${closed: true}  — the channel is closed and drained
+//   ${empty: true}   — (`try_recv` only) nothing ready right now
+//
+// Channels are unbounded: `send` never blocks. `recv` on an empty
+// channel `yield`s the coroutine and retries, so the scheduler can
+// run a sender in the meantime — a cooperative block. A `recv` with
+// no possible sender simply spins forever, exactly as a cross-actor
+// `recv` on a never-fed channel blocks forever.
+//
+// `new`/`send`/`try_recv`/`close` are thin re-exports of the Rust
+// `_NativeLocalChannel` backend; `recv` is the `yield`-loop wrapper.
+
+_lc := import '_NativeLocalChannel';
+
+${
+    // `new()` → a fresh, empty intra-actor channel.
+    new: _lc.new,
+
+    // `send(ch, msg)` → enqueues `msg` (by value, no copy). Raises
+    // `channel_closed` on a closed channel.
+    send: _lc.send,
+
+    // `recv(ch)` → the next message, cooperatively waiting for one.
+    // `yield`s while the channel is empty and open so other green
+    // threads (a sender) can run. Returns `${value: v}` or, once the
+    // channel is closed and drained, `${closed: true}`.
+    recv: fn(ch) {
+        r := _lc.try_recv(ch);
+        while (r.empty == true) {
+            yield;
+            r = _lc.try_recv(ch);
+        };
+        r
+    },
+
+    // `try_recv(ch)` → never blocks. Returns `${value: v}`,
+    // `${closed: true}`, or `${empty: true}`.
+    try_recv: _lc.try_recv,
+
+    // `close(ch)` → closes the channel. `send` then raises;
+    // `recv`/`try_recv` drain the buffer, then report `${closed}`.
+    close: _lc.close,
+}

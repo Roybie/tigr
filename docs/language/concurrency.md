@@ -81,9 +81,48 @@ while (#log == 0) { yield };
 print(log);   // => [from the coroutine]
 ```
 
-Scheduling is cooperative and has no preemption. A coroutine runs until it `yield`s or returns, then the scheduler hands control to the next ready one, round-robin. `yield` with nothing else ready resumes immediately. The actor's main program is itself coroutine zero, so the `while (...) { yield }` idiom above pumps the scheduler until a coroutine has done its work. A coroutine that never yields starves the rest, and a blocking call (file IO, `Net`, channel `recv`) stalls every coroutine in the actor. `go` evaluates to `null`: there is no handle yet.
+Scheduling is cooperative and has no preemption. A coroutine runs until it `yield`s or returns, then the scheduler hands control to the next ready one, round-robin. `yield` with nothing else ready resumes immediately. The actor's main program is itself coroutine zero, so the `while (...) { yield }` idiom above pumps the scheduler until a coroutine has done its work. A coroutine that never yields starves the rest.
+
+A blocking call is handled differently. When other coroutines are live, a blocking call like `Os.run` is offloaded to a background worker pool: the calling coroutine cooperatively parks until the result is ready, and its siblings keep running meanwhile — the blocking call no longer freezes the actor. With nothing else to schedule the call simply runs inline on the actor thread, so a program that uses no `go` is unaffected. (So far only `Os.run` is offloaded; other blocking calls — file IO, `Net`, channel `recv` — still stall every coroutine, and will be converted next.)
 
 Two-level mental model: `spawn` is real parallelism across cores, with separate heaps and copied messages; `go` is cheap concurrency on one core, with a shared heap and cooperative hand-off. Pick the axis the work needs.
+
+### Waiting on a coroutine: `join`
+
+`go` evaluates to a **green-thread handle**. The same `join` that waits on a `spawn`ed actor also waits on a `go` coroutine: `join(handle)` cooperatively yields the caller until the coroutine returns, then evaluates to its return value. While the caller is parked the scheduler runs the other coroutines, so a `join` on an unfinished coroutine is a cooperative block, not a busy-wait.
+
+```tigr
+h := go fn() {
+    total := 0;
+    for (i, 1..=100) { total = total + i };
+    total
+};
+print(join(h));   // => 5050
+```
+
+A handle may be joined more than once — every `join` returns the recorded result. An uncaught `raise` in a `go` body aborts the whole actor, so a body that might fail should `catch` internally and return a tagged value for the joiner to inspect. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
+
+### Intra-actor channels: `LocalChannel`
+
+`import 'LocalChannel'` is a channel *between green threads* of one actor. Because every coroutine shares the actor's heap, a message moves directly — no deep copy, no transfer-encoding (contrast the cross-actor [`Channel`](../stdlib/channel.md), which copies). `send` is unbounded and never blocks; `recv` on an empty channel `yield`s the coroutine until a value or a close arrives.
+
+```tigr
+LC := import 'LocalChannel';
+
+ch := LC.new();
+go fn() {
+    for (i, 1..=3) { LC.send(ch, i) };
+    LC.close(ch);
+};
+looping := true;
+while (looping) {
+    m := LC.recv(ch);
+    if (m.closed == true) { looping = false }
+    else { print(m.value) };   // => 1, 2, 3
+};
+```
+
+`recv` and `try_recv` return `${value: v}`, `${closed: true}` once the channel is closed and drained, or — `try_recv` only — `${empty: true}`. `send` on a closed channel raises `channel_closed`.
 
 ## Generators: `gen fn`
 

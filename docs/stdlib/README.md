@@ -1,6 +1,6 @@
 # Standard library
 
-Tigr's standard library is 21 modules plus a handful of global builtin functions. Every module is loaded with `import`:
+Tigr's standard library is 22 modules plus a handful of global builtin functions. Every module is loaded with `import`:
 
 ```tigr
 Array := import 'Array';
@@ -40,6 +40,7 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 ## Concurrency
 
 - [Channel](channel.md): typed message channels between actors
+- [LocalChannel](localchannel.md): no-copy message channels between green threads of one actor
 
 ## Networking
 

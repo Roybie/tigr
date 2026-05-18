@@ -1,0 +1,121 @@
+// tests/local_channel_test.tg — intra-actor channels: `LocalChannel`.
+//
+// A `LocalChannel` carries messages between green threads of one
+// actor. Unlike a cross-actor `Channel`, it never leaves the actor's
+// heap, so a message moves directly — no deep copy. `send` never
+// blocks; `recv` on an empty channel `yield`s the coroutine until a
+// value (or a close) arrives.
+//
+// Each case fully drains the coroutines it spawns before returning,
+// so the scheduler queue is empty between cases.
+//
+// Evaluates to an array of suites so `tigr test` aggregates the tally.
+
+Test := import 'Test';
+LC := import 'LocalChannel';
+Array := import 'Array';
+
+[
+    Test.suite('LocalChannel — basics', [
+        Test.case('send then recv delivers the value', fn() {
+            ch := LC.new();
+            LC.send(ch, 'hello');
+            Test.assert_eq(LC.recv(ch), ${ value: 'hello' })
+        }),
+
+        Test.case('buffered messages come out FIFO', fn() {
+            ch := LC.new();
+            for (i, 1..=3) { LC.send(ch, i) };
+            out := [LC.recv(ch), LC.recv(ch), LC.recv(ch)];
+            Test.assert_eq(out, [${value: 1}, ${value: 2}, ${value: 3}])
+        }),
+
+        Test.case('try_recv never blocks', fn() {
+            ch := LC.new();
+            empty := LC.try_recv(ch);
+            LC.send(ch, 'x');
+            full := LC.try_recv(ch);
+            LC.close(ch);
+            closed := LC.try_recv(ch);
+            Test.assert_eq(
+                [empty, full, closed],
+                [${empty: true}, ${value: 'x'}, ${closed: true}]
+            )
+        }),
+
+        Test.case('close drains the buffer, then reports closed', fn() {
+            ch := LC.new();
+            LC.send(ch, 1);
+            LC.send(ch, 2);
+            LC.close(ch);
+            out := [LC.recv(ch), LC.recv(ch), LC.recv(ch)];
+            Test.assert_eq(
+                out,
+                [${value: 1}, ${value: 2}, ${closed: true}]
+            )
+        }),
+
+        Test.case('send on a closed channel raises', fn() {
+            ch := LC.new();
+            LC.close(ch);
+            outcome := try {
+                LC.send(ch, 1);
+                'sent'
+            } catch (e) {
+                'raised'
+            };
+            Test.assert_eq(outcome, 'raised')
+        }),
+
+        Test.case('a message moves by reference — no copy', fn() {
+            // mutating the array *after* sending it is visible to the
+            // receiver: coroutines share one heap.
+            ch := LC.new();
+            box := [10];
+            LC.send(ch, box);
+            Array.push(box, 20);
+            got := LC.recv(ch);
+            Test.assert_eq(got.value, [10, 20])
+        }),
+    ]),
+
+    Test.suite('LocalChannel — cooperative recv', [
+        Test.case('recv waits for a value from another coroutine', fn() {
+            ch := LC.new();
+            go fn() { LC.send(ch, 'from coroutine') };
+            // the channel is empty now; recv yields until the
+            // coroutine above runs and sends.
+            Test.assert_eq(LC.recv(ch), ${ value: 'from coroutine' })
+        }),
+
+        Test.case('recv cooperatively waits for a slow producer', fn() {
+            ch := LC.new();
+            go fn() {
+                for (i, 1..=3) { yield; LC.send(ch, i) }
+            };
+            out := [LC.recv(ch), LC.recv(ch), LC.recv(ch)];
+            Test.assert_eq(out, [${value: 1}, ${value: 2}, ${value: 3}])
+        }),
+
+        Test.case('producer and consumer coroutines over a channel', fn() {
+            ch := LC.new();
+            got := [];
+            done := false;
+            go fn() {
+                for (i, 1..=4) { LC.send(ch, i) };
+                LC.close(ch)
+            };
+            go fn() {
+                looping := true;
+                while (looping) {
+                    m := LC.recv(ch);
+                    if (m.closed == true) { looping = false }
+                    else { got = got + [m.value] }
+                };
+                done = true
+            };
+            while (!done) { yield };
+            Test.assert_eq(got, [1, 2, 3, 4])
+        }),
+    ]),
+]

@@ -246,6 +246,10 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
         Value::Socket(h) => Transfer::Socket(h.clone()),
         Value::Iter(_) => return Err(not_sendable("an iterator")),
         Value::Generator(_) => return Err(not_sendable("a generator")),
+        Value::GreenHandle(_) => return Err(not_sendable("a green thread")),
+        Value::LocalChannel(_) => {
+            return Err(not_sendable("a local channel"))
+        }
         Value::NativeFn(_) => return Err(not_sendable("a native function")),
     })
 }
@@ -315,7 +319,7 @@ pub fn decode(t: Transfer) -> Value {
 mod tests {
     use super::*;
     use crate::vm::chunk::Chunk;
-    use crate::vm::value::{Arity, IterState, NativeFn};
+    use crate::vm::value::{Arity, IterState, NativeFn, NativeKind};
 
     /// `Transfer` must be `Send` — it is the payload that crosses
     /// actor threads. A compile-time check.
@@ -457,7 +461,7 @@ mod tests {
         let nf = Value::NativeFn(Rc::new(NativeFn {
             name: "noop",
             arity: Arity::Exact(0),
-            func: noop,
+            kind: NativeKind::Pure(noop),
         }));
         assert_eq!(
             encode(&nf).unwrap_err().kind.kind_tag(),

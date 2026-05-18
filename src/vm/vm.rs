@@ -28,15 +28,19 @@ use num_traits::{Pow, Zero};
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::gc::{
-    self, ArrayKind, ClosureKind, GcRef, GeneratorKind, IterKind, Marker,
-    ObjectKind, Trace, UpvalueKind,
+    self, ArrayKind, ClosureKind, GcRef, GeneratorKind, GreenHandleKind,
+    IterKind, Marker, ObjectKind, Trace, UpvalueKind,
 };
+use crate::vm::offload::{self, BlockingJob, CompletionMailbox};
 use crate::vm::opcode::OpCode;
-use crate::vm::scheduler::{GenStatus, GeneratorState, GreenThread, Scheduler};
+use crate::vm::scheduler::{
+    GenStatus, GeneratorState, GreenHandle, GreenThread, ResumeOutcome, Scheduler,
+};
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{
-    bigint_to_f64, Closure, Function, IterState, MapKey, RangeData, Upvalue, Value,
+    bigint_to_f64, Closure, Function, IterState, MapKey, NativeKind, RangeData,
+    Upvalue, Value,
 };
 
 pub(crate) struct CallFrame {
@@ -142,6 +146,18 @@ pub struct Vm {
     /// `yield`/return pops the matching entry to switch back. Nesting
     /// (a generator resuming a generator) is naturally stack-disciplined.
     resume_stack: Vec<ResumeCtx>,
+    /// The `go` handle of the running coroutine — where its return
+    /// value is recorded when it finishes (Phase 4). `None` for the
+    /// actor's main coroutine and while running a generator body
+    /// (a generator reports via `yield`, not a handle).
+    current_handle: Option<GcRef<GreenHandleKind>>,
+    /// This actor's inbox for offloaded blocking-call completions. A
+    /// worker thread posts here; the actor thread drains it at a
+    /// coroutine-switch point. Holds only POD — never a GC root.
+    mailbox: Arc<CompletionMailbox>,
+    /// Monotonic counter for offload job ids. Each id pairs an
+    /// in-flight job with the coroutine parked on it.
+    next_job_id: u64,
 }
 
 /// A parked resumer: the coroutine state that was running when a
@@ -181,6 +197,9 @@ impl Vm {
             scheduler: Scheduler::new(),
             current_gen: None,
             resume_stack: Vec::new(),
+            current_handle: None,
+            mailbox: CompletionMailbox::new(),
+            next_job_id: 0,
         }
     }
 
@@ -192,6 +211,7 @@ impl Vm {
         self.scheduler.reset();
         self.current_gen = None;
         self.resume_stack.clear();
+        self.current_handle = None;
 
         let main_closure = gc::alloc_closure(Closure {
             function: Arc::new(main),
@@ -267,6 +287,7 @@ impl Vm {
         self.scheduler.reset();
         self.current_gen = None;
         self.resume_stack.clear();
+        self.current_handle = None;
         // Coroutine #0 = the actor's main closure, invoked with no
         // arguments. Slot 0 holds the closure itself, then arity-
         // padded `null`s — the same layout as `run`'s main frame.
@@ -520,6 +541,13 @@ impl Vm {
             // no borrow guard is live and every root is on a Vm field.
             self.maybe_collect();
 
+            // Surface any offloaded blocking calls that finished — so a
+            // coroutine spinning on `yield` notices a sibling's IO
+            // completing without having to reach a blocking switch.
+            if self.scheduler.has_io_blocked() {
+                self.poll_io_completions();
+            }
+
             // Snapshot the current frame's chunk for this iteration.
             // The closure handle is `Copy`; cloning the `Rc<Function>`
             // out lets us read the chunk while mutating self.stack /
@@ -744,13 +772,25 @@ impl Vm {
                         if self.scheduler.current_is_main() {
                             return Ok(result);
                         }
-                        // A non-main coroutine finished. Discard it and
-                        // resume the next ready coroutine — main is
-                        // always queued while not running, so there is
-                        // one to take here.
-                        match self.scheduler.take_next() {
+                        // A non-main coroutine finished. Record its
+                        // return value in its `go` handle and wake any
+                        // coroutine `join`-blocked on it, then resume
+                        // the next ready coroutine — main is always
+                        // queued (or blocked) while not running.
+                        if let Some(handle) = self.current_handle.take() {
+                            let id = {
+                                let mut h = handle.borrow_mut();
+                                h.result = Some(result.clone());
+                                h.id
+                            };
+                            self.scheduler.wake_joiners(id, &result);
+                        }
+                        // Pick the next coroutine, blocking for an
+                        // outstanding offload completion if the queue
+                        // is empty but IO is still in flight.
+                        match self.pick_next() {
                             Some(next) => {
-                                self.load_green(next);
+                                self.load_green(next)?;
                                 continue;
                             }
                             None => return Ok(result),
@@ -947,6 +987,13 @@ impl Vm {
                         Value::NativeFn(nf) => {
                             let args: Vec<Value> = self.stack.drain(args_start..).collect();
                             self.stack.pop(); // remove callee
+                            // `join` on a green-thread handle yields
+                            // cooperatively — it cannot run as a bare
+                            // native fn, which has no way to suspend.
+                            if let Some(h) = green_join_target(&nf, &args) {
+                                self.coop_join(h, line)?;
+                                continue;
+                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -957,16 +1004,23 @@ impl Vm {
                                     line,
                                 ));
                             }
-                            let result = (nf.func)(&args).map_err(|mut e| {
-                                // Backfill the call-site line so an
-                                // uncaught error from a builtin reports
-                                // where it was *called*, not the
-                                // useless line 0 the builtin defaulted
-                                // to.
-                                if e.line == 0 { e.line = line; }
-                                e
-                            })?;
-                            self.stack.push(result);
+                            match &nf.kind {
+                                NativeKind::Pure(f) => {
+                                    let result = f(&args).map_err(|mut e| {
+                                        // Backfill the call-site line so
+                                        // an uncaught error from a
+                                        // builtin reports where it was
+                                        // *called*, not the useless line
+                                        // 0 the builtin defaulted to.
+                                        if e.line == 0 { e.line = line; }
+                                        e
+                                    })?;
+                                    self.stack.push(result);
+                                }
+                                NativeKind::Blocking(f) => {
+                                    self.dispatch_blocking(*f, args, line)?;
+                                }
+                            }
                             continue;
                         }
                         other => {
@@ -1034,6 +1088,13 @@ impl Vm {
                         Value::NativeFn(nf) => {
                             let args: Vec<Value> = self.stack.drain(args_start..).collect();
                             self.stack.pop(); // remove callee
+                            // A tail-positioned `join` on a green-thread
+                            // handle: park cooperatively, leaving its
+                            // result for the compiler-emitted `Return`.
+                            if let Some(h) = green_join_target(&nf, &args) {
+                                self.coop_join(h, line)?;
+                                continue;
+                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -1044,11 +1105,18 @@ impl Vm {
                                     line,
                                 ));
                             }
-                            let result = (nf.func)(&args).map_err(|mut e| {
-                                if e.line == 0 { e.line = line; }
-                                e
-                            })?;
-                            self.stack.push(result);
+                            match &nf.kind {
+                                NativeKind::Pure(f) => {
+                                    let result = f(&args).map_err(|mut e| {
+                                        if e.line == 0 { e.line = line; }
+                                        e
+                                    })?;
+                                    self.stack.push(result);
+                                }
+                                NativeKind::Blocking(f) => {
+                                    self.dispatch_blocking(*f, args, line)?;
+                                }
+                            }
                             continue;
                         }
                         other => {
@@ -1541,11 +1609,21 @@ impl Vm {
                                     line,
                                 ));
                             }
-                            let result = (nf.func)(&call_args).map_err(|mut e| {
-                                if e.line == 0 { e.line = line; }
-                                e
-                            })?;
-                            self.stack.push(result);
+                            match &nf.kind {
+                                NativeKind::Pure(f) => {
+                                    let result = f(&call_args)
+                                        .map_err(|mut e| {
+                                            if e.line == 0 { e.line = line; }
+                                            e
+                                        })?;
+                                    self.stack.push(result);
+                                }
+                                NativeKind::Blocking(f) => {
+                                    self.dispatch_blocking(
+                                        *f, call_args, line,
+                                    )?;
+                                }
+                            }
                             continue;
                         }
                         other => return Err(RuntimeError::new(
@@ -1848,10 +1926,14 @@ impl Vm {
                 }
                 OpCode::Go => {
                     // Pop the function and spawn it as a green thread
-                    // inside this actor; `go` evaluates to `null`.
+                    // inside this actor; `go` evaluates to a handle a
+                    // `join` can cooperatively wait on.
                     let callee = self.pop(line)?;
                     match callee {
-                        Value::Function(c) => self.spawn_green(c),
+                        Value::Function(c) => {
+                            let handle = self.spawn_green(c);
+                            self.stack.push(Value::GreenHandle(handle));
+                        }
                         other => {
                             return Err(RuntimeError::new(
                                 RuntimeErrorKind::TypeMismatch(format!(
@@ -1862,7 +1944,6 @@ impl Vm {
                             ));
                         }
                     }
-                    self.stack.push(Value::Null);
                 }
                 OpCode::Yield => {
                     let yielded = self.pop(line)?;
@@ -1886,10 +1967,11 @@ impl Vm {
                     match self.scheduler.take_next() {
                         Some(next) => {
                             self.frames.last_mut().unwrap().ip = ip;
-                            let parked =
-                                self.save_current(Some(Value::Null));
+                            let parked = self.save_current(Some(
+                                ResumeOutcome::Value(Value::Null),
+                            ));
                             self.scheduler.enqueue(parked);
-                            self.load_green(next);
+                            self.load_green(next)?;
                             continue;
                         }
                         None => {
@@ -2024,10 +2106,25 @@ impl Vm {
                         line,
                     ));
                 }
-                (nf.func)(&args).map_err(|mut e| {
-                    if e.line == 0 { e.line = line; }
-                    e
-                })
+                // Re-entrant from inside opcode execution — there is
+                // no coroutine-switch point here, so a `Blocking`
+                // native runs synchronously on the actor thread.
+                match &nf.kind {
+                    NativeKind::Pure(f) => f(&args).map_err(|mut e| {
+                        if e.line == 0 { e.line = line; }
+                        e
+                    }),
+                    NativeKind::Blocking(f) => {
+                        let job = f(&args).map_err(|mut e| {
+                            if e.line == 0 { e.line = line; }
+                            e
+                        })?;
+                        offload::decode(job()).map_err(|mut e| {
+                            if e.line == 0 { e.line = line; }
+                            e
+                        })
+                    }
+                }
             }
             Value::Function(c) => {
                 let floor = self.frames.len();
@@ -2129,8 +2226,11 @@ impl Vm {
 
     /// Snapshot the running coroutine's execution state into a
     /// `GreenThread` for later resumption. `parked_resume` is the
-    /// value to deliver when it resumes.
-    fn save_current(&mut self, parked_resume: Option<Value>) -> GreenThread {
+    /// outcome to deliver when it resumes.
+    fn save_current(
+        &mut self,
+        parked_resume: Option<ResumeOutcome>,
+    ) -> GreenThread {
         let (id, is_main) = self.scheduler.current();
         GreenThread {
             id,
@@ -2139,26 +2239,36 @@ impl Vm {
             stack: std::mem::take(&mut self.stack),
             open_upvalues: std::mem::take(&mut self.open_upvalues),
             parked_resume,
+            handle: self.current_handle.take(),
         }
     }
 
     /// Make `gt` the running coroutine: install its execution state
-    /// into the `Vm` and, if it was parked at a `yield`, deliver the
-    /// resume value onto its stack.
-    fn load_green(&mut self, gt: GreenThread) {
+    /// into the `Vm` and deliver its parked resume outcome. A `Value`
+    /// outcome is pushed onto the stack (so the parked expression
+    /// evaluates to it); a `Raise` outcome returns `Err`, signalling
+    /// the dispatch loop to surface the error against this coroutine's
+    /// own frames and `try` blocks — the path an offloaded blocking
+    /// call takes when it fails.
+    fn load_green(&mut self, gt: GreenThread) -> Result<(), RuntimeError> {
         self.frames = gt.frames;
         self.stack = gt.stack;
         self.open_upvalues = gt.open_upvalues;
+        self.current_handle = gt.handle;
         self.scheduler.set_current(gt.id, gt.is_main);
-        if let Some(v) = gt.parked_resume {
-            self.stack.push(v);
+        match gt.parked_resume {
+            Some(ResumeOutcome::Value(v)) => self.stack.push(v),
+            Some(ResumeOutcome::Raise(e)) => return Err(e),
+            None => {}
         }
+        Ok(())
     }
 
     /// Create a not-yet-started green thread running `closure` with no
-    /// arguments and enqueue it. Mirrors `run`'s main-frame layout:
-    /// slot 0 holds the closure itself, then arity-padded `null`s.
-    fn spawn_green(&mut self, closure: GcRef<ClosureKind>) {
+    /// arguments, enqueue it, and return its `go` handle. Mirrors
+    /// `run`'s main-frame layout: slot 0 holds the closure itself, then
+    /// arity-padded `null`s.
+    fn spawn_green(&mut self, closure: GcRef<ClosureKind>) -> GcRef<GreenHandleKind> {
         let (arity, has_rest) = {
             let cf = closure.borrow();
             (cf.function.arity, cf.function.has_rest)
@@ -2171,6 +2281,7 @@ impl Vm {
             stack.push(Value::Array(gc::alloc_array(Vec::new())));
         }
         let id = self.scheduler.fresh_id();
+        let handle = gc::alloc_green_handle(GreenHandle { id, result: None });
         self.scheduler.enqueue(GreenThread {
             id,
             is_main: false,
@@ -2184,7 +2295,153 @@ impl Vm {
             stack,
             open_upvalues: Vec::new(),
             parked_resume: None,
+            handle: Some(handle),
         });
+        handle
+    }
+
+    /// Cooperative `join` on a green-thread handle. If the coroutine
+    /// has already finished, push its recorded return value. Otherwise
+    /// park the running coroutine until it does (`Scheduler::block`,
+    /// woken by `Scheduler::wake_joiners` when the target returns) and
+    /// switch to the next ready coroutine. The caller has committed
+    /// the current frame's `ip` and `continue`s the dispatch loop
+    /// either way — when parked, the loop re-derives state from the
+    /// coroutine that was just loaded.
+    fn coop_join(
+        &mut self,
+        handle: GcRef<GreenHandleKind>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let (id, finished) = {
+            let h = handle.borrow();
+            (h.id, h.result.clone())
+        };
+        if let Some(v) = finished {
+            self.stack.push(v);
+            return Ok(());
+        }
+        // The coroutine is still running. A generator body cannot be
+        // round-robin-parked, and blocking with nothing else ready is
+        // a deadlock — both are surfaced rather than hung on.
+        if self.current_gen.is_some() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "cannot join a green thread from inside a generator"
+                        .into(),
+                )),
+                line,
+            ));
+        }
+        // Nothing else can run and no offload is in flight — joining
+        // here would hang the actor forever. Surface it catchably.
+        if !self.scheduler.can_make_progress() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "deadlock: join would block but no other green \
+                     thread can run"
+                        .into(),
+                )),
+                line,
+            ));
+        }
+        let parked = self.save_current(None);
+        self.scheduler.block(id, parked);
+        let next = self
+            .pick_next()
+            .expect("can_make_progress guarantees a runnable coroutine");
+        self.load_green(next)
+    }
+
+    // -- blocking-IO offload -----------------------------------------
+
+    /// Run a `Blocking` native. `extract` is the native's actor-thread
+    /// argument-validation step; it produces the `Send` closure a
+    /// worker runs. The call either runs inline (no sibling coroutine
+    /// is waiting, so blocking the actor thread stalls nobody) or is
+    /// offloaded to the worker pool with the running coroutine parked
+    /// until the completion arrives. On the offload path the dispatch
+    /// loop must `continue` afterwards — it will re-derive state from a
+    /// freshly-loaded coroutine.
+    fn dispatch_blocking(
+        &mut self,
+        extract: fn(&[Value]) -> Result<BlockingJob, RuntimeError>,
+        args: Vec<Value>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let job = extract(&args).map_err(|mut e| {
+            if e.line == 0 { e.line = line; }
+            e
+        })?;
+        // Inline fast path: nothing else is waiting to run, so the
+        // blocking call may as well run here. A generator body is
+        // pulled synchronously and likewise cannot be offload-parked.
+        if self.current_gen.is_some() || self.scheduler.is_idle() {
+            let result = offload::decode(job()).map_err(|mut e| {
+                if e.line == 0 { e.line = line; }
+                e
+            })?;
+            self.stack.push(result);
+            return Ok(());
+        }
+        // Offload path: hand the job to the worker pool and park this
+        // coroutine until its completion is pumped back.
+        let job_id = self.next_job_id;
+        self.next_job_id += 1;
+        offload::submit(job_id, self.mailbox.clone(), job);
+        let parked = self.save_current(None);
+        self.scheduler.park_io(job_id, parked);
+        let next = self
+            .pick_next()
+            .expect("an io-blocked coroutine guarantees progress");
+        self.load_green(next)
+    }
+
+    /// Pick the next coroutine to run, the running one having already
+    /// been parked. Dequeues a ready coroutine, or — if the queue is
+    /// empty but offload jobs are outstanding — blocks the actor thread
+    /// until a completion makes one runnable. `None` only when nothing
+    /// is runnable and nothing is outstanding (the actor is finished).
+    fn pick_next(&mut self) -> Option<GreenThread> {
+        loop {
+            if let Some(next) = self.scheduler.take_next() {
+                return Some(next);
+            }
+            if self.scheduler.has_io_blocked() {
+                self.pump_io_completions();
+                continue;
+            }
+            return None;
+        }
+    }
+
+    /// Block the actor thread until at least one outstanding offload
+    /// job completes, then decode every ready completion (on this, the
+    /// actor thread) and move each parked coroutine back onto the
+    /// run-queue. Called only when the queue is empty but IO is in
+    /// flight.
+    fn pump_io_completions(&mut self) {
+        for (job_id, result) in self.mailbox.wait_drain() {
+            let outcome = match offload::decode(result) {
+                Ok(v) => ResumeOutcome::Value(v),
+                Err(e) => ResumeOutcome::Raise(e),
+            };
+            self.scheduler.wake_io(job_id, outcome);
+        }
+    }
+
+    /// Non-blocking counterpart of [`pump_io_completions`]: drain only
+    /// the completions ready right now. Called at the dispatch-loop
+    /// safepoint so a coroutine that spins on `yield` still observes a
+    /// sibling's IO finishing without ever reaching a blocking switch.
+    fn poll_io_completions(&mut self) {
+        for (job_id, result) in self.mailbox.drain() {
+            let outcome = match offload::decode(result) {
+                Ok(v) => ResumeOutcome::Value(v),
+                Err(e) => ResumeOutcome::Raise(e),
+            };
+            self.scheduler.wake_io(job_id, outcome);
+        }
     }
 
     // -- generators --------------------------------------------------
@@ -2367,8 +2624,19 @@ impl Vm {
             for frame in &gt.frames {
                 trace_frame(frame, m);
             }
-            if let Some(v) = &gt.parked_resume {
-                v.trace(m);
+            // A pending resume outcome holds live values: a delivered
+            // `Value`, or the payload of a `raise`d error.
+            match &gt.parked_resume {
+                Some(ResumeOutcome::Value(v)) => v.trace(m),
+                Some(ResumeOutcome::Raise(e)) => {
+                    if let RuntimeErrorKind::Raised(v) = &e.kind {
+                        v.trace(m);
+                    }
+                }
+                None => {}
+            }
+            if let Some(h) = gt.handle {
+                m.mark_green_handle(h);
             }
         }
         // Resumers parked under a running generator — each is a slice
@@ -2394,6 +2662,11 @@ impl Vm {
         if let Some(g) = self.current_gen {
             m.mark_generator(g);
         }
+        // The running coroutine's `go` handle — its sole root, since a
+        // coroutine never references its own handle from its stack.
+        if let Some(h) = self.current_handle {
+            m.mark_green_handle(h);
+        }
     }
 
     /// Run one mark-sweep collection over the managed heap.
@@ -2414,6 +2687,22 @@ impl Vm {
 
 fn underflow(line: u32) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::StackUnderflow, line)
+}
+
+/// If a native-fn call is the builtin `join` applied to a single
+/// green-thread handle, return that handle — the VM intercepts it for
+/// a cooperative wait. Any other `join` (a `Task`, the wrong arity)
+/// returns `None` and runs as the ordinary native.
+fn green_join_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<GcRef<GreenHandleKind>> {
+    if nf.name == "join" && args.len() == 1 {
+        if let Value::GreenHandle(h) = &args[0] {
+            return Some(*h);
+        }
+    }
+    None
 }
 
 /// Trace one call frame's GC roots: its closure, plus any heap handle

@@ -13,9 +13,10 @@
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
+use crate::vm::offload::{BlockingJob, OffloadErr, OffloadOk};
 use crate::vm::value::{Arity, Value};
 
-use super::{native, object};
+use super::{native, native_blocking, object};
 
 pub fn module() -> Value {
     let args = build_args();
@@ -23,7 +24,10 @@ pub fn module() -> Value {
         ("args", args),
         ("env",  native("env",  Arity::Exact(1),   env)),
         ("cwd",  native("cwd",  Arity::Exact(0),   cwd)),
-        ("run",  native("run",  Arity::AtLeast(1), run)),
+        // `run` spawns a child process and waits for it — a blocking
+        // call, so it is offloaded to the worker pool when other green
+        // threads are live (see `crate::vm::offload`).
+        ("run",  native_blocking("run", Arity::AtLeast(1), run)),
         ("exit", native("exit", Arity::Exact(1),   exit)),
     ])
 }
@@ -58,35 +62,48 @@ fn cwd(_args: &[Value]) -> Result<Value, RuntimeError> {
         .map_err(|e| raise(format!("Os.cwd: {e}")))
 }
 
-fn run(args: &[Value]) -> Result<Value, RuntimeError> {
-    let cmd = match &args[0] {
-        Value::Str(s) => s,
+/// `run(cmd, ...args)` — a blocking native. The actor-thread half here
+/// validates the arguments and extracts owned `String`s; the worker
+/// closure it returns spawns the child process and captures its output
+/// off-thread.
+fn run(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let cmd: String = match &args[0] {
+        Value::Str(s) => s.to_string(),
         other => return Err(raise(format!(
             "Os.run: expected String command, got {}", other.type_name()
         ))),
     };
-    let mut command = std::process::Command::new(&**cmd);
+    let mut arg_strs: Vec<String> = Vec::with_capacity(args.len() - 1);
     for (i, a) in args[1..].iter().enumerate() {
         match a {
-            Value::Str(s) => { command.arg(&**s); }
+            Value::Str(s) => arg_strs.push(s.to_string()),
             other => return Err(raise(format!(
                 "Os.run: argument {} is not a String, got {}",
                 i + 1, other.type_name()
             ))),
         }
     }
-    let output = command
-        .output()
-        .map_err(|e| raise(format!("Os.run({cmd:?}): {e}")))?;
-    // A terminating signal yields no exit code; report -1 in that case.
-    let code = output.status.code().unwrap_or(-1) as i64;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    Ok(object(&[
-        ("code",   Value::Int(code)),
-        ("stdout", Value::Str(stdout.into())),
-        ("stderr", Value::Str(stderr.into())),
-    ]))
+    Ok(Box::new(move || {
+        let mut command = std::process::Command::new(&cmd);
+        for a in &arg_strs {
+            command.arg(a);
+        }
+        match command.output() {
+            Ok(output) => {
+                // A terminating signal yields no exit code; report -1.
+                let code = output.status.code().unwrap_or(-1) as i64;
+                let stdout =
+                    String::from_utf8_lossy(&output.stdout).into_owned();
+                let stderr =
+                    String::from_utf8_lossy(&output.stderr).into_owned();
+                Ok(OffloadOk::Run { code, stdout, stderr })
+            }
+            Err(e) => Err(OffloadErr {
+                kind: None,
+                message: format!("Os.run({cmd:?}): {e}"),
+            }),
+        }
+    }))
 }
 
 fn exit(args: &[Value]) -> Result<Value, RuntimeError> {

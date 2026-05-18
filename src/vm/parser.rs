@@ -573,6 +573,8 @@ impl Parser {
             Token::Spawn => self.parse_spawn(),
             Token::Select => self.parse_select(),
             Token::Parallel => self.parse_parallel(),
+            Token::Go => self.parse_go(),
+            Token::Yield => self.parse_yield(),
             Token::Match => self.parse_match(),
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
@@ -622,6 +624,34 @@ impl Parser {
         let callee = self.parse_expr()?;
         let span = kw_span.join(callee.span);
         Ok(SpannedExpr::new(Expr::Spawn(Box::new(callee)), span))
+    }
+
+    /// `go expr` — `expr` is the function to run as a green thread
+    /// (coroutine) inside the current actor.
+    fn parse_go(&mut self) -> Result<SpannedExpr, ParseError> {
+        let kw_span = self.expect(&Token::Go)?;
+        let callee = self.parse_expr()?;
+        let span = kw_span.join(callee.span);
+        Ok(SpannedExpr::new(Expr::Go(Box::new(callee)), span))
+    }
+
+    /// `yield expr` or bare `yield` — suspends the running green
+    /// thread. Like `break`/`return`, the value may be omitted when
+    /// the next token cannot start an expression.
+    fn parse_yield(&mut self) -> Result<SpannedExpr, ParseError> {
+        let kw_span = self.expect(&Token::Yield)?;
+        let omit = matches!(
+            self.peek(),
+            Token::Semicolon | Token::RParen | Token::RBrace | Token::RBrack
+            | Token::Comma | Token::Eof
+        );
+        if omit {
+            Ok(SpannedExpr::new(Expr::Yield(None), kw_span))
+        } else {
+            let value = self.parse_expr()?;
+            let span = kw_span.join(value.span);
+            Ok(SpannedExpr::new(Expr::Yield(Some(Box::new(value))), span))
+        }
     }
 
     /// `select { name := chan => body, ..., else => body }` (v0.14).

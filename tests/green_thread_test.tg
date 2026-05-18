@@ -1,0 +1,135 @@
+// tests/green_thread_test.tg — green threads: `go` and `yield`.
+//
+// A green thread (coroutine) spawned with `go` runs inside the current
+// actor, sharing its heap, scheduled cooperatively: it runs until it
+// `yield`s or returns, then the scheduler hands control to the next
+// ready coroutine round-robin. Unlike `spawn` (a separate OS-thread
+// actor), a green thread shares mutable state with its enclosing
+// scope — no copying, no channels needed.
+//
+// Each case fully drains the coroutines it spawns before returning, so
+// the scheduler queue is empty between cases. The `while (!done)
+// { yield }` idiom pumps the scheduler until a coroutine signals it
+// has finished — extra `yield`s with nothing ready are harmless no-ops.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test := import 'Test';
+
+[
+    Test.suite('go — basics', [
+        Test.case('go evaluates to null', fn() {
+            Test.assert_eq(go fn() { 42 }, null)
+        }),
+
+        Test.case('a coroutine runs and reports completion', fn() {
+            done := false;
+            go fn() { done = true };
+            while (!done) { yield };
+            Test.assert(done)
+        }),
+
+        Test.case('a coroutine shares and mutates an outer variable', fn() {
+            log := [];
+            go fn() { log = log + ['from coroutine'] };
+            while (#log == 0) { yield };
+            Test.assert_eq(log, ['from coroutine'])
+        }),
+
+        Test.case('go returns a value the coroutine discards', fn() {
+            // a coroutine's return value is dropped in v1 (no handle);
+            // it communicates only through shared state.
+            seen := 0;
+            go fn() { seen = 7; 999 };
+            while (seen == 0) { yield };
+            Test.assert_eq(seen, 7)
+        }),
+    ]),
+
+    Test.suite('yield — scheduling', [
+        Test.case('main and a coroutine interleave at yield points', fn() {
+            log := [];
+            go fn() {
+                log = log + ['c1'];
+                yield;
+                log = log + ['c2'];
+                yield;
+                log = log + ['c3']
+            };
+            log = log + ['m1'];
+            yield;
+            log = log + ['m2'];
+            yield;
+            log = log + ['m3'];
+            yield;
+            Test.assert_eq(log, ['m1', 'c1', 'm2', 'c2', 'm3', 'c3'])
+        }),
+
+        Test.case('a lone yield with nothing ready resumes immediately', fn() {
+            // no other coroutine exists, so yield is a no-op and the
+            // expression evaluates to the resume value (null in v1).
+            r := yield 123;
+            Test.assert_eq(r, null)
+        }),
+
+        Test.case('round-robin order across three coroutines', fn() {
+            order := [];
+            mark := fn(tag) { order = order + [tag] };
+            go fn() { mark('a'); yield; mark('a') };
+            go fn() { mark('b'); yield; mark('b') };
+            go fn() { mark('c'); yield; mark('c') };
+            // pump until all six marks have landed
+            while (#order < 6) { yield };
+            Test.assert_eq(order, ['a', 'b', 'c', 'a', 'b', 'c'])
+        }),
+    ]),
+
+    Test.suite('go — composition', [
+        Test.case('a coroutine can spawn another coroutine', fn() {
+            log := [];
+            go fn() {
+                log = log + ['outer'];
+                go fn() { log = log + ['inner'] };
+                yield;
+                log = log + ['outer-done']
+            };
+            while (#log < 3) { yield };
+            Test.assert_eq(log, ['outer', 'inner', 'outer-done'])
+        }),
+
+        Test.case('many coroutines all run to completion', fn() {
+            hits := [];
+            for (i, 1..=8) {
+                go fn() { hits = hits + [i * i] }
+            };
+            while (#hits < 8) { yield };
+            // round-robin spawn order is preserved
+            Test.assert_eq(hits, [1, 4, 9, 16, 25, 36, 49, 64])
+        }),
+
+        Test.case('a counter shared across coroutines', fn() {
+            count := 0;
+            for (_, 1..=5) {
+                go fn() { count = count + 1 }
+            };
+            while (count < 5) { yield };
+            Test.assert_eq(count, 5)
+        }),
+    ]),
+
+    Test.suite('go — errors', [
+        Test.case('try/catch inside a coroutine spans a yield', fn() {
+            result := null;
+            go fn() {
+                result = try {
+                    yield;
+                    raise 'boom'
+                } catch (e) {
+                    'caught: ' + e
+                }
+            };
+            while (result == null) { yield };
+            Test.assert_eq(result, 'caught: boom')
+        }),
+    ]),
+]

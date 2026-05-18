@@ -62,6 +62,8 @@ pub enum Token {
     Spawn,
     Select,
     Parallel,
+    Go,
+    Yield,
 
     // Arithmetic
     Plus,
@@ -153,6 +155,8 @@ impl fmt::Display for Token {
             Spawn => f.write_str("spawn"),
             Select => f.write_str("select"),
             Parallel => f.write_str("parallel"),
+            Go => f.write_str("go"),
+            Yield => f.write_str("yield"),
             Import => f.write_str("import"),
             Try => f.write_str("try"),
             Catch => f.write_str("catch"),

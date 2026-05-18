@@ -15,6 +15,7 @@ pub mod native_modules;
 pub mod opcode;
 pub mod parser;
 pub mod rng;
+pub mod scheduler;
 pub mod socket;
 pub mod source_map;
 pub mod source_stdlib;

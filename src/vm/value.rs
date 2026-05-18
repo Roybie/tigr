@@ -345,12 +345,19 @@ pub struct Closure {
     pub upvalues: Vec<GcRef<UpvalueKind>>,
 }
 
-/// A captured variable. `Open` means "still on the value stack at this
-/// slot index"; `Closed` means "lifted to the heap" (the local has gone
-/// out of scope).
+/// A captured variable. `Open` means "still on a value stack"; `Closed`
+/// means "lifted to the heap" (the local has gone out of scope).
+///
+/// `Open` records both the slot index and the id of the green thread
+/// (coroutine) whose stack that slot lives in. With one private value
+/// stack per coroutine, a closure captured into a `go` block may refer
+/// to a slot on a *different* coroutine's stack; carrying the owner id
+/// lets the VM resolve the read/write against the right stack and
+/// keeps shared mutation working across coroutines. Coroutine #0 is
+/// the actor's main program, so `owner: 0` is the common case.
 #[derive(Clone)]
 pub enum Upvalue {
-    Open(usize),
+    Open { owner: u32, slot: usize },
     Closed(Value),
 }
 

@@ -613,6 +613,10 @@ impl Compiler {
             | OpCode::PushTry | OpCode::PopTry
             // Spawn pops the function and pushes a Task — net 0.
             | OpCode::Spawn
+            // Go pops the function and pushes `null` — net 0.
+            // Yield pops the yielded value and pushes the resume
+            // value — net 0.
+            | OpCode::Go | OpCode::Yield
             // NoMatchError pops nothing and always raises; the runtime
             // never reaches code after it. Tracked as 0.
             | OpCode::NoMatchError => 0,
@@ -747,6 +751,10 @@ impl Compiler {
             }
             Expr::Raise(v) => self.visit_for_hoist(v, out),
             Expr::Spawn(v) => self.visit_for_hoist(v, out),
+            Expr::Go(v) => self.visit_for_hoist(v, out),
+            Expr::Yield(v) => {
+                if let Some(v) = v { self.visit_for_hoist(v, out); }
+            }
             // `try ... catch (e) { handler }` — the handler is a
             // `Scope` per grammar (handles its own hoisting). We only
             // scan the protected body, treating it like any other
@@ -939,6 +947,14 @@ impl Compiler {
 
             Expr::Spawn(callee) => {
                 self.compile_spawn(callee, line)?;
+            }
+
+            Expr::Go(callee) => {
+                self.compile_go(callee, line)?;
+            }
+
+            Expr::Yield(value) => {
+                self.compile_yield(value.as_deref(), line)?;
             }
 
             Expr::Match { subject, arms } => {
@@ -2160,6 +2176,38 @@ impl Compiler {
         let entry_height = self.current().stack_height;
         self.compile_expr(callee)?;
         self.emit_op(OpCode::Spawn, line);
+        self.set_stack_height(entry_height + 1);
+        Ok(())
+    }
+
+    /// `go callee` — compile the callee expression, then `Go` pops
+    /// that function and pushes `null`. Net stack effect is zero.
+    fn compile_go(
+        &mut self,
+        callee: &SpannedExpr,
+        line: u32,
+    ) -> Result<(), CompileError> {
+        let entry_height = self.current().stack_height;
+        self.compile_expr(callee)?;
+        self.emit_op(OpCode::Go, line);
+        self.set_stack_height(entry_height + 1);
+        Ok(())
+    }
+
+    /// `yield expr` / `yield` — push the yielded value (`null` when
+    /// omitted), then `Yield` pops it and later pushes the resume
+    /// value. Net stack effect is zero.
+    fn compile_yield(
+        &mut self,
+        value: Option<&SpannedExpr>,
+        line: u32,
+    ) -> Result<(), CompileError> {
+        let entry_height = self.current().stack_height;
+        match value {
+            Some(v) => self.compile_expr(v)?,
+            None => self.emit_op(OpCode::PushNull, line),
+        }
+        self.emit_op(OpCode::Yield, line);
         self.set_stack_height(entry_height + 1);
         Ok(())
     }

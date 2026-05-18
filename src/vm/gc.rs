@@ -577,8 +577,9 @@ impl Trace for Closure {
 impl Trace for Upvalue {
     fn trace(&self, m: &mut Marker) {
         match self {
-            // `Open` lives on the VM value stack, itself a root.
-            Upvalue::Open(_) => {}
+            // `Open` lives on some coroutine's value stack, itself a
+            // root (the running one's, or a parked coroutine's).
+            Upvalue::Open { .. } => {}
             Upvalue::Closed(v) => v.trace(m),
         }
     }
@@ -756,7 +757,7 @@ mod tests {
 
     #[test]
     fn collect_reclaims_closure_upvalue_cycle() {
-        let up = alloc_upvalue(Upvalue::Open(0));
+        let up = alloc_upvalue(Upvalue::Open { owner: 0, slot: 0 });
         let cl = alloc_closure(Closure {
             function: test_function(),
             upvalues: vec![up],

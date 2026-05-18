@@ -481,6 +481,8 @@ impl<'src> Lexer<'src> {
             "spawn" => Token::Spawn,
             "select" => Token::Select,
             "parallel" => Token::Parallel,
+            "go" => Token::Go,
+            "yield" => Token::Yield,
             _ => Token::Ident(lexeme.to_string()),
         }
     }

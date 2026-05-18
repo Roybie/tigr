@@ -249,6 +249,20 @@ pub enum OpCode {
     /// thread and heap, and push a `Task` handle for its result.
     /// Operand: none.
     Spawn,
+
+    // -- green threads — cooperative coroutines --
+    /// Pop a function value and spawn it as a green thread (coroutine)
+    /// inside the current actor: it shares this actor's heap and is
+    /// scheduled cooperatively. Push `null` (a v1 `go` yields no
+    /// handle). Operand: none.
+    Go,
+    /// Pop the yielded value and suspend the running green thread,
+    /// handing control to the scheduler's next ready coroutine. When
+    /// this coroutine is resumed, the dispatch loop continues here
+    /// with the resume value pushed — so `yield <expr>` evaluates to
+    /// it. A no-op (resumes immediately with `null`) when no other
+    /// coroutine is ready. Operand: none.
+    Yield,
 }
 
 impl OpCode {
@@ -322,6 +336,8 @@ impl OpCode {
             64 => TailCall,
             65 => NoMatchError,
             66 => Spawn,
+            67 => Go,
+            68 => Yield,
             _ => return None,
         })
     }

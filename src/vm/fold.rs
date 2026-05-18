@@ -167,6 +167,12 @@ fn fold_expr(e: &mut SpannedExpr) {
         }
         Expr::Raise(inner) => fold_expr(inner),
         Expr::Spawn(inner) => fold_expr(inner),
+        Expr::Go(inner) => fold_expr(inner),
+        Expr::Yield(opt) => {
+            if let Some(v) = opt {
+                fold_expr(v);
+            }
+        }
         Expr::Match { subject, arms } => {
             fold_expr(subject);
             for arm in arms {

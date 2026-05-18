@@ -399,6 +399,17 @@ pub enum Expr {
     // so it may capture only sendable values.
     Spawn(Box<SpannedExpr>),
 
+    // `go expr` — evaluates `expr` to a function and spawns it as a
+    // green thread (coroutine) inside the current actor. Unlike
+    // `spawn`, a green thread shares the actor's heap and is scheduled
+    // cooperatively onto the same OS thread. Evaluates to `null`.
+    Go(Box<SpannedExpr>),
+
+    // `yield expr` / `yield` — suspends the running green thread and
+    // hands control to the scheduler. Resumes with the value the
+    // scheduler delivers, so the `yield` expression evaluates to it.
+    Yield(Option<Box<SpannedExpr>>),
+
     // `match subject { pat => body, pat if guard => body, ... }`
     // (v0.5). Arms are tried top-to-bottom; the value is the body of
     // the first matching arm, or `null` if no arm matches.

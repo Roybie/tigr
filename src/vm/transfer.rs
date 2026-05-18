@@ -230,7 +230,7 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
             for cell in &cells {
                 let captured = match &*cell.borrow() {
                     Upvalue::Closed(val) => val.clone(),
-                    Upvalue::Open(_) => {
+                    Upvalue::Open { .. } => {
                         return Err(not_sendable(
                             "a function with live captured variables",
                         ));
@@ -428,7 +428,7 @@ mod tests {
             upvalues: Vec::new(),
             name: None,
         });
-        let up = gc::alloc_upvalue(Upvalue::Open(0));
+        let up = gc::alloc_upvalue(Upvalue::Open { owner: 0, slot: 0 });
         let cl = gc::alloc_closure(Closure { function: f, upvalues: vec![up] });
         let err = encode(&Value::Function(cl)).unwrap_err();
         assert_eq!(err.kind.kind_tag(), "not_sendable");

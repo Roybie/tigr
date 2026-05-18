@@ -31,13 +31,14 @@ use crate::vm::gc::{
     UpvalueKind,
 };
 use crate::vm::opcode::OpCode;
+use crate::vm::scheduler::{GreenThread, Scheduler};
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{
     bigint_to_f64, Closure, Function, IterState, MapKey, RangeData, Upvalue, Value,
 };
 
-struct CallFrame {
+pub(crate) struct CallFrame {
     closure: GcRef<ClosureKind>,
     ip: usize,
     /// Index in `vm.stack` corresponding to slot 0 of this frame.
@@ -127,6 +128,10 @@ pub struct Vm {
     /// driver (entry function, REPL) so error rendering can resolve
     /// snippets after the run returns.
     pub source_map: Rc<RefCell<SourceMap>>,
+    /// Cooperative green-thread scheduler for this actor. The running
+    /// coroutine's state lives in `frames`/`stack`/`open_upvalues`
+    /// above; the scheduler holds only the parked ones.
+    scheduler: Scheduler,
 }
 
 impl Vm {
@@ -145,6 +150,7 @@ impl Vm {
             module_cache: HashMap::new(),
             in_flight: HashSet::new(),
             source_map,
+            scheduler: Scheduler::new(),
         }
     }
 
@@ -153,6 +159,7 @@ impl Vm {
         self.stack.clear();
         self.frames.clear();
         self.open_upvalues.clear();
+        self.scheduler.reset();
 
         let main_closure = gc::alloc_closure(Closure {
             function: Arc::new(main),
@@ -167,19 +174,25 @@ impl Vm {
             try_frames: Vec::new(),
             kind: FrameKind::Function,
         });
-        // Surface the result of `exec`, with a loop wrapper so a
-        // caught raise can re-enter exec at the new ip.
+        self.drive()
+    }
+
+    /// Run the current actor to completion. Executes the running
+    /// coroutine; a caught raise re-enters the dispatch loop at the
+    /// catch PC. Non-main coroutine switches happen *inside* the
+    /// dispatch loop (`Yield`, and a non-main `Return`) — only main
+    /// returning, or an uncaught error, exits here.
+    fn drive(&mut self) -> Result<Value, RuntimeError> {
         loop {
-            match self.exec() {
+            match self.run_until(0) {
                 Ok(v) => return Ok(v),
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
                     if !self.try_catch(0, &mut err) {
                         return Err(err);
                     }
-                    // Caught — frame state is now pointing at catch_pc
-                    // with the error value on the stack. Loop back into
-                    // exec to continue from there.
+                    // Caught — frame state now points at catch_pc with
+                    // the error value on the stack; loop to continue.
                 }
             }
         }
@@ -196,7 +209,29 @@ impl Vm {
         self.stack.clear();
         self.frames.clear();
         self.open_upvalues.clear();
-        self.call_value(Value::Function(closure), Vec::new(), 0)
+        self.scheduler.reset();
+        // Coroutine #0 = the actor's main closure, invoked with no
+        // arguments. Slot 0 holds the closure itself, then arity-
+        // padded `null`s — the same layout as `run`'s main frame.
+        let (arity, has_rest) = {
+            let cf = closure.borrow();
+            (cf.function.arity, cf.function.has_rest)
+        };
+        self.stack.push(Value::Function(closure));
+        for _ in 0..arity {
+            self.stack.push(Value::Null);
+        }
+        if has_rest {
+            self.stack.push(Value::Array(gc::alloc_array(Vec::new())));
+        }
+        self.frames.push(CallFrame {
+            closure,
+            ip: 0,
+            base_slot: 0,
+            try_frames: Vec::new(),
+            kind: FrameKind::Function,
+        });
+        self.drive()
     }
 
     /// Start `callee` as an actor: deep-copy it across the heap
@@ -229,7 +264,7 @@ impl Vm {
         for cell in &cells {
             let captured = match &*cell.borrow() {
                 Upvalue::Closed(v) => v.clone(),
-                Upvalue::Open(slot) => self.stack[*slot].clone(),
+                Upvalue::Open { owner, slot } => self.upvalue_get(*owner, *slot),
             };
             closed.push(gc::alloc_upvalue(Upvalue::Closed(captured)));
         }
@@ -639,7 +674,20 @@ impl Vm {
                         FrameKind::Function | FrameKind::Repl => {}
                     }
                     if self.frames.len() == floor {
-                        return Ok(result);
+                        if self.scheduler.current_is_main() {
+                            return Ok(result);
+                        }
+                        // A non-main coroutine finished. Discard it and
+                        // resume the next ready coroutine — main is
+                        // always queued while not running, so there is
+                        // one to take here.
+                        match self.scheduler.take_next() {
+                            Some(next) => {
+                                self.load_green(next);
+                                continue;
+                            }
+                            None => return Ok(result),
+                        }
                     }
                     self.stack.push(result);
                     // current frame's ip is already where it should be;
@@ -957,7 +1005,9 @@ impl Vm {
                     ip += 1;
                     let upv = closure.borrow().upvalues[idx];
                     let v = match &*upv.borrow() {
-                        Upvalue::Open(slot) => self.stack[*slot].clone(),
+                        Upvalue::Open { owner, slot } => {
+                            self.upvalue_get(*owner, *slot)
+                        }
                         Upvalue::Closed(v) => v.clone(),
                     };
                     self.stack.push(v);
@@ -967,10 +1017,18 @@ impl Vm {
                     ip += 1;
                     let new_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
                     let upv = closure.borrow().upvalues[idx];
-                    let mut up = upv.borrow_mut();
-                    match &mut *up {
-                        Upvalue::Open(slot) => self.stack[*slot] = new_val,
-                        Upvalue::Closed(v) => *v = new_val,
+                    // Read the cell's shape, then drop the borrow before
+                    // touching coroutine stacks (which may be `self`'s
+                    // or a parked coroutine's).
+                    let open = match &*upv.borrow() {
+                        Upvalue::Open { owner, slot } => Some((*owner, *slot)),
+                        Upvalue::Closed(_) => None,
+                    };
+                    match open {
+                        Some((owner, slot)) => {
+                            self.upvalue_set(owner, slot, new_val);
+                        }
+                        None => *upv.borrow_mut() = Upvalue::Closed(new_val),
                     }
                 }
                 OpCode::LoadGlobal => {
@@ -1690,6 +1748,45 @@ impl Vm {
                     let task = self.spawn_actor(callee, line)?;
                     self.stack.push(Value::Task(task));
                 }
+                OpCode::Go => {
+                    // Pop the function and spawn it as a green thread
+                    // inside this actor; `go` evaluates to `null`.
+                    let callee = self.pop(line)?;
+                    match callee {
+                        Value::Function(c) => self.spawn_green(c),
+                        other => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::TypeMismatch(format!(
+                                    "`go` requires a tigr function, got {}",
+                                    other.type_name()
+                                )),
+                                line,
+                            ));
+                        }
+                    }
+                    self.stack.push(Value::Null);
+                }
+                OpCode::Yield => {
+                    // The yielded value is discarded in plain
+                    // cooperative scheduling — there is no consumer.
+                    // The `yield` expression evaluates to the resume
+                    // value delivered by `load_green` on resumption.
+                    let _yielded = self.pop(line)?;
+                    match self.scheduler.take_next() {
+                        Some(next) => {
+                            self.frames.last_mut().unwrap().ip = ip;
+                            let parked =
+                                self.save_current(Some(Value::Null));
+                            self.scheduler.enqueue(parked);
+                            self.load_green(next);
+                            continue;
+                        }
+                        None => {
+                            // Nothing else ready — resume immediately.
+                            self.stack.push(Value::Null);
+                        }
+                    }
+                }
             }
 
             // commit ip back to current frame
@@ -1855,26 +1952,122 @@ impl Vm {
         Ok(())
     }
 
+    // -- green-thread context switching ------------------------------
+
+    /// Snapshot the running coroutine's execution state into a
+    /// `GreenThread` for later resumption. `parked_resume` is the
+    /// value to deliver when it resumes.
+    fn save_current(&mut self, parked_resume: Option<Value>) -> GreenThread {
+        let (id, is_main) = self.scheduler.current();
+        GreenThread {
+            id,
+            is_main,
+            frames: std::mem::take(&mut self.frames),
+            stack: std::mem::take(&mut self.stack),
+            open_upvalues: std::mem::take(&mut self.open_upvalues),
+            parked_resume,
+        }
+    }
+
+    /// Make `gt` the running coroutine: install its execution state
+    /// into the `Vm` and, if it was parked at a `yield`, deliver the
+    /// resume value onto its stack.
+    fn load_green(&mut self, gt: GreenThread) {
+        self.frames = gt.frames;
+        self.stack = gt.stack;
+        self.open_upvalues = gt.open_upvalues;
+        self.scheduler.set_current(gt.id, gt.is_main);
+        if let Some(v) = gt.parked_resume {
+            self.stack.push(v);
+        }
+    }
+
+    /// Create a not-yet-started green thread running `closure` with no
+    /// arguments and enqueue it. Mirrors `run`'s main-frame layout:
+    /// slot 0 holds the closure itself, then arity-padded `null`s.
+    fn spawn_green(&mut self, closure: GcRef<ClosureKind>) {
+        let (arity, has_rest) = {
+            let cf = closure.borrow();
+            (cf.function.arity, cf.function.has_rest)
+        };
+        let mut stack = vec![Value::Function(closure)];
+        for _ in 0..arity {
+            stack.push(Value::Null);
+        }
+        if has_rest {
+            stack.push(Value::Array(gc::alloc_array(Vec::new())));
+        }
+        let id = self.scheduler.fresh_id();
+        self.scheduler.enqueue(GreenThread {
+            id,
+            is_main: false,
+            frames: vec![CallFrame {
+                closure,
+                ip: 0,
+                base_slot: 0,
+                try_frames: Vec::new(),
+                kind: FrameKind::Function,
+            }],
+            stack,
+            open_upvalues: Vec::new(),
+            parked_resume: None,
+        });
+    }
+
     fn capture_upvalue(&mut self, stack_slot: usize) -> GcRef<UpvalueKind> {
+        // `open_upvalues` only ever holds cells owned by the running
+        // coroutine, so deduping by slot alone is correct here.
         for up in &self.open_upvalues {
-            if let Upvalue::Open(slot) = *up.borrow() {
+            if let Upvalue::Open { slot, .. } = *up.borrow() {
                 if slot == stack_slot {
                     return *up;
                 }
             }
         }
-        let new_up = gc::alloc_upvalue(Upvalue::Open(stack_slot));
+        let (owner, _) = self.scheduler.current();
+        let new_up =
+            gc::alloc_upvalue(Upvalue::Open { owner, slot: stack_slot });
         self.open_upvalues.push(new_up);
         new_up
     }
 
+    /// Read open-upvalue `slot` on coroutine `owner`'s value stack —
+    /// the running coroutine's own stack, or a parked coroutine's
+    /// stack reached through the scheduler.
+    fn upvalue_get(&self, owner: u32, slot: usize) -> Value {
+        let (cur, _) = self.scheduler.current();
+        if owner == cur {
+            self.stack[slot].clone()
+        } else {
+            self.scheduler
+                .stack_of(owner)
+                .expect("open upvalue references a live coroutine")[slot]
+                .clone()
+        }
+    }
+
+    /// Write `v` into open-upvalue `slot` on coroutine `owner`'s stack.
+    fn upvalue_set(&mut self, owner: u32, slot: usize, v: Value) {
+        let (cur, _) = self.scheduler.current();
+        if owner == cur {
+            self.stack[slot] = v;
+        } else {
+            let st = self
+                .scheduler
+                .stack_of_mut(owner)
+                .expect("open upvalue references a live coroutine");
+            st[slot] = v;
+        }
+    }
+
     /// Close (lift to heap) every open upvalue whose stack slot is at
-    /// or above `target_slot`.
+    /// or above `target_slot`. Only the running coroutine's cells live
+    /// in `open_upvalues`, so their slots index `self.stack`.
     fn close_upvalues(&mut self, target_slot: usize) {
         let mut still_open = Vec::with_capacity(self.open_upvalues.len());
         for up in self.open_upvalues.drain(..) {
             let slot_opt = match *up.borrow() {
-                Upvalue::Open(slot) if slot >= target_slot => Some(slot),
+                Upvalue::Open { slot, .. } if slot >= target_slot => Some(slot),
                 _ => None,
             };
             match slot_opt {
@@ -1892,20 +2085,38 @@ impl Vm {
     /// Mark every GC root this Vm holds. The root set is exactly these
     /// five fields — nothing else retains a `Value` (see `gc.rs`).
     fn trace_roots(&self, m: &mut Marker) {
+        // The running coroutine.
         for v in &self.stack {
-            v.trace(m);
-        }
-        for v in &self.globals {
             v.trace(m);
         }
         for up in &self.open_upvalues {
             m.mark_upvalue(*up);
         }
         for frame in &self.frames {
-            m.mark_closure(frame.closure);
+            trace_frame(frame, m);
+        }
+        // Shared across all coroutines in this actor.
+        for v in &self.globals {
+            v.trace(m);
         }
         for v in self.module_cache.values() {
             v.trace(m);
+        }
+        // Parked green threads — their saved execution state holds
+        // live values the running coroutine cannot otherwise reach.
+        for gt in self.scheduler.queued() {
+            for v in &gt.stack {
+                v.trace(m);
+            }
+            for up in &gt.open_upvalues {
+                m.mark_upvalue(*up);
+            }
+            for frame in &gt.frames {
+                trace_frame(frame, m);
+            }
+            if let Some(v) = &gt.parked_resume {
+                v.trace(m);
+            }
         }
     }
 
@@ -1927,6 +2138,17 @@ impl Vm {
 
 fn underflow(line: u32) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::StackUnderflow, line)
+}
+
+/// Trace one call frame's GC roots: its closure, plus any heap handle
+/// embedded in a pull-frame kind (`IterPull`/`SpreadPull`).
+fn trace_frame(frame: &CallFrame, m: &mut Marker) {
+    m.mark_closure(frame.closure);
+    match &frame.kind {
+        FrameKind::IterPull { iter, .. } => m.mark_iter(*iter),
+        FrameKind::SpreadPull { target, .. } => m.mark_array(*target),
+        FrameKind::Function | FrameKind::Import(_) | FrameKind::Repl => {}
+    }
 }
 
 /// Fetch and validate the `next` field of an iterator object

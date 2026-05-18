@@ -1,7 +1,7 @@
 # Tigr Roadmap
 
 Planned work beyond v0.7b. The `v0.N` line continues — v0.8–v0.11 are
-shipped, v0.12–v0.16 are planned below, and 1.0 is a stabilization
+shipped, v0.12–v0.17 are planned below, and 1.0 is a stabilization
 release after them. Items 1–14 keep the reference number from the
 original design discussion; items 15+ were added in later roadmap
 extensions.
@@ -17,6 +17,10 @@ Conventions for every release below:
 - New opcodes are appended at the **end** of the `OpCode` enum (see
   `memory/v06-design-decisions.md` — mid-enum insertion desyncs
   `from_u8`).
+- Docs-only items (marked `*(docs)*`) are an exception: they add no
+  appendix, no `examples/vNN/` directory, and no tests. Their
+  deliverable is the doc-integrity check (coverage, link resolution,
+  runnable examples).
 
 ---
 
@@ -593,13 +597,122 @@ a sibling crate) speaking the Language Server Protocol.
 
 ---
 
+## v0.17 — Polish, documentation & distribution
+
+The release that turns Tigr from a repo you build into a language
+other people can pick up and use. Three independent strands —
+a surface-syntax addition, a navigable doc set, and a real install
+story. None changes runtime semantics; item 29 is the only one that
+touches surface syntax, and it must land before the 1.0 spec freeze.
+
+### 29. Non-interpolating double-quoted strings  *(language — additive)*
+
+Tigr has exactly one string form — single-quoted, always interpolated
+(`LANGUAGE.md` §8.2). Any `{` begins an interpolation, so a string that
+genuinely contains braces — a JSON or HTML template, generated code, a
+format/glob spec — must escape every `{` as `\{`. §8.2 already records
+this as an open question (*"do we want a non-interpolating string
+form? Recommendation: no, until a real use case appears"*); the use
+case has now appeared.
+
+- Double-quoted `"..."` is a second string literal: **no `{expr}`
+  interpolation** — a `{` is an ordinary character.
+- Same `String` type, same UTF-8 character semantics, same operators
+  and indexing — the *only* difference is that the lexer's
+  interpolation scan is off. `"a" + "b"`, `#"x"`, `"x"[0]` all behave
+  exactly as the single-quoted forms do.
+- **Lexer-only change.** A new string-scanning branch; the parser,
+  compiler, and VM still see a plain `Str` constant.
+- **Design detail — escapes (settle before building).** Decide whether
+  `"..."` still processes backslash escapes (`\n`, `\t`, `\"`) or is
+  *fully raw* — backslash is literal, a true "raw string" ideal for
+  Windows paths and glob/regex-like patterns. Recommendation: keep
+  escapes, so the two forms differ on exactly one axis (interpolation);
+  add a separate fully-raw form only if a concrete need appears. The
+  owner's framing was "raw strings", so the fully-raw reading is live —
+  resolve explicitly at implementation time.
+- Resolves the §8.2 open question; §8.2 is rewritten to document both
+  forms. Surface syntax, so it must land **before** the 1.0 spec
+  freeze. If v0.16 (`fmt`, LSP) has already shipped, both need a small
+  follow-up to handle the new literal.
+
+### 30. Traversable documentation  ✅ done  *(docs)*
+
+The entire doc surface is two files: `README.md` (~73 KB) and
+`LANGUAGE.md` (~103 KB, the authoritative spec). Both are long
+single-page documents — there is no per-module reference to jump to,
+and the README mixes "first tour" with deep reference. With the stdlib
+now at a dozen modules (`Array`, `Iter`, `String`, `Bytes`, `Net`,
+`Http`, `Url`, `Channel`, …), looking up one function's signature
+means scrolling a 100 KB file.
+
+- A `docs/` tree: one page per stdlib module listing every function's
+  signature, parameters, return type, raised-error kinds, and a short
+  example — plus cross-linked pages for the language topics
+  (expressions, control flow, errors, concurrency).
+- `README.md` slims to an **overview**: what Tigr is, the core idea,
+  install (item 31), a short tour, and links into `docs/` and
+  `LANGUAGE.md`. The deep material moves into `docs/`.
+- `LANGUAGE.md` stays the authoritative spec / compatibility contract.
+  `docs/` is the navigable companion, not a replacement.
+- **Design detail — generated vs hand-written.** The pure-tigr stdlib
+  modules (`stdlib/*.tg`) could carry structured doc-comments that a
+  `tigr doc` generator turns into module pages, keeping signatures from
+  drifting — but native (Rust) modules have no such source. Decide:
+  (a) hand-written Markdown — simplest, drifts; (b) a doc-comment
+  convention plus generator for the tigr modules, native modules in a
+  sidecar. Recommendation: start hand-written under `docs/`; build a
+  generator only if drift becomes real pain.
+- Optional: render `docs/` as a static site for a hosted version —
+  shares the host with item 31's install script.
+- Supersedes the *Documentation pass* bullet under *Toward 1.0*.
+
+### 31. Distribution & install  *(release tooling)*
+
+Installing Tigr today means cloning the repo and `cargo build
+--release` — you need a Rust toolchain and have to know the command.
+For anyone to *use* Tigr on another machine there must be a one-step
+install.
+
+- **Prebuilt release binaries.** A GitHub Actions workflow that builds
+  `tigr` for the common targets — macOS arm64 + x86_64, Linux x86_64
+  (glibc), optionally Linux arm64 and Windows — and attaches them to a
+  tagged GitHub Release.
+- **`curl | sh` install script.** A hosted `install.sh` that detects
+  OS/arch, downloads the matching release binary, and places it on
+  `PATH`: `curl -fsSL https://<site>/install.sh | sh`. Lowest friction,
+  no package manager required.
+- **Homebrew.** A tap (`Roybie/homebrew-tigr`) with a formula pinning
+  the release tarball + sha256, so `brew install roybie/tigr/tigr`
+  works on macOS and Linux. Bump on each release — automatable from the
+  release workflow. (`cargo install` from a published crate is a
+  near-free fourth channel for the Rust-toolchain crowd.)
+- **APT — deferred unless asked for.** A real APT channel means hosting
+  a signed `.deb` archive or a PPA — meaningfully more infrastructure
+  than the above. Ship the curl script + Homebrew first; add APT only
+  if Linux users ask.
+- **Version string.** `Cargo.toml` still reads `0.2.0` while the
+  roadmap is at v0.15+. Distribution forces the fix: release tags must
+  be real, `tigr --version` must report one, and the crate version
+  must track the `v0.N` line. Fold this drift fix into the item.
+- **Design detail — where the site lives.** The install script and the
+  optional item-30 docs site both need a URL; GitHub Pages off the repo
+  is free and sufficient, and the two can share it.
+- Naturally lands close to 1.0 — easy install matters most once there
+  is a stable release to install — but the binaries and curl script do
+  not depend on 1.0 and can ship as soon as releases are tagged.
+
+---
+
 ## Toward 1.0
 
 After v0.14 the language is feature-complete in every dimension this
 roadmap treats as required: core semantics, diagnostics, stdlib,
 memory model, and concurrency. (The v0.16 editor-tooling release is
-optional — it may land before or after 1.0.) 1.0 is then a
-*stabilization* release, not a feature release:
+optional — it may land before or after 1.0; v0.17 is not a feature
+release either, save its one additive surface-syntax item 29, which
+must land before the spec freeze below.) 1.0 is then a *stabilization*
+release, not a feature release:
 
 - **Spec freeze.** `LANGUAGE.md` becomes a compatibility contract;
   further breaking changes require a 2.0.
@@ -610,7 +723,8 @@ optional — it may land before or after 1.0.) 1.0 is then a
   `--legacy` flag back in, or remove both — a permanently dead flag
   shouldn't ship in 1.0.
 - **Documentation pass.** README, LANGUAGE.md, and examples reviewed
-  end to end for the post-v0.14 surface.
+  end to end for the post-v0.14 surface — folded into v0.17 item 30,
+  which restructures the docs rather than just reviewing them.
 
 No new numbered items — 1.0 is the line under the existing ones.
 

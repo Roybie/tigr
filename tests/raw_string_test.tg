@@ -1,0 +1,58 @@
+// tests/raw_string_test.tg — v0.17 #29: non-interpolating raw strings.
+//
+// Double-quoted "…" is a second string literal: no `{expr}`
+// interpolation and no backslash escaping — every character is
+// literal. Same `String` type as the single-quoted form, so all
+// operators and indexing behave identically. Run directly
+// (`tigr tests/raw_string_test.tg`) or via discovery (`tigr test`).
+
+Test := import 'Test';
+
+[
+    Test.suite('raw strings — no interpolation', [
+        Test.case('braces are ordinary characters', fn() {
+            name := 'ignored';
+            Test.assert_eq("hello {name} world", 'hello \{name} world')
+        }),
+        Test.case('a code template needs no brace escaping', fn() {
+            tmpl := "fn() { return {x}; }";
+            Test.assert_eq(tmpl[5], "{");
+            Test.assert_eq(tmpl[14], "{")
+        }),
+        Test.case('a glob pattern keeps its braces', fn() {
+            glob := "*.{rs,tg}";
+            Test.assert_eq(#glob, 9);
+            Test.assert_eq(glob[2], "{");
+            Test.assert_eq(glob[8], "}")
+        }),
+    ]),
+
+    Test.suite('raw strings — no escaping', [
+        Test.case('backslash is literal', fn() {
+            Test.assert_eq(#"\n", 2)
+        }),
+        Test.case('backslash-n is two characters, not a newline', fn() {
+            Test.assert_eq("\n"[0], '\\');
+            Test.assert_eq("\n"[1], 'n')
+        }),
+        Test.case('a Windows-style path stays intact', fn() {
+            Test.assert_eq("C:\Users\me", 'C:\\Users\\me')
+        }),
+    ]),
+
+    Test.suite('raw strings — same String type', [
+        Test.case('concatenation with a single-quoted string', fn() {
+            Test.assert_eq("a" + 'b' + "c", 'abc')
+        }),
+        Test.case('length and indexing', fn() {
+            Test.assert_eq(#"tigr", 4);
+            Test.assert_eq("tigr"[1], 'i')
+        }),
+        Test.case('the empty raw string', fn() {
+            Test.assert_eq(#"", 0)
+        }),
+        Test.case('equal to the single-quoted form of the same text', fn() {
+            Test.assert_eq("plain" == 'plain', true)
+        }),
+    ]),
+]

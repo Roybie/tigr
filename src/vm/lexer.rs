@@ -10,9 +10,10 @@
 //! `&&`, `||`, `:=`, `+=` etc., `|>`) all dispatch by peeking the next
 //! char.
 //!
-//! String interpolation arrives in Phase 6; for now `'foo {x} bar'` is
-//! lexed as the literal string `foo {x} bar`. Backslash escapes
-//! supported: `\n \t \r \\ \' \{`.
+//! Two string literals: single-quoted `'…'` interpolates `{expr}` and
+//! processes backslash escapes (`\n \t \r \\ \' \{`); double-quoted
+//! `"…"` is fully raw — no interpolation, no escapes — and always
+//! lexes to a plain `Token::Str` (v0.17, see `scan_raw_string`).
 
 use std::str::Chars;
 
@@ -132,6 +133,7 @@ impl<'src> Lexer<'src> {
             '0'..='9' => self.scan_number(start, line),
             'a'..='z' | 'A'..='Z' | '_' => Ok(self.scan_ident(start)),
             '\'' => self.scan_string(start, line),
+            '"' => self.scan_raw_string(start, line),
 
             '+' => {
                 self.advance();
@@ -540,6 +542,31 @@ impl<'src> Lexer<'src> {
                     }
                 },
                 Some(c) => current_lit.push(c),
+            }
+        }
+    }
+
+    /// Scan a `"…"` raw string literal (spec §8.2). The opening `"`
+    /// has been peeked but not consumed.
+    ///
+    /// Fully raw: there is **no** `{expr}` interpolation and **no**
+    /// backslash escaping — `{`, `}`, and `\` are all ordinary
+    /// characters. The only terminator is a closing `"`; a `"` cannot
+    /// itself appear inside a `"…"` string (use `'…'` for that).
+    /// The result is always a plain `Token::Str`.
+    fn scan_raw_string(&mut self, start: usize, line: u32) -> Result<Token, LexError> {
+        self.advance(); // opening "
+        let mut lit = String::new();
+        loop {
+            match self.advance() {
+                None => {
+                    return Err(LexError::new(
+                        LexErrorKind::UnterminatedString,
+                        Span::new(start, self.pos, line),
+                    ));
+                }
+                Some('"') => return Ok(Token::Str(lit)),
+                Some(c) => lit.push(c),
             }
         }
     }

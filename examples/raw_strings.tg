@@ -1,0 +1,23 @@
+// Raw double-quoted strings (spec §8.2).
+// `"..."` is a fully raw string literal: no `{expr}` interpolation and
+// no backslash escapes. Every character between the quotes is literal.
+
+name := 'tigr';
+
+// A `{` is an ordinary character — no interpolation happens.
+print("hello, {name}!");                       // hello, {name}!
+
+// Backslash is literal — `\n` is two characters, not a newline.
+print("a\nb");                                  // a\nb
+print(#"a\nb");                                 // 4
+
+// Ideal for text full of braces or backslashes — no escaping needed.
+print("glob: *.{rs,tg}");                       // glob: *.{rs,tg}
+print("path: C:\Users\me");                     // path: C:\Users\me
+print("tmpl: fn() { return {x}; }");            // tmpl: fn() { return {x}; }
+
+// Same `String` type as `'...'`: all operators and indexing apply,
+// and the two forms mix and compare freely.
+print("a" + 'b' + "c");                         // abc
+print("tigr"[1]);                               // i
+print("plain" == 'plain');                      // true

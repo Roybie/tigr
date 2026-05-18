@@ -96,12 +96,20 @@ are a lex error.
 
 ### 2.6 String literals
 
-Single-quoted, with `{expr}` interpolation. See §8.
+Two forms, both producing the same `String` type (see §8):
+
+- **Single-quoted** `'…'` — with `{expr}` interpolation and backslash
+  escapes.
+- **Double-quoted** `"…"` — a fully raw literal: no interpolation and
+  no escapes. Every character between the quotes is literal, so `{`,
+  `}`, and `\` need no escaping. A `"` cannot appear inside.
 
 ```
 'hello'
 'count: {n}'
 'literal brace: \{'
+"raw: { } and \ need no escaping"
+"C:\Users\me"
 ```
 
 ---
@@ -501,11 +509,15 @@ Strings are immutable sequences of Unicode characters.
 
 `+` between a string and a non-string is an error; use interpolation.
 
-### 8.2 Interpolation
+### 8.2 String forms — interpolated and raw
 
-Inside any single-quoted string, `{expr}` is replaced by the result of
-`str(expr)` (see §13). Use `\{` for a literal `{`. The interpolation grammar
-matches a single tigr expression.
+Tigr has two string literals. They produce the same `String` type and
+differ on exactly one axis — whether the lexer interpolates.
+
+**Single-quoted `'…'` — interpolated.** `{expr}` is replaced by the
+result of `str(expr)` (see §13). Use `\{` for a literal `{`. The
+interpolation grammar matches a single tigr expression. Backslash
+escapes (`\n`, `\t`, `\r`, `\\`, `\'`, `\{`) are processed.
 
 ```
 name := 'world';
@@ -520,8 +532,23 @@ Nested strings inside interpolation are allowed:
 '{ if cond { 'yes' } else { 'no' } }'
 ```
 
-(Open question: do we want a non-interpolating string form, e.g. `r'...'`?
-Recommendation: no, until a real use case appears.)
+**Double-quoted `"…"` — raw, non-interpolating.** A `{` is an ordinary
+character, and backslash is literal — there are *no* escapes at all.
+Everything between the quotes is taken verbatim. This is the form for
+text that genuinely contains braces or backslashes — JSON or code
+templates, glob/format specs, Windows paths.
+
+```
+"hello {name} world"        // 'hello {name} world' — no interpolation
+"*.{rs,tg}"                 // brace pattern, verbatim
+"C:\Users\me"               // backslashes are literal
+```
+
+Because there are no escapes, a `"` cannot appear inside a `"…"`
+string — reach for `'…'` (with `\'` or interpolation) when the text
+contains a double quote. Both forms share every operator, the same
+UTF-8 character semantics, and indexing (§8.1); they compare equal
+when they hold the same characters (`"ab" == 'ab'`).
 
 ---
 
@@ -951,15 +978,14 @@ a catchable `"circular import"` error rather than diverging.
 
 ## 13. Built-in functions
 
-Built-ins are ordinary bindings in the root environment. They can be
-shadowed, passed around, and stored:
+> The navigable reference for every module below, with full signatures and runnable examples, lives under [`docs/stdlib/`](docs/stdlib/README.md). This section is the normative contract.
 
-```
-ops := [floor, ceil];
-my_print := print;
-```
+Built-ins are ordinary bindings in the root environment. They can be
+shadowed, passed around, and stored.
 
 ### 13.1 Required built-ins for v0.2
+
+> Navigable reference: [`docs/stdlib/builtins.md`](docs/stdlib/builtins.md).
 
 | Name      | Signature                | Behavior                               |
 |-----------|--------------------------|----------------------------------------|
@@ -992,13 +1018,6 @@ out-of-range radix raises. `str(n, radix, prefix)` with `prefix` a
 2 / 8 / 16 (any other radix with `prefix == true` raises). A negative
 number's `-` precedes the prefix.
 
-```
-str(255, 16)         // 'ff'
-str(255, 16, true)   // '0xff'
-str(10, 2, true)     // '0b1010'
-str(-10, 16, true)   // '-0xa'
-```
-
 ### 13.2 Native modules (v0.3)
 
 Imported via `import 'Name'` (no path separators). Each native module
@@ -1006,6 +1025,8 @@ returns an object whose entries are ordinary tigr values; users can
 destructure or pass them like any other binding.
 
 #### `IO`
+
+> Navigable reference: [`docs/stdlib/io.md`](docs/stdlib/io.md).
 
 | Entry         | Signature                          | Behavior                                          |
 |---------------|------------------------------------|---------------------------------------------------|
@@ -1027,6 +1048,8 @@ destructure or pass them like any other binding.
 
 #### `Os`
 
+> Navigable reference: [`docs/stdlib/os.md`](docs/stdlib/os.md).
+
 | Entry   | Signature                  | Behavior                                              |
 |---------|----------------------------|-------------------------------------------------------|
 | `args`  | `Array<String>` (value)    | `[interpreter, script, user_arg1, user_arg2, ...]`    |
@@ -1044,6 +1067,8 @@ cannot be spawned at all (e.g. command not found).
 
 #### `Path` (v0.6)
 
+> Navigable reference: [`docs/stdlib/path.md`](docs/stdlib/path.md).
+
 Pure path-string manipulation backed by the host's path rules; nothing
 here touches the filesystem.
 
@@ -1059,6 +1084,8 @@ Every `Path` entry raises on a non-String argument.
 
 #### `Time`
 
+> Navigable reference: [`docs/stdlib/time.md`](docs/stdlib/time.md).
+
 | Entry      | Signature                | Behavior                                |
 |------------|--------------------------|-----------------------------------------|
 | `now_ms`   | `now_ms() -> Int`        | Milliseconds since UNIX epoch           |
@@ -1066,6 +1093,8 @@ Every `Path` entry raises on a non-String argument.
 | `sleep_ms` | `sleep_ms(n) -> null`    | Block the thread for `n` ms             |
 
 #### `DateTime` (v0.6)
+
+> Navigable reference: [`docs/stdlib/datetime.md`](docs/stdlib/datetime.md).
 
 Calendar date/time, **UTC only**. A *components object* is
 `${year, month, day, hour, minute, second, ms, weekday, yearday}` —
@@ -1081,14 +1110,11 @@ the year.
 | `parse`   | `parse(str) -> Int`             | Parse ISO-8601 `YYYY-MM-DD[(T\| )HH:MM:SS[.fff]]` to epoch-ms; raises on malformed input |
 
 `format`'s first argument is epoch-**milliseconds**, not a components
-object — pass a `Time.now_ms()` or `to_ms(...)` result:
-
-```
-DateTime := import 'DateTime';
-DateTime.format(DateTime.to_ms(DateTime.now()), '%Y-%m-%d')   // '2026-05-15'
-```
+object — pass a `Time.now_ms()` or `to_ms(...)` result.
 
 #### `Random` (v0.9)
+
+> Navigable reference: [`docs/stdlib/random.md`](docs/stdlib/random.md).
 
 Seedable pseudo-random numbers. Every entry — and the bare `rand()`
 built-in (§13.1) — draws from a single per-thread stream, so
@@ -1105,13 +1131,9 @@ called the stream is auto-seeded from the wall clock.
 | `range`   | `range(r) -> Int`               | A uniformly random element of a non-empty Range, honouring its step (`range(0..=8:2)` → one of `0,2,4,6,8`) |
 | `shuffle` | `shuffle(arr) -> Array`         | A **new** array with `arr`'s elements in random order; the input is left untouched |
 
-```
-Random := import 'Random';
-Random.seed(42);
-Random.int(1, 6)          // a dice roll, reproducible after the seed
-```
-
 #### `Bytes` (v0.13)
+
+> Navigable reference: [`docs/stdlib/bytes.md`](docs/stdlib/bytes.md).
 
 `Bytes` is a value type as well as a module — a **mutable byte buffer**
 (`Vec<u8>`), the binary counterpart to the UTF-8-only `String`. It is
@@ -1164,16 +1186,9 @@ fit the field (an unsigned writer also rejects a negative `value`). An
 unsigned 64-bit *read* of a value above the `Int` (`i64`) range raises a
 catchable `overflow` — the same error class as v0.8 arithmetic overflow.
 
-```
-Bytes := import 'Bytes';
-
-pkt := Bytes.new(6);
-Bytes.write_u16_be(pkt, 0, 0xCAFE);   // magic
-Bytes.write_u32_be(pkt, 2, 1500);     // length
-Bytes.read_u16_be(pkt, 0)             // 51966
-```
-
 #### `BigInt` (v0.13)
+
+> Navigable reference: [`docs/stdlib/bigint.md`](docs/stdlib/bigint.md).
 
 `BigInt` is a value type as well as a module — an **arbitrary-precision
 integer**, the complement to the fixed-width `Int`. Where an `Int`
@@ -1227,39 +1242,16 @@ operators:
 Every module function that takes a number accepts an `Int` as well as a
 `BigInt`.
 
-```
-BigInt := import 'BigInt';
-
-fact := fn(n) {
-    r := BigInt.new(1);
-    for (i, 1..=n) { r = r * BigInt.new(i) };
-    r
-};
-fact(50)               // 30414093201713378043612608166064768844377641568960512000000000000
-BigInt.new(2) ^^ 128   // 340282366920938463463374607431768211456
-```
-
 #### `Net` (v0.15)
+
+> Navigable reference: [`docs/stdlib/net.md`](docs/stdlib/net.md).
 
 `Net` opens **network sockets** — a TCP listener and TCP streams, UDP
 datagram sockets, and TLS-encrypted client connections. A socket is a
 `Value` in its own right (`type(s)` is `'socket'`): like a channel or a
 task it is `Arc`-backed and **sendable**, so it crosses an actor
 boundary. That is the idiom for a server — `accept` a connection, then
-`spawn` a handler actor that captures the socket:
-
-```
-Net := import 'Net';
-
-listener := Net.listen('127.0.0.1', 8080);
-conn := Net.accept(listener);          // block for a client
-handler := spawn fn() {
-    N := import 'Net';                 // the socket crossed into the actor
-    request := N.read_line(conn);
-    N.write(conn, ...);
-    N.close(conn)
-};
-```
+`spawn` a handler actor that captures the socket.
 
 A socket's `==` is **identity** (handle equality, like a channel); a
 socket is not a `Map`/`Set` key and is not JSON-serializable.
@@ -1302,16 +1294,6 @@ actor.
 | `set_timeout` | `set_timeout(sock, ms) -> null`            | Bound reads/writes to `ms` ms; `ms <= 0` clears the timeout            |
 | `close`       | `close(sock) -> null`                      | Close the socket; idempotent, unblocks a reader stuck mid-`read` or an actor stuck in `accept` |
 
-```
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
-conn := Net.connect_tls('example.com', 443);
-Net.write(conn, Bytes.from_string('GET / HTTP/1.0\r\nHost: example.com\r\n\r\n'));
-status := Net.read_line(conn);        // 'HTTP/1.1 200 OK'
-Net.close(conn)
-```
-
 ### 13.3 Source-stdlib modules (v0.3)
 
 These ship as tigr `.tg` files embedded in the interpreter. `import`
@@ -1319,6 +1301,8 @@ returns an Object of functions; signatures are the same as any
 user-defined module.
 
 #### `Array`
+
+> Navigable reference: [`docs/stdlib/array.md`](docs/stdlib/array.md).
 
 `push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`,
 `clear`, `create`, `concat`, `map`, `filter`, `reduce`, `flatten`,
@@ -1348,6 +1332,8 @@ fresh arrays.
 
 #### `Iter` (v0.7)
 
+> Navigable reference: [`docs/stdlib/iter.md`](docs/stdlib/iter.md).
+
 Lazy, pull-based iterators. An iterator is an object `${next: fn()}`
 whose `next()` yields `${done: true}` or `${done: false, value}`.
 Adapters `from`, `count`, `repeat`; lazy combinators `map`, `filter`,
@@ -1359,6 +1345,8 @@ bounded by `take` (or a short-circuiting `find` / `nth`). Pure tigr —
 closures capture the source iterator; no VM support is required.
 
 #### `Object` (v0.6)
+
+> Navigable reference: [`docs/stdlib/object.md`](docs/stdlib/object.md).
 
 `keys`, `values`, `entries`, `from_entries`, `has`, `merge`, `map`,
 `filter`. `keys` / `values` / `entries` return arrays in insertion
@@ -1372,6 +1360,8 @@ a missing key from a present `null` value, which `obj[key]` cannot.
 copying the accumulator each step.
 
 #### `Map` (v0.9)
+
+> Navigable reference: [`docs/stdlib/map.md`](docs/stdlib/map.md).
 
 An arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`
 (string keys only), a `Map` key may be any **null / bool / int /
@@ -1388,15 +1378,9 @@ builds from an array of `[key, value]` pairs. `has` is O(1) and tells
 a missing key from a present `null` value. A `Map` is not
 JSON-serializable (`JSON.stringify` raises).
 
-```
-Map := import 'Map';
-m := Map.new();
-m[1] = 'one';      // int key
-m['1'] = 'string'; // distinct string key — no collision
-Map.has(m, 1)      // → true
-```
-
 #### `Set` (v0.9)
+
+> Navigable reference: [`docs/stdlib/set.md`](docs/stdlib/set.md).
 
 An insertion-ordered collection of unique values. Elements share
 `Map`'s key restriction (null / bool / int / string). `type(s)` is
@@ -1411,6 +1395,8 @@ fresh set, inputs untouched). `new(array)` builds a set from an array,
 collapsing duplicates. Like `Map`, a `Set` is not JSON-serializable.
 
 #### `String`
+
+> Navigable reference: [`docs/stdlib/string.md`](docs/stdlib/string.md).
 
 `split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
 `starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`,
@@ -1454,16 +1440,11 @@ on a non-integral float, an `s` on a non-string, or an unparsable spec
 all raise. `printf` placeholders are `%(SPEC)` — each consumes the next
 element of `args` and `%%` is a literal percent; too few or too many
 arguments both raise. (`%(...)`, not `{}`, because tigr interpolates
-`{}` in every string literal.) Example:
-
-```tigr
-String.format(1234567, ',d')                   // "1,234,567"
-String.format(3.14159, '.2f')                  // "3.14"
-String.format('hi', '^8')                      // "   hi   "
-String.printf('%(<8)%(>6.2f)', ['tea', 1.5])   // "tea       1.50"
-```
+`{}` in every string literal.)
 
 #### `Math`
+
+> Navigable reference: [`docs/stdlib/math.md`](docs/stdlib/math.md).
 
 Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`,
 `sin`, `cos`, `tan`, `pow`, `abs`, `sign`, `min`, `max`, `clamp`.
@@ -1474,6 +1455,8 @@ alongside pure-tigr helpers — this gives users a single point to
 shadow / extend without touching the interpreter.
 
 #### `Test` (v0.9)
+
+> Navigable reference: [`docs/stdlib/test.md`](docs/stdlib/test.md).
 
 A small test framework, itself written in tigr. Assertions —
 `assert(cond, msg?)`, `assert_eq(actual, expected, msg?)`,
@@ -1491,17 +1474,6 @@ line per case and a tally, then returning a result object
 `${name, passed, failed, total, failures}` (`failures` being an array
 of `${name, error}`).
 
-```
-Test := import 'Test';
-
-Test.suite('arithmetic', [
-    Test.case('adds', fn() { Test.assert_eq(1 + 1, 2) }),
-    Test.case('div zero raises', fn() {
-        Test.assert_raises(fn() { 1 / 0 }, 'div_by_zero')
-    }),
-])
-```
-
 The `tigr test [path]` CLI subcommand discovers test files —
 `*_test.tg` anywhere, plus every `.tg` file under a `tests/`
 directory — runs each, and sums the `passed`/`failed` fields of the
@@ -1510,6 +1482,8 @@ object, or an array of them). A file that raises an uncaught error
 counts as a failure. The process exits non-zero if any test failed.
 
 #### `Url` (v0.15)
+
+> Navigable reference: [`docs/stdlib/url.md`](docs/stdlib/url.md).
 
 URL parsing and the percent-codec, layered on `String`/`Bytes`.
 `parse(url)` splits an absolute URL into
@@ -1525,6 +1499,8 @@ duplicate key keeps its last value). See Appendix N.
 
 #### `Http` (v0.15)
 
+> Navigable reference: [`docs/stdlib/http.md`](docs/stdlib/http.md).
+
 An HTTP/1.1 client and server helper over `Net`. The client —
 `request(opts)` plus the `get`/`post`/`put`/`delete`/`head`/`patch`
 wrappers — returns `${status, status_text, headers, body}`, where
@@ -1536,6 +1512,8 @@ handler)` — drive an accept loop. v1 has no keep-alive. See
 Appendix N.
 
 ### 13.4 `JSON` (v0.4)
+
+> Navigable reference: [`docs/stdlib/json.md`](docs/stdlib/json.md).
 
 ```
 JSON := import 'JSON';
@@ -2309,3 +2287,23 @@ Additive changes:
     runs until its `listener` is closed — `close(listener)` from any
     actor stops the accept loop and `serve` returns cleanly, so a
     `serve` actor can be `join`ed after a deliberate shutdown.
+
+## Appendix O — Changes in v0.17 (raw double-quoted strings)
+
+58. **Non-interpolating double-quoted string literal** (§2.6, §8.2).
+    `"…"` is a second string literal alongside `'…'`. It is fully
+    raw: no `{expr}` interpolation and no backslash escapes — every
+    character between the quotes is taken verbatim, so `{`, `}`, and
+    `\` need no escaping. The only consequence is that a `"` cannot
+    appear inside a `"…"` string; use `'…'` for text containing a
+    double quote.
+
+    Both forms produce the same `String` type with identical UTF-8
+    semantics, operators, and indexing — they differ on exactly one
+    axis, whether the lexer interpolates. The change is **lexer-only**:
+    a new string-scanning branch emits the same plain `Str` constant,
+    so the parser, compiler, and VM are unchanged. This resolves the
+    long-standing §8.2 open question about a non-interpolating string
+    form. Intended use: JSON and code templates, glob/format specs,
+    and Windows-style paths — text that would otherwise need a `\{`
+    on every brace.

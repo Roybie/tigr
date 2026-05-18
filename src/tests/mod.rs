@@ -1357,6 +1357,54 @@ fn phase6_str_of_number_no_trailing_dot_on_int() {
     }
 }
 
+// ---- v0.17 item 29: non-interpolating raw double-quoted strings ----
+
+#[test]
+fn v17_raw_string_no_interpolation() {
+    // `{expr}` is not interpolated inside a "…" string.
+    let src = "name := 'x'; \"hello {name} world\"";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "hello {name} world"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v17_raw_string_no_backslash_escapes() {
+    // Backslash is an ordinary character — fully raw, no escapes.
+    let src = "\"back\\slash and \\n literal\"";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "back\\slash and \\n literal"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v17_raw_string_same_type_and_ops() {
+    // Same String type: concatenation, length, indexing all work,
+    // and a raw string mixes freely with a single-quoted one.
+    let src = "\"a\" + 'b' + \"c\"";
+    match run(src) {
+        Value::Str(s) => assert_eq!(&*s, "abc"),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v17_raw_string_empty() {
+    let src = "#\"\"";
+    match run(src) {
+        Value::Int(n) => assert_eq!(n, 0),
+        v => panic!("got {v:?}"),
+    }
+}
+
+#[test]
+fn v17_raw_string_unterminated_is_lex_error() {
+    let msg = run_err("\"no closing quote");
+    assert!(msg.contains("lex"), "got {msg}");
+}
+
 #[test]
 fn phase5_pe004() {
     // Largest palindrome product of two 3-digit numbers — Project

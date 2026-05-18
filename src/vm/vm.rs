@@ -27,7 +27,8 @@ use num_traits::{Pow, Zero};
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::gc::{
-    self, ArrayKind, ClosureKind, GcRef, Marker, ObjectKind, Trace, UpvalueKind,
+    self, ArrayKind, ClosureKind, GcRef, IterKind, Marker, ObjectKind, Trace,
+    UpvalueKind,
 };
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceMap;
@@ -60,6 +61,34 @@ enum FrameKind {
     /// `try_catch` walker treats this frame as a wall so an uncaught
     /// raise from a single line doesn't tear down the whole session.
     Repl,
+    /// A re-entrant call driving an iterator object's `next()` method,
+    /// pushed by `IterNext`/`IterNext2` for `${ next: fn() }` objects.
+    /// On `Return` the VM interprets the returned `${ done, value }`
+    /// object here instead of handing it to a parent expression: it
+    /// updates the `IterObject` state and either pushes the next value
+    /// (with a synthetic counter when `two_var`) or advances the
+    /// resumed frame's `ip` past the loop body by `dist`. Driving the
+    /// pull as an ordinary frame keeps the dispatch loop flat — no
+    /// nested `run_until` — which is what lets execution be suspended.
+    IterPull {
+        iter: GcRef<IterKind>,
+        dist: u16,
+        two_var: bool,
+        /// Call-site line of the `IterNext`, for faithful error
+        /// reporting from `parse_iter_result`.
+        line: u32,
+    },
+    /// A re-entrant call draining an iterator object spread over an
+    /// array (`[...it]`, `f(...it)`), pushed by `ArrayExtend`. On
+    /// `Return` the VM appends the pulled `value` to `target` and
+    /// re-pushes a `SpreadPull` frame for the next element, or — on
+    /// `done` — drops the iterator-object temp root and stops. Like
+    /// `IterPull`, this keeps the spread's drain loop off the Rust
+    /// stack so no nested `run_until` is held during a pull.
+    SpreadPull {
+        target: GcRef<ArrayKind>,
+        line: u32,
+    },
 }
 
 /// Snapshot of state captured at `PushTry`. On a Raise (or runtime
@@ -537,13 +566,77 @@ impl Vm {
                     let frame = self.frames.pop().unwrap();
                     self.close_upvalues(frame.base_slot);
                     self.stack.truncate(frame.base_slot);
-                    // If this frame was evaluating an import, record
-                    // the result in the cache (spec §12 — v0.3 adds
-                    // caching) and clear the in-flight marker so a
-                    // sibling import of the same path is allowed.
-                    if let FrameKind::Import(path) = frame.kind {
-                        self.module_cache.insert(path.clone(), result.clone());
-                        self.in_flight.remove(&path);
+                    // `next` closure of a pull frame — reused to re-push
+                    // the next `SpreadPull`. `Copy`, so reading it does
+                    // not disturb the `match frame.kind` move below.
+                    let pull_closure = frame.closure;
+                    match frame.kind {
+                        // If this frame was evaluating an import, record
+                        // the result in the cache (spec §12 — v0.3 adds
+                        // caching) and clear the in-flight marker so a
+                        // sibling import of the same path is allowed.
+                        FrameKind::Import(path) => {
+                            self.module_cache.insert(path.clone(), result.clone());
+                            self.in_flight.remove(&path);
+                        }
+                        // An iterator-object `next()` call just returned.
+                        // Interpret its `${ done, value }` result here
+                        // rather than pushing it for a parent expression.
+                        FrameKind::IterPull { iter, dist, two_var, line: site } => {
+                            match parse_iter_result(result, site)? {
+                                Some(value) => {
+                                    let counter = {
+                                        let mut st = iter.borrow_mut();
+                                        if let IterState::IterObject {
+                                            index, ..
+                                        } = &mut *st
+                                        {
+                                            let c = *index;
+                                            *index += 1;
+                                            c
+                                        } else {
+                                            0
+                                        }
+                                    };
+                                    if two_var {
+                                        self.stack.push(Value::Int(counter));
+                                    }
+                                    self.stack.push(value);
+                                }
+                                None => {
+                                    if let IterState::IterObject { done, .. } =
+                                        &mut *iter.borrow_mut()
+                                    {
+                                        *done = true;
+                                    }
+                                    self.frames.last_mut().unwrap().ip +=
+                                        dist as usize;
+                                }
+                            }
+                            continue;
+                        }
+                        // A spread pull just returned: append the value
+                        // and re-pull, or stop and drop the temp root.
+                        FrameKind::SpreadPull { target, line: site } => {
+                            match parse_iter_result(result, site)? {
+                                Some(value) => {
+                                    target.borrow_mut().push(value);
+                                    self.push_pull_frame(
+                                        pull_closure,
+                                        FrameKind::SpreadPull { target, line: site },
+                                        site,
+                                    )?;
+                                }
+                                None => {
+                                    // drained — drop the iterator-object
+                                    // temp root, leaving the target array
+                                    // as the `ArrayExtend` result.
+                                    self.stack.pop();
+                                }
+                            }
+                            continue;
+                        }
+                        FrameKind::Function | FrameKind::Repl => {}
                     }
                     if self.frames.len() == floor {
                         return Ok(result);
@@ -962,27 +1055,55 @@ impl Vm {
                         },
                         Some(None) => ip += dist as usize,
                         Some(Some(obj)) => {
-                            self.frames.last_mut().unwrap().ip = ip;
-                            match self.iter_object_pull(obj, line)? {
-                                Some(value) => {
-                                    if let IterState::IterObject { index, .. } =
-                                        &mut *it.borrow_mut()
-                                    {
-                                        *index += 1;
+                            // Drive the iterator object's `next()` as an
+                            // ordinary call frame (`FrameKind::IterPull`)
+                            // so the dispatch loop stays flat — no nested
+                            // `run_until`. A `NativeFn` `next` cannot
+                            // re-enter the interpreter, so it runs inline.
+                            match iter_next_fn(obj, line)? {
+                                Value::NativeFn(nf) => {
+                                    let r = self.call_value(
+                                        Value::NativeFn(nf), Vec::new(), line,
+                                    )?;
+                                    match parse_iter_result(r, line)? {
+                                        Some(value) => {
+                                            if let IterState::IterObject {
+                                                index, ..
+                                            } = &mut *it.borrow_mut()
+                                            {
+                                                *index += 1;
+                                            }
+                                            self.stack.push(value);
+                                        }
+                                        None => {
+                                            if let IterState::IterObject {
+                                                done, ..
+                                            } = &mut *it.borrow_mut()
+                                            {
+                                                *done = true;
+                                            }
+                                            ip += dist as usize;
+                                        }
                                     }
-                                    self.stack.push(value);
                                 }
-                                None => {
-                                    if let IterState::IterObject { done, .. } =
-                                        &mut *it.borrow_mut()
-                                    {
-                                        *done = true;
-                                    }
-                                    ip += dist as usize;
+                                Value::Function(c) => {
+                                    self.frames.last_mut().unwrap().ip = ip;
+                                    self.push_pull_frame(
+                                        c,
+                                        FrameKind::IterPull {
+                                            iter: *it,
+                                            dist,
+                                            two_var: false,
+                                            line,
+                                        },
+                                        line,
+                                    )?;
+                                    continue;
                                 }
+                                _ => unreachable!(
+                                    "iter_next_fn yields only callables"
+                                ),
                             }
-                            self.frames.last_mut().unwrap().ip = ip;
-                            continue;
                         }
                     }
                 }
@@ -1014,36 +1135,61 @@ impl Vm {
                         },
                         Some(None) => ip += dist as usize,
                         Some(Some(obj)) => {
-                            self.frames.last_mut().unwrap().ip = ip;
-                            match self.iter_object_pull(obj, line)? {
-                                Some(value) => {
-                                    // Synthetic counter (0, 1, 2, ...).
-                                    let counter = {
-                                        let mut st = it.borrow_mut();
-                                        if let IterState::IterObject { index, .. } =
-                                            &mut *st
-                                        {
-                                            let c = *index;
-                                            *index += 1;
-                                            c
-                                        } else {
-                                            0
+                            // Two-var form: same as `IterNext` above, but
+                            // a successful pull also pushes the synthetic
+                            // counter. See `FrameKind::IterPull`.
+                            match iter_next_fn(obj, line)? {
+                                Value::NativeFn(nf) => {
+                                    let r = self.call_value(
+                                        Value::NativeFn(nf), Vec::new(), line,
+                                    )?;
+                                    match parse_iter_result(r, line)? {
+                                        Some(value) => {
+                                            let counter = {
+                                                let mut st = it.borrow_mut();
+                                                if let IterState::IterObject {
+                                                    index, ..
+                                                } = &mut *st
+                                                {
+                                                    let c = *index;
+                                                    *index += 1;
+                                                    c
+                                                } else {
+                                                    0
+                                                }
+                                            };
+                                            self.stack.push(Value::Int(counter));
+                                            self.stack.push(value);
                                         }
-                                    };
-                                    self.stack.push(Value::Int(counter));
-                                    self.stack.push(value);
-                                }
-                                None => {
-                                    if let IterState::IterObject { done, .. } =
-                                        &mut *it.borrow_mut()
-                                    {
-                                        *done = true;
+                                        None => {
+                                            if let IterState::IterObject {
+                                                done, ..
+                                            } = &mut *it.borrow_mut()
+                                            {
+                                                *done = true;
+                                            }
+                                            ip += dist as usize;
+                                        }
                                     }
-                                    ip += dist as usize;
                                 }
+                                Value::Function(c) => {
+                                    self.frames.last_mut().unwrap().ip = ip;
+                                    self.push_pull_frame(
+                                        c,
+                                        FrameKind::IterPull {
+                                            iter: *it,
+                                            dist,
+                                            two_var: true,
+                                            line,
+                                        },
+                                        line,
+                                    )?;
+                                    continue;
+                                }
+                                _ => unreachable!(
+                                    "iter_next_fn yields only callables"
+                                ),
                             }
-                            self.frames.last_mut().unwrap().ip = ip;
-                            continue;
                         }
                     }
                 }
@@ -1108,25 +1254,51 @@ impl Vm {
                         );
                         if is_iter {
                             let o = *o;
-                            self.frames.last_mut().unwrap().ip = ip;
-                            // `iter_object_pull` re-enters the VM, which
-                            // may collect. `src` is already off the
-                            // stack — push it back as a temporary root
-                            // so the iterator object survives the loop.
-                            let root = self.stack.len();
-                            self.stack.push(src);
-                            loop {
-                                match self.iter_object_pull(o, line) {
-                                    Ok(Some(v)) => target_arr.borrow_mut().push(v),
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        self.stack.truncate(root);
-                                        return Err(e);
+                            match iter_next_fn(o, line)? {
+                                // Native `next` cannot re-enter the
+                                // interpreter — drain it inline. `src` is
+                                // pushed back as a temporary GC root so
+                                // the iterator object survives the loop.
+                                Value::NativeFn(_) => {
+                                    let root = self.stack.len();
+                                    self.stack.push(src);
+                                    loop {
+                                        let nf = iter_next_fn(o, line)?;
+                                        let r = self.call_value(
+                                            nf, Vec::new(), line,
+                                        )?;
+                                        match parse_iter_result(r, line)? {
+                                            Some(v) => {
+                                                target_arr.borrow_mut().push(v)
+                                            }
+                                            None => break,
+                                        }
                                     }
+                                    self.stack.truncate(root);
+                                    continue;
                                 }
+                                // Closure `next` — drive the drain on the
+                                // frame stack via `FrameKind::SpreadPull`,
+                                // looped by the `Return` handler. `src`
+                                // stays on the stack as a temp root
+                                // beneath the pull frame.
+                                Value::Function(c) => {
+                                    self.frames.last_mut().unwrap().ip = ip;
+                                    self.stack.push(src);
+                                    self.push_pull_frame(
+                                        c,
+                                        FrameKind::SpreadPull {
+                                            target: target_arr,
+                                            line,
+                                        },
+                                        line,
+                                    )?;
+                                    continue;
+                                }
+                                _ => unreachable!(
+                                    "iter_next_fn yields only callables"
+                                ),
                             }
-                            self.stack.truncate(root);
-                            continue;
                         }
                     }
                     extend_array(target_arr, src, line)?;
@@ -1641,57 +1813,46 @@ impl Vm {
         }
     }
 
-    /// Pull one element from an iterator object (`${ next: fn() }`).
-    /// `Ok(None)` means the iterator reported `done: true`;
-    /// `Ok(Some(v))` is the next `value`. Used by `for` loops and
-    /// spread over iterator objects.
-    fn iter_object_pull(
+    /// Push a re-entrant call frame that drives an iterator object's
+    /// tigr-closure `next()` method (`kind` is `IterPull` or
+    /// `SpreadPull`). `next()` takes no arguments; the frame's stack
+    /// layout mirrors `Call`'s (callee slot followed by arity-adjusted
+    /// args). The caller must have already committed the current
+    /// frame's `ip` and must `continue` the dispatch loop afterwards.
+    /// On `Return` the loop interprets the `${ done, value }` result —
+    /// see `FrameKind`.
+    fn push_pull_frame(
         &mut self,
-        obj: GcRef<ObjectKind>,
+        next_closure: GcRef<ClosureKind>,
+        kind: FrameKind,
         line: u32,
-    ) -> Result<Option<Value>, RuntimeError> {
-        let next_fn = obj.borrow().get("next").cloned();
-        let next_fn = match next_fn {
-            Some(v @ (Value::Function(_) | Value::NativeFn(_))) => v,
-            _ => {
-                return Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(
-                        "iterator object's `next` field is not callable".into(),
-                    ),
-                    line,
-                ))
-            }
-        };
-        let result = self.call_value(next_fn, Vec::new(), line)?;
-        let result_obj = match result {
-            Value::Object(o) => o,
-            other => {
-                return Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(format!(
-                        "iterator next() must return an object, got {}",
-                        other.type_name()
-                    )),
-                    line,
-                ))
-            }
-        };
-        let ro = result_obj.borrow();
-        let done = match ro.get("done") {
-            Some(d) => d.is_truthy(),
-            None => {
-                return Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(
-                        "iterator next() result is missing a `done` field".into(),
-                    ),
-                    line,
-                ))
-            }
-        };
-        if done {
-            Ok(None)
-        } else {
-            Ok(Some(ro.get("value").cloned().unwrap_or(Value::Null)))
+    ) -> Result<(), RuntimeError> {
+        if self.frames.len() >= self.max_call_depth {
+            return Err(stack_overflow_err(line));
         }
+        let (arity, has_rest) = {
+            let cf = next_closure.borrow();
+            (cf.function.arity, cf.function.has_rest)
+        };
+        let base_slot = self.stack.len();
+        self.stack.push(Value::Function(next_closure));
+        let args_start = self.stack.len();
+        // `next()` is invoked with zero arguments.
+        if has_rest {
+            self.pack_rest(args_start, 0, arity);
+        } else {
+            for _ in 0..arity {
+                self.stack.push(Value::Null);
+            }
+        }
+        self.frames.push(CallFrame {
+            closure: next_closure,
+            ip: 0,
+            base_slot,
+            try_frames: Vec::new(),
+            kind,
+        });
+        Ok(())
     }
 
     fn capture_upvalue(&mut self, stack_slot: usize) -> GcRef<UpvalueKind> {
@@ -1766,6 +1927,54 @@ impl Vm {
 
 fn underflow(line: u32) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::StackUnderflow, line)
+}
+
+/// Fetch and validate the `next` field of an iterator object
+/// (`${ next: fn() }`); it must be a callable.
+fn iter_next_fn(obj: GcRef<ObjectKind>, line: u32) -> Result<Value, RuntimeError> {
+    match obj.borrow().get("next").cloned() {
+        Some(v @ (Value::Function(_) | Value::NativeFn(_))) => Ok(v),
+        _ => Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(
+                "iterator object's `next` field is not callable".into(),
+            ),
+            line,
+        )),
+    }
+}
+
+/// Interpret an iterator `next()` result object: `Ok(None)` for
+/// `done: true`, `Ok(Some(value))` otherwise.
+fn parse_iter_result(result: Value, line: u32) -> Result<Option<Value>, RuntimeError> {
+    let result_obj = match result {
+        Value::Object(o) => o,
+        other => {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(format!(
+                    "iterator next() must return an object, got {}",
+                    other.type_name()
+                )),
+                line,
+            ))
+        }
+    };
+    let ro = result_obj.borrow();
+    let done = match ro.get("done") {
+        Some(d) => d.is_truthy(),
+        None => {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(
+                    "iterator next() result is missing a `done` field".into(),
+                ),
+                line,
+            ))
+        }
+    };
+    if done {
+        Ok(None)
+    } else {
+        Ok(Some(ro.get("value").cloned().unwrap_or(Value::Null)))
+    }
 }
 
 /// Worker-thread entry point for `spawn`. Builds a fresh `Vm` (its own

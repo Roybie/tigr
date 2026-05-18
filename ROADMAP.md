@@ -605,7 +605,7 @@ a surface-syntax addition, a navigable doc set, and a real install
 story. None changes runtime semantics; item 29 is the only one that
 touches surface syntax, and it must land before the 1.0 spec freeze.
 
-### 29. Non-interpolating double-quoted strings  *(language — additive)*
+### 29. Non-interpolating double-quoted strings  *✅ done  (language — additive)*
 
 Tigr has exactly one string form — single-quoted, always interpolated
 (`LANGUAGE.md` §8.2). Any `{` begins an interpolation, so a string that

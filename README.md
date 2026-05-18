@@ -75,6 +75,9 @@ greeting := 'Hello, ' + (if loud { 'WORLD' } else { 'world' }) + '!';
 | `BigInt` | `BigInt.new('123...890')`, `BigInt.new(2) ^^ 128` | Arbitrary-precision integer; immutable value type |
 | `Range`  | `0..10`, `0..=10`, `10..0:-1`                 | First-class lazy iterable                |
 | `Function` | `fn(x) { x * 2 }`                           | Closures over lexical environment        |
+| `Channel` | `Channel.new()`                              | Message-passing conduit between actors   |
+| `Task`   | `spawn fn() { ... }`                          | Handle to a spawned actor's result       |
+| `Socket` | `Net.connect('host', 80)`                     | TCP / UDP / TLS network socket, sendable across actors |
 
 Underscores are allowed only between digits — `_5`, `5_`, `5__5`, and `0x_FF` are all rejected. A trailing `5.` lexes as `Int(5)` followed by `Dot` so `5.method` style member access still works.
 
@@ -434,7 +437,7 @@ result := try risky() catch (e) {
 raise ${kind: 'db_down', detail: 'connection lost'}
 ```
 
-`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `invalid_key_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`, `cycle`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings — except `JSON.stringify` of a circular structure, which raises a structured `cycle` error. An uncaught raised value is rendered via `str()` in the error report.
+`e.kind` is a stable snake-case string — one of `div_by_zero`, `type_mismatch`, `index_out_of_bounds`, `arity_mismatch`, `not_callable`, `invalid_index_type`, `invalid_key_type`, `immutable_target`, `import_failed`, `overflow`, `stack_overflow`, `stack_underflow`, `cycle`. `e.message` is the human-readable text an uncaught error would print, and `e.line` is the source line. Native stdlib modules (`Math`, `IO`, `JSON`, ...) raise plain **string** messages, so `catch` binds those as strings — except `JSON.stringify` of a circular structure, which raises a structured `cycle` error, and the `Net` module, whose failures are structured `${kind, message}` objects. An uncaught raised value is rendered via `str()` in the error report.
 
 The body of `try` binds tighter than `||` so `try f(x) || default` is the natural fallback idiom; wrap in parens if you want the `||` inside the try body.
 
@@ -617,7 +620,7 @@ local := import './lib/util';  // path → user file
 
 There are two flavors:
 
-- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test` are tigr-source modules; `IO`, `Os`, `Time` are native. Unknown names raise.
+- **Bare names** (no `/`, `\`, or `.`): resolved against the bundled stdlib and native-module registry. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test`, `Channel`, `Url`, `Http` are tigr-source modules; `IO`, `Os`, `Time`, `Net` are native. Unknown names raise.
 - **Path-shaped**: resolved relative to the importing file. The `.tg` extension is added automatically if absent.
 
 A user module is typically just an object literal:
@@ -670,7 +673,7 @@ The radix is an `Int` in `2..=36` (lowercase digits). A non-`Int` value, an out-
 
 ## Standard library reference
 
-Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and `Test` are tigr-source modules; `IO`, `Bytes`, `BigInt`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and `Random` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`.
+Bundled modules, imported with `import 'Name'`. Each entry below gives its full signature, return value, and whether it raises. `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test`, `Channel`, `Url`, and `Http` are tigr-source modules; `IO`, `Bytes`, `BigInt`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, `Random`, `Task`, and `Net` are native (Rust-backed). All `raise`d errors are catchable with `try` / `catch`. See `LANGUAGE.md` §13.3 for the `Url` / `Http` APIs.
 
 ### `Array`
 
@@ -1199,6 +1202,71 @@ roll := fn() { Random.int(1, 6) };
 [roll(), roll(), Random.choice(['a', 'b', 'c']), Random.range(0..=8:2)]
 ```
 
+### `Channel`
+
+A tigr-source module (backed by native `_NativeChannel`) exposing the `Channel` type — the message-passing conduit between actors (see [Concurrency](#concurrency)). It is the one reference type that crosses actor threads: a sent value is **deep-copied** into the receiving actor's heap. Channels are bidirectional — any holder may both send and receive. `recv` / `try_recv` return an object to inspect or `match`. `type(ch)` is `'channel'`. Not JSON-serializable.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `new(capacity?)` | `Channel` | Unbounded; or, with a positive `Int` `capacity`, bounded — `send` then blocks (backpressure) while the buffer is full |
+| `send(ch, value)` | `null` | Deep-copy `value` into the channel. Blocks on a full bounded channel; raises `channel_closed` if the channel is closed, or `not_sendable` / `cycle` if `value` cannot cross the heap boundary |
+| `recv(ch)` | `Object` | Block for the next message: `${value: v}`, or `${closed: true}` once the channel is closed and drained |
+| `try_recv(ch)` | `Object` | Never blocks: `${value: v}`, `${closed: true}`, or `${empty: true}` if nothing is ready |
+| `close(ch)` | `null` | Close the channel, waking every blocked sender and receiver |
+
+```
+Channel := import 'Channel';
+ch := Channel.new();
+Channel.send(ch, 'ping');
+Channel.recv(ch).value          // 'ping'
+```
+
+### `Task`
+
+A native module for joining spawned actors. `spawn` (a keyword — see [Concurrency](#concurrency)) runs a function as an actor and evaluates to a `Task`; `Task.join` is the only operation on one. `type(t)` is `'task'`. Not JSON-serializable.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `join(task)` | the actor's value | Block until the actor finishes, then return its result deep-copied into the caller's heap. If the actor raised, re-raise it here — a `raise`d value verbatim, or a `${kind, message, trace, worker}` object for a built-in error. Joining a task a second time raises |
+
+```
+Task := import 'Task';
+t := spawn fn() { 6 * 7 };
+Task.join(t)                    // 42
+```
+
+### `Net`
+
+A native module for **network sockets** — a TCP listener and streams, UDP datagram sockets, and TLS-encrypted client connections. A socket is a first-class value (`type(s)` is `'socket'`): `Arc`-backed and **sendable** like a channel, so an `accept`ed connection can cross into a `spawn`ed per-connection handler actor. `read(sock, n)` is the low-level reader (an empty `Bytes` means end-of-stream); `read_exact` / `read_line` / `read_until` / `read_all` are framed helpers over an internal per-socket buffer. Failures raise a catchable structured `${kind, message}` error — `kind` one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`, `addr_in_use`, `decode`, `io`. `set_timeout` bounds blocking reads/writes; `close` is idempotent and unblocks a stuck reader. `connect_tls` verifies the server certificate against the host OS trust store.
+
+| Function | Returns | Behavior |
+|---|---|---|
+| `listen(host, port)` | `socket` | TCP listener bound to `host:port`; port `0` lets the OS assign one |
+| `accept(listener)` | `socket` | Block for the next inbound connection |
+| `connect(host, port)` | `socket` | Open a TCP stream to `host:port` |
+| `connect_tls(host, port)` | `socket` | Open a TLS stream; `host` is verified against the server certificate |
+| `bind(host, port)` | `socket` | UDP datagram socket bound to `host:port` |
+| `send_to(sock, bytes, host, port)` | `Int` | Send one UDP datagram; returns the byte count sent |
+| `recv_from(sock, n)` | `Object` | Receive one datagram (≤ `n` bytes) as `${data, host, port}` |
+| `read(sock, n)` | `Bytes` | Read up to `n` bytes; an empty `Bytes` is end-of-stream |
+| `write(sock, bytes)` | `Int` | Write every byte; returns the count written |
+| `read_exact(sock, n)` | `Bytes` | Read exactly `n` bytes; raises `eof` if the stream ends first |
+| `read_line(sock)` | `String` | One `\n`-terminated line, trailing `\r\n`/`\n` stripped; `null` at end-of-stream |
+| `read_until(sock, byte)` | `Bytes` | Read up to and including `byte`; `null` at end-of-stream |
+| `read_all(sock)` | `Bytes` | Every remaining byte to end-of-stream |
+| `local_addr(sock)` | `Object` | The socket's own address as `${host, port}` |
+| `peer_addr(sock)` | `Object` | The connected peer's address as `${host, port}` |
+| `set_timeout(sock, ms)` | `null` | Bound reads/writes to `ms` ms; `ms <= 0` clears the timeout |
+| `close(sock)` | `null` | Close the socket; idempotent, unblocks a stuck reader |
+
+```
+Net   := import 'Net';
+Bytes := import 'Bytes';
+conn := Net.connect_tls('example.com', 443);
+Net.write(conn, Bytes.from_string('GET / HTTP/1.0\r\nHost: example.com\r\n\r\n'));
+Net.read_line(conn)             // 'HTTP/1.1 200 OK'
+```
+
 ---
 
 ## Error rendering
@@ -1385,9 +1453,66 @@ need not trace them.
 
 ---
 
+## Concurrency
+
+tigr runs concurrent work as **actors** — each `spawn` starts a function
+on its own OS thread with its own heap. Actors share no mutable state;
+they communicate only through channels, which deep-copy values across
+the heap boundary. This is a race-free model by construction, and it
+fits tigr's per-thread garbage collector with no changes to it.
+
+```
+Task := import 'Task';
+
+t := spawn fn() { 21 * 2 };      // runs on a new actor; returns a Task
+print(Task.join(t));            // 42 — blocks for the actor's result
+```
+
+A `spawn`ed function is copied across the boundary, so it may capture
+only **sendable** values — primitives, `String`, `Bytes`, `Range`,
+`BigInt`, the collections, channels, tasks, and functions whose own
+captures are sendable. Capturing an iterator or native function raises a
+catchable `not_sendable`. An actor's uncaught error surfaces at `join`.
+
+**Channels** carry messages between actors:
+
+```
+Channel := import 'Channel';
+ch := Channel.new();                       // Channel.new(n) bounds it at n
+spawn fn() { C := import 'Channel'; C.send(ch, 'hi') };
+print(Channel.recv(ch).value);             // 'hi'
+```
+
+`recv` yields `${value: v}` or `${closed: true}`; `send` to a closed
+channel raises `channel_closed`.
+
+**`select`** waits on whichever channel is ready first; an `else` arm
+makes it non-blocking:
+
+```
+result := select {
+    job  := jobs    => process(job),
+    stop := control => 'shutting down',
+    else            => 'idle'
+};
+```
+
+**`parallel[]`** mirrors `for[]` but runs each iteration as its own
+actor and collects the results in input order:
+
+```
+squares := parallel[] (n, 1..=8) { n * n };   // [1, 4, 9, 16, 25, 36, 49, 64]
+```
+
+The first body to raise aborts the block. Runnable demos live in
+[`examples/`](examples/): `spawn`, `channels`, `select`, `parallel`,
+`pipeline`, and `worker_pool`.
+
+---
+
 ## Status
 
-**tigr is feature-complete.** 542 tests pass. It runs on a bytecode VM with:
+**tigr is feature-complete.** 631 tests pass. It runs on a bytecode VM with:
 
 - closures with Lox-style upvalues, first-class lazy ranges, destructuring patterns, pipe `|>`, spread `...`, and string interpolation;
 - `try` / `catch` / `raise` with structured errors — `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object;
@@ -1395,8 +1520,9 @@ need not trace them.
 - a `match` expression with refutable patterns, bitwise operators, and extended number literals (`0xFF` / `1e6` / `.5` / `_`);
 - lazy `Iter` iterators (pipelines that never materialize intermediate arrays), in-place array growth, and `for` / spread consuming iterator objects directly;
 - integer-overflow checks, tail-call optimization, and bounded recursion;
+- **concurrency** — OS-thread actors (`spawn` / `Task.join`), message-passing `Channel`s, a `select` block, and the structured `parallel[]` fan-out; actors share no mutable state, so the model is race-free by construction;
 - a tracing mark-sweep **garbage collector** — the mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a collector over a per-thread heap, so reference cycles are reclaimed rather than leaked. Collection is automatic, running at VM safepoints once the heap crosses a size threshold; the `gc()` built-in exposes the collector's counters;
-- a standard library spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, and a `Test` framework + `tigr test` runner (all written in tigr itself), plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, and seedable `Random` modules.
+- a standard library spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Channel`, and a `Test` framework + `tigr test` runner (all written in tigr itself), plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, `Bytes`, `BigInt`, `Task`, `Net` (TCP/UDP/TLS sockets), and seedable `Random` modules.
 
 See [`LANGUAGE.md`](LANGUAGE.md) for the authoritative spec. The v0.1 tree-walking interpreter source lives under `src/v01/` for reference; it's not currently wired into the build.
 

@@ -1239,6 +1239,79 @@ fact(50)               // 304140932017133780436126081660647688443776415689605120
 BigInt.new(2) ^^ 128   // 340282366920938463463374607431768211456
 ```
 
+#### `Net` (v0.15)
+
+`Net` opens **network sockets** — a TCP listener and TCP streams, UDP
+datagram sockets, and TLS-encrypted client connections. A socket is a
+`Value` in its own right (`type(s)` is `'socket'`): like a channel or a
+task it is `Arc`-backed and **sendable**, so it crosses an actor
+boundary. That is the idiom for a server — `accept` a connection, then
+`spawn` a handler actor that captures the socket:
+
+```
+Net := import 'Net';
+
+listener := Net.listen('127.0.0.1', 8080);
+conn := Net.accept(listener);          // block for a client
+handler := spawn fn() {
+    N := import 'Net';                 // the socket crossed into the actor
+    request := N.read_line(conn);
+    N.write(conn, ...);
+    N.close(conn)
+};
+```
+
+A socket's `==` is **identity** (handle equality, like a channel); a
+socket is not a `Map`/`Set` key and is not JSON-serializable.
+
+Reads come in two layers. The low-level `read(sock, n)` returns up to
+`n` bytes as a `Bytes`; an **empty `Bytes` means end-of-stream**. The
+helpers `read_exact` / `read_line` / `read_until` / `read_all` build
+framed reads on top of it — the socket carries an internal buffer, so a
+helper that over-reads keeps the surplus for the next call. `read_line`
+and `read_until` return `null` at end-of-stream.
+
+A failed operation raises a catchable **structured error**
+`${kind, message}`, so `catch` code can dispatch on `e.kind`. `kind` is
+one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`,
+`addr_in_use`, `decode`, or `io`. By default a read or write blocks
+indefinitely; `set_timeout(sock, ms)` bounds them, and a timed-out
+operation raises `timeout`. `close` is idempotent and unblocks an actor
+stuck mid-`read` on the same socket — or stuck in `accept` on a
+listener, which then raises `closed`. `select` is *not* extended to
+sockets — to multiplex, bridge a socket to a channel with a reader
+actor.
+
+| Entry         | Signature                                  | Behavior                                                              |
+|---------------|--------------------------------------------|-----------------------------------------------------------------------|
+| `listen`      | `listen(host, port) -> socket`             | A TCP listener bound to `host:port`; port `0` lets the OS assign one  |
+| `accept`      | `accept(listener) -> socket`               | Block for the next inbound connection                                 |
+| `connect`     | `connect(host, port) -> socket`            | Open a TCP stream to `host:port`                                       |
+| `connect_tls` | `connect_tls(host, port) -> socket`        | Open a TLS stream; `host` is verified against the server certificate  |
+| `bind`        | `bind(host, port) -> socket`               | A UDP datagram socket bound to `host:port`                             |
+| `send_to`     | `send_to(sock, bytes, host, port) -> Int`  | Send one UDP datagram; returns the byte count sent                     |
+| `recv_from`   | `recv_from(sock, n) -> Object`             | Receive one datagram (≤ `n` bytes) as `${data: Bytes, host, port}`     |
+| `read`        | `read(sock, n) -> Bytes`                   | Read up to `n` bytes; an empty `Bytes` is end-of-stream                |
+| `write`       | `write(sock, bytes) -> Int`                | Write every byte; returns the count written                           |
+| `read_exact`  | `read_exact(sock, n) -> Bytes`             | Read exactly `n` bytes; raises `eof` if the stream ends first          |
+| `read_line`   | `read_line(sock) -> String`                | One `\n`-terminated line, trailing `\r\n`/`\n` stripped; `null` at EOF; raises `decode` on invalid UTF-8 |
+| `read_until`  | `read_until(sock, byte) -> Bytes`          | Read up to and including `byte`; `null` at end-of-stream               |
+| `read_all`    | `read_all(sock) -> Bytes`                  | Every remaining byte to end-of-stream                                  |
+| `local_addr`  | `local_addr(sock) -> Object`               | The socket's own address as `${host, port}`                            |
+| `peer_addr`   | `peer_addr(sock) -> Object`                | The connected peer's address as `${host, port}`                        |
+| `set_timeout` | `set_timeout(sock, ms) -> null`            | Bound reads/writes to `ms` ms; `ms <= 0` clears the timeout            |
+| `close`       | `close(sock) -> null`                      | Close the socket; idempotent, unblocks a reader stuck mid-`read` or an actor stuck in `accept` |
+
+```
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+conn := Net.connect_tls('example.com', 443);
+Net.write(conn, Bytes.from_string('GET / HTTP/1.0\r\nHost: example.com\r\n\r\n'));
+status := Net.read_line(conn);        // 'HTTP/1.1 200 OK'
+Net.close(conn)
+```
+
 ### 13.3 Source-stdlib modules (v0.3)
 
 These ship as tigr `.tg` files embedded in the interpreter. `import`
@@ -1435,6 +1508,32 @@ directory — runs each, and sums the `passed`/`failed` fields of the
 `suite` result(s) a file's final expression yields (a lone result
 object, or an array of them). A file that raises an uncaught error
 counts as a failure. The process exits non-zero if any test failed.
+
+#### `Url` (v0.15)
+
+URL parsing and the percent-codec, layered on `String`/`Bytes`.
+`parse(url)` splits an absolute URL into
+`${scheme, host, port, path, query, fragment}` — `port` an `Int` or
+`null`, `path` defaulting to `'/'`, `query`/`fragment` the raw
+substrings or `null`; a missing scheme raises. `build(parts)` is the
+inverse, so `build(parse(u))` round-trips. `encode`/`decode` are
+RFC-3986 percent-coding, byte-wise over UTF-8, so non-ASCII text
+round-trips; a malformed `%`-escape raises a structured `decode`
+error. `encode_query(obj)` / `parse_query(str)` convert between an
+Object and an `a=1&b=x%20y` query string (`+` decodes to a space; a
+duplicate key keeps its last value). See Appendix N.
+
+#### `Http` (v0.15)
+
+An HTTP/1.1 client and server helper over `Net`. The client —
+`request(opts)` plus the `get`/`post`/`put`/`delete`/`head`/`patch`
+wrappers — returns `${status, status_text, headers, body}`, where
+`body` is always `Bytes` (`text(resp)` / `json(resp)` decode it) and
+`headers` keys are lowercased (a duplicate header collapses, last
+wins). 3xx redirects are followed automatically. The server helpers —
+`read_request(sock)` / `write_response(sock, resp)` / `serve(listener,
+handler)` — drive an accept loop. v1 has no keep-alive. See
+Appendix N.
 
 ### 13.4 `JSON` (v0.4)
 
@@ -2082,3 +2181,131 @@ Additive changes:
     `to_str_radix`), `pow`, `abs`, `sign`, `gcd`, and `lcm`. Bitwise
     operators stay `Int`-only; a `BigInt` is not a valid `Map`/`Set` key
     and is not JSON-serializable.
+
+## Appendix L — Changes in v0.14
+
+52. **Actors: `spawn` and `Task`** (§concurrency). `spawn fn` runs a
+    function as an *actor* — an OS thread with its own heap — and
+    evaluates immediately to a `Task` handle. `Task.join(t)` blocks
+    until the actor finishes and yields its result. Actors share no
+    mutable state: a spawned function is **deep-copied** across the
+    heap boundary, so it may capture only *sendable* values
+    (primitives, `String`, `Bytes`, `Range`, `BigInt`, the four
+    collections, channels, tasks, and functions whose own captures are
+    sendable). Capturing an iterator, a native function, or a function
+    with a still-open capture raises a catchable `not_sendable`; a
+    cyclic collection raises `cycle`. Because a spawned function is
+    copied, it cannot see later mutations in the parent and `import`s
+    its own modules. An actor's uncaught error surfaces at `join`,
+    catchable like any error: a `raise`d value re-raises verbatim, a
+    built-in error arrives as a `${kind, message, trace, worker}`
+    object. The model is OS-thread actors rather than cooperative
+    coroutines — it works with the per-thread v0.10 GC and needs no
+    changes to it.
+
+53. **Channels** (§concurrency). `import 'Channel'` is the conduit
+    between actors — the one reference type that crosses threads.
+    `Channel.new()` is unbounded; `Channel.new(n)` bounds the buffer at
+    `n`, so `send` blocks (backpressure) while full. `send(ch, v)`
+    deep-copies `v` into the channel; `recv(ch)` blocks and returns
+    `${value: v}` for a message or `${closed: true}` once the channel
+    is closed and drained; `try_recv(ch)` never blocks, adding
+    `${empty: true}`. `close(ch)` wakes every blocked actor. A `send`
+    on a closed channel raises the catchable `channel_closed`. Channels
+    are bidirectional — any holder may both send and receive.
+
+54. **`select`** (§concurrency). `select { name := ch => body, ... }`
+    waits on several channels at once and runs the arm of the first to
+    have a message, binding `name` to that value. A trailing
+    `else => body` arm makes `select` non-blocking — it runs when no
+    channel is ready. A closed channel is skipped; if every channel is
+    closed `select` raises `channel_closed`. It is not a new core
+    construct — `select` desugars to a `match`.
+
+55. **`parallel[]`** (§concurrency). `parallel[] (v, iter) { body }`
+    mirrors `for[]` but runs each iteration's body as its own actor,
+    all concurrently, and collects the results into an array **in
+    input order**. The body is deep-copied per actor (same sendability
+    rule as `spawn`). The first body to raise aborts the block — the
+    error propagates out — while sibling actors already started run to
+    completion with their results discarded (there is no cancellation
+    primitive in v0.14). It is the structured, common-case form built
+    on `spawn` + `join`; reach for raw `spawn`/`Channel`/`select` when
+    the work is not a simple fan-out.
+
+## Appendix M — Changes in v0.15
+
+56. **Networking: the `Net` module** (§13.2). `import 'Net'` opens
+    network sockets — a TCP listener and TCP streams, UDP datagram
+    sockets, and TLS-encrypted client connections. A socket is a
+    first-class **sendable** `Value` (`type` `'socket'`), `Arc`-backed
+    with identity equality like a channel, so an `accept`ed connection
+    can cross into a `spawn`ed per-connection handler actor. Reads come
+    in two layers: low-level `read(sock, n)` (an empty `Bytes` is
+    end-of-stream) and the framed helpers `read_exact` / `read_line` /
+    `read_until` / `read_all`, which share an internal per-socket
+    buffer so a helper that over-reads keeps the surplus. An operation
+    raises a catchable structured `${kind, message}` error — `kind` one
+    of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`,
+    `addr_in_use`, `decode`, or `io`. `set_timeout` bounds blocking
+    reads/writes; `close` is idempotent and unblocks a reader stuck
+    mid-`read` (and an actor stuck in `accept`, which then raises
+    `closed`). `connect_tls` verifies the server certificate against
+    the host OS trust store. `select` is *not* extended to sockets —
+    bridge a socket to a channel with a reader actor to multiplex. The
+    `Bytes` buffer (v0.13) is the enabler this was the prerequisite
+    for.
+
+## Appendix N — Changes in v0.15 (Http & Url)
+
+57. **`Url` and `Http` source-stdlib modules** (§13.3). Two pure-tigr
+    `.tg` modules layered on the native `Net`/`String`/`Bytes`/`JSON`
+    primitives — no new core syntax.
+
+    `import 'Url'` parses, builds, and codes URLs. `parse(url)` splits
+    an absolute URL into `${scheme, host, port, path, query,
+    fragment}` (`port` an `Int` or `null`, `path` defaulting to
+    `'/'`, `query`/`fragment` the raw still-encoded substrings or
+    `null`); a missing scheme raises. `build(parts)` inverts it —
+    `build(parse(u))` round-trips. `encode`/`decode` are RFC-3986
+    percent-coding applied byte-wise to the UTF-8 encoding, so
+    non-ASCII text survives; the unreserved set `A-Za-z0-9-._~` passes
+    through and a malformed `%`-escape raises a structured `decode`
+    error. `encode_query(obj)` / `parse_query(str)` convert between an
+    Object and an `a=1&b=x%20y` query string — `parse_query` turns
+    `+` into a space and form-decodes both sides; on a duplicate key
+    the last value wins.
+
+    `import 'Http'` is an HTTP/1.1 client and server helper over
+    `Net`. The client `request(opts)` — and the thin
+    `get`/`post`/`put`/`delete`/`head`/`patch` wrappers — takes
+    `opts = ${url, method, headers, body, max_redirects,
+    follow_redirects, timeout}` (only `url` required; `body` a String
+    or Bytes) and returns `${status, status_text, headers, body}`.
+    `body` is always `Bytes` so binary responses are exact —
+    `text(resp)` / `json(resp)` decode it. `headers` is an Object with
+    **lowercased keys**; a repeated header collapses, last value wins
+    (a documented v1 limitation). 3xx redirects are followed
+    automatically (cap 10, opt out with `follow_redirects: false`):
+    301/302/303 continue as GET with no body, 307/308 preserve the
+    method and body; exceeding the cap raises `too_many_redirects`.
+    The body is framed by `Transfer-Encoding: chunked`, then
+    `Content-Length`, then — since v1 always sends `Connection:
+    close` and so has no keep-alive — read to end-of-stream.
+
+    The server side: `read_request(sock)` returns `${method, path,
+    query, headers, body}` (the body read only when a `Content-Length`
+    / `Transfer-Encoding` header is present, so a request never blocks
+    on a missing EOF); `write_response(sock, ${status, headers,
+    body})` writes a response, forcing `Content-Length` and
+    `Connection: close`; `serve(listener, handler)` is an accept loop
+    that hands each connection to its own `spawn`ed actor. Because a
+    spawned closure is deep-copied across the actor boundary, the
+    `handler` passed to `serve` **must be sendable** — it must
+    `import` any modules it needs inside its own body, never capture
+    them (the same rule as `spawn` everywhere). A handler returning a
+    String becomes a `200 text/plain` response; an Object is sent
+    as-is; a handler that raises yields a best-effort `500`. `serve`
+    runs until its `listener` is closed — `close(listener)` from any
+    actor stops the accept loop and `serve` returns cleanly, so a
+    `serve` actor can be `join`ed after a deliberate shutdown.

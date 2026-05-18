@@ -1,0 +1,264 @@
+// tests/http_test.tg — the `Http` source-stdlib module.
+//
+// Every case runs in-process over the loopback interface: a `spawn`ed
+// responder actor plays the peer, so the suite stays offline and never
+// touches the public network. A spawned actor shares nothing, so each
+// `import`s its modules itself and captures only sendable values
+// (sockets, strings). Clients carry a `timeout` so a misbehaving case
+// fails fast instead of hanging the suite.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Http   := import 'Http';
+Net    := import 'Net';
+Task   := import 'Task';
+Bytes  := import 'Bytes';
+String := import 'String';
+Test   := import 'Test';
+
+TIMEOUT := 3000;
+
+// A sendable helper (captures nothing — imports `Net` itself) that
+// reads request lines from `conn` up to the blank line.
+drain_request := fn(conn) {
+    N := import 'Net';
+    while true {
+        line := N.read_line(conn);
+        if line == null { break };
+        if #line == 0 { break }
+    }
+};
+
+// Spawn a one-shot responder: accept one connection, drain the
+// request, write the raw response `raw`, then close. Captures only the
+// (sendable) listener, raw string, and `drain_request` closure.
+respond_once := fn(listener, raw) {
+    spawn fn() {
+        N := import 'Net';
+        B := import 'Bytes';
+        conn := N.accept(listener);
+        drain_request(conn);
+        N.write(conn, B.from_string(raw));
+        N.close(conn);
+        N.close(listener);
+        null
+    }
+};
+
+// `http://127.0.0.1:<port><path>`.
+url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
+
+[
+    Test.suite('Http — client body framing', [
+        Test.case('a Content-Length response body is read exactly', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := respond_once(listener,
+                'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello');
+            resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(resp.status, 200);
+            Test.assert_eq(resp.status_text, 'OK');
+            Test.assert_eq(resp.headers['content-type'], 'text/plain');
+            Test.assert_eq(Http.text(resp), 'hello')
+        }),
+
+        Test.case('a chunked response body is reassembled', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := respond_once(listener,
+                'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
+                + '5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n');
+            resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(Http.text(resp), 'hello world')
+        }),
+
+        Test.case('a body with no framing is read to end-of-stream', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := respond_once(listener,
+                'HTTP/1.1 200 OK\r\n\r\nunframed payload');
+            resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(Http.text(resp), 'unframed payload')
+        }),
+
+        Test.case('json parses the response body', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := respond_once(listener,
+                'HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n\{"n":7}');
+            resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(Http.json(resp).n, 7)
+        }),
+    ]),
+
+    Test.suite('Http — POST', [
+        Test.case('post sends a body the server echoes back', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                H := import 'Http';
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                req := H.read_request(conn);
+                H.write_response(conn, ${status: 200, body: 'echo:' + B.to_string(req.body)});
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            resp := Http.post(url_for(port, '/'), 'ping', ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(resp.status, 200);
+            Test.assert_eq(Http.text(resp), 'echo:ping')
+        }),
+    ]),
+
+    Test.suite('Http — redirects', [
+        Test.case('a 3xx redirect is followed to the final response', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                c1 := N.accept(listener);
+                while true {
+                    l := N.read_line(c1);
+                    if l == null { break };
+                    if #l == 0 { break }
+                };
+                N.write(c1, B.from_string(
+                    'HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n'));
+                N.close(c1);
+                c2 := N.accept(listener);
+                while true {
+                    l := N.read_line(c2);
+                    if l == null { break };
+                    if #l == 0 { break }
+                };
+                N.write(c2, B.from_string(
+                    'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'));
+                N.close(c2);
+                N.close(listener);
+                null
+            };
+            resp := Http.get(url_for(port, '/start'), ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(resp.status, 200);
+            Test.assert_eq(Http.text(resp), 'hello')
+        }),
+
+        Test.case('follow_redirects:false returns the 3xx response itself', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := respond_once(listener,
+                'HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n');
+            resp := Http.request(${
+                url: url_for(port, '/start'),
+                follow_redirects: false,
+                timeout: TIMEOUT,
+            });
+            Task.join(server);
+            Test.assert_eq(resp.status, 302);
+            Test.assert_eq(resp.headers['location'], '/elsewhere')
+        }),
+
+        Test.case('a 307 redirect preserves the method and body', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                H := import 'Http';
+                N := import 'Net';
+                B := import 'Bytes';
+                c1 := N.accept(listener);
+                while true {
+                    l := N.read_line(c1);
+                    if l == null { break };
+                    if #l == 0 { break }
+                };
+                N.write(c1, B.from_string(
+                    'HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\n'
+                    + 'Content-Length: 0\r\n\r\n'));
+                N.close(c1);
+                c2 := N.accept(listener);
+                req := H.read_request(c2);
+                H.write_response(c2,
+                    ${status: 200, body: req.method + ':' + B.to_string(req.body)});
+                N.close(c2);
+                N.close(listener);
+                null
+            };
+            resp := Http.post(url_for(port, '/start'), 'load', ${timeout: TIMEOUT});
+            Task.join(server);
+            Test.assert_eq(Http.text(resp), 'POST:load')
+        }),
+    ]),
+
+    Test.suite('Http — server helpers', [
+        Test.case('read_request parses method, path, query, and body', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                H := import 'Http';
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                req := H.read_request(conn);
+                summary := req.method + ' ' + req.path
+                    + ' name=' + req.query.name
+                    + ' body=' + B.to_string(req.body);
+                H.write_response(conn, ${status: 200, body: summary});
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.set_timeout(client, TIMEOUT);
+            Net.write(client, Bytes.from_string(
+                'POST /submit?name=tigr HTTP/1.1\r\nHost: x\r\n'
+                + 'Content-Length: 4\r\n\r\ndata'));
+            received := Bytes.to_string(Net.read_all(client));
+            Net.close(client);
+            Task.join(server);
+            Test.assert(String.contains(received, 'POST /submit name=tigr body=data'),
+                'response was: ' + received)
+        }),
+
+        Test.case('serve answers a String handler as 200 text/plain', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            // `serve` runs in its own actor; closing the listener stops
+            // its accept loop, so the actor can be joined cleanly.
+            server := spawn fn() {
+                H := import 'Http';
+                H.serve(listener, fn(req) { 'served ok' });
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.set_timeout(client, TIMEOUT);
+            Net.write(client, Bytes.from_string('GET / HTTP/1.1\r\nHost: x\r\n\r\n'));
+            received := Bytes.to_string(Net.read_all(client));
+            Net.close(client);
+            Net.close(listener);          // stops the serve accept loop
+            Task.join(server);            // serve returns cleanly
+            Test.assert(String.contains(received, '200'), 'response was: ' + received);
+            Test.assert(String.contains(received, 'text/plain'));
+            Test.assert(String.contains(received, 'served ok'))
+        }),
+
+        Test.case('closing the listener stops serve and raises in accept', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            // No client ever connects — serve sits in its poll loop.
+            server := spawn fn() {
+                H := import 'Http';
+                H.serve(listener, fn(req) { 'unused' });
+                'stopped'
+            };
+            Net.close(listener);
+            Test.assert_eq(Task.join(server), 'stopped')
+        }),
+    ]),
+]

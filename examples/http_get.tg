@@ -1,0 +1,28 @@
+// http_get.tg — fetch a page over TLS (v0.15).
+//
+// Opens a TLS connection, sends a raw HTTP/1.0 request, and reports the
+// response. `connect_tls` verifies the server certificate against the
+// host's OS trust store. Needs network access — `tigr test` skips
+// examples, so this is never run offline.
+//
+// This is a raw-socket teaching artifact: for real HTTP, use the
+// `Http` module — `Http.get('https://example.com')` does the request
+// framing, redirect following, and response parsing for you.
+
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+host := 'example.com';
+conn := Net.connect_tls(host, 443);
+
+request := 'GET / HTTP/1.0\r\n'
+    + 'Host: ' + host + '\r\n'
+    + 'Connection: close\r\n\r\n';
+Net.write(conn, Bytes.from_string(request));
+
+// The status line, then drain and count the rest of the response.
+print('status:', Net.read_line(conn));
+body := Net.read_all(conn);
+print('received', #body, 'bytes total');
+
+Net.close(conn);

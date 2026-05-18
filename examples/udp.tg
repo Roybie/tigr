@@ -1,0 +1,23 @@
+// udp.tg — connectionless UDP datagrams (v0.15).
+//
+// UDP has no connection: a socket is `bind`-ed to an address, then
+// sends and receives discrete datagrams with `send_to` / `recv_from`.
+
+Net   := import 'Net';
+Bytes := import 'Bytes';
+
+receiver := Net.bind('127.0.0.1', 0);
+port := Net.local_addr(receiver).port;
+sender := Net.bind('127.0.0.1', 0);
+
+for (i, 1..=3) {
+    Net.send_to(sender, Bytes.from_string('datagram ' + str(i)), '127.0.0.1', port)
+};
+
+for (i, 1..=3) {
+    msg := Net.recv_from(receiver, 1024);
+    print('got', Bytes.to_string(msg.data), 'from', msg.host + ':' + str(msg.port))
+};
+
+Net.close(sender);
+Net.close(receiver);

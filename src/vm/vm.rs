@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use num_bigint::BigInt as BigIntData;
@@ -125,7 +126,7 @@ impl Vm {
         self.open_upvalues.clear();
 
         let main_closure = gc::alloc_closure(Closure {
-            function: Rc::new(main),
+            function: Arc::new(main),
             upvalues: Vec::new(),
         });
         // slot 0 of main frame = the main closure itself
@@ -153,6 +154,73 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// Run an already-built closure as a fresh top-level program,
+    /// invoked with no arguments. Used by spawned actors: a worker
+    /// thread builds a `Vm`, decodes the closure into its own heap,
+    /// and runs it here.
+    pub fn run_closure(
+        &mut self,
+        closure: GcRef<ClosureKind>,
+    ) -> Result<Value, RuntimeError> {
+        self.stack.clear();
+        self.frames.clear();
+        self.open_upvalues.clear();
+        self.call_value(Value::Function(closure), Vec::new(), 0)
+    }
+
+    /// Start `callee` as an actor: deep-copy it across the heap
+    /// boundary, run it on a new OS thread, and return a `Task` handle
+    /// for its eventual result. Raises `not_callable` if `callee` is
+    /// not a function, or `not_sendable`/`cycle` if it (or a captured
+    /// value) cannot cross the boundary.
+    fn spawn_actor(
+        &mut self,
+        callee: Value,
+        line: u32,
+    ) -> Result<crate::vm::task::TaskHandle, RuntimeError> {
+        let closure = match callee {
+            Value::Function(c) => c,
+            other => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::NotCallable(other.type_name().into()),
+                    line,
+                ));
+            }
+        };
+        // The spawned closure may hold `Open` upvalues pointing into
+        // this live frame's stack. Build a detached copy whose every
+        // upvalue is `Closed` so the transfer encoder can encode it.
+        let (function, cells) = {
+            let cl = closure.borrow();
+            (cl.function.clone(), cl.upvalues.clone())
+        };
+        let mut closed = Vec::with_capacity(cells.len());
+        for cell in &cells {
+            let captured = match &*cell.borrow() {
+                Upvalue::Closed(v) => v.clone(),
+                Upvalue::Open(slot) => self.stack[*slot].clone(),
+            };
+            closed.push(gc::alloc_upvalue(Upvalue::Closed(captured)));
+        }
+        let detached =
+            gc::alloc_closure(Closure { function, upvalues: closed });
+        let transfer = crate::vm::transfer::encode(&Value::Function(detached))
+            .map_err(|mut e| {
+                if e.line == 0 {
+                    e.line = line;
+                }
+                e
+            })?;
+
+        let task = crate::vm::task::TaskInner::new();
+        let task_worker = task.clone();
+        std::thread::spawn(move || {
+            let outcome = run_actor(transfer);
+            task_worker.complete(outcome);
+        });
+        Ok(task)
     }
 
     /// Fill in `err.source` from the chunk on top of the call stack
@@ -258,7 +326,7 @@ impl Vm {
         self.frames.clear();
         self.open_upvalues.clear();
         let dummy = gc::alloc_closure(Closure {
-            function: Rc::new(crate::vm::value::Function {
+            function: Arc::new(crate::vm::value::Function {
                 arity: 0,
                 has_rest: false,
                 chunk: crate::vm::chunk::Chunk::new(),
@@ -355,7 +423,7 @@ impl Vm {
                 OpCode::LoadConst => {
                     let idx = chunk.code[ip] as usize;
                     ip += 1;
-                    self.stack.push(chunk.constants[idx].clone());
+                    self.stack.push(chunk.constants[idx].to_value());
                 }
                 OpCode::LoadLocal => {
                     let slot = chunk.code[ip] as usize;
@@ -1296,7 +1364,7 @@ impl Vm {
                             };
                             self.in_flight.insert(key.clone());
                             let mc = gc::alloc_closure(Closure {
-                                function: Rc::new(main),
+                                function: Arc::new(main),
                                 upvalues: Vec::new(),
                             });
                             self.frames.last_mut().unwrap().ip = ip;
@@ -1376,7 +1444,7 @@ impl Vm {
                     };
                     self.in_flight.insert(path.clone());
                     let main_closure = gc::alloc_closure(Closure {
-                        function: Rc::new(main),
+                        function: Arc::new(main),
                         upvalues: Vec::new(),
                     });
                     // Commit ip for the importing frame BEFORE pushing
@@ -1442,6 +1510,13 @@ impl Vm {
                         RuntimeErrorKind::NoMatch,
                         line,
                     ));
+                }
+                OpCode::Spawn => {
+                    // Pop the function and start it as an actor on its
+                    // own OS thread + heap; push a `Task` handle.
+                    let callee = self.pop(line)?;
+                    let task = self.spawn_actor(callee, line)?;
+                    self.stack.push(Value::Task(task));
                 }
             }
 
@@ -1691,6 +1766,44 @@ impl Vm {
 
 fn underflow(line: u32) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::StackUnderflow, line)
+}
+
+/// Worker-thread entry point for `spawn`. Builds a fresh `Vm` (its own
+/// thread-local heap), decodes the spawned closure into that heap,
+/// runs it, and encodes the outcome back into `Send`-able form. An
+/// uncaught actor error is rendered against the worker's own
+/// `SourceMap` (the parent's is not `Send`).
+fn run_actor(transfer: crate::vm::transfer::Transfer) -> crate::vm::task::ActorOutcome {
+    use crate::vm::transfer::{decode, encode, TransferError};
+
+    let mut vm = Vm::new();
+    let closure = match decode(transfer) {
+        Value::Function(c) => c,
+        _ => unreachable!("spawn always encodes a closure"),
+    };
+    match vm.run_closure(closure) {
+        Ok(v) => encode(&v).map_err(|e| TransferError {
+            kind_tag: e.kind.kind_tag().to_string(),
+            message: format!("actor return value could not be sent: {e}"),
+            rendered_trace: String::new(),
+            raised: None,
+        }),
+        Err(e) => {
+            let kind_tag = e.kind.kind_tag().to_string();
+            let message = format!("{e}");
+            // If the actor did `raise <value>`, carry that value so the
+            // parent's `catch` binds exactly it. A non-sendable raised
+            // value falls back to `None` — its `str()` form is already
+            // in `message`.
+            let raised = match &e.kind {
+                RuntimeErrorKind::Raised(v) => encode(v).ok(),
+                _ => None,
+            };
+            let rendered_trace = crate::vm::error::Error::Runtime(e)
+                .render(&vm.source_map.borrow());
+            Err(TransferError { kind_tag, message, rendered_trace, raised })
+        }
+    }
 }
 
 // -- arithmetic helpers (spec §6.2 + §7.1) --

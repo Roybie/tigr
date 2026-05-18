@@ -243,6 +243,12 @@ pub enum OpCode {
     /// fall-through of a `match` whose arms are not provably
     /// exhaustive; reached only when no arm matched. Operand: none.
     NoMatchError,
+
+    // -- v0.14 — concurrency --
+    /// Pop a function value, run it as a new actor on its own OS
+    /// thread and heap, and push a `Task` handle for its result.
+    /// Operand: none.
+    Spawn,
 }
 
 impl OpCode {
@@ -315,6 +321,7 @@ impl OpCode {
             63 => AddAssign,
             64 => TailCall,
             65 => NoMatchError,
+            66 => Spawn,
             _ => return None,
         })
     }

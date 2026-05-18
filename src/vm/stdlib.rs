@@ -54,11 +54,19 @@ const BUILTINS: &[Spec] = &[
     Spec { name: "rand",  arity: Arity::Exact(0), func: native_rand },
     Spec { name: "type",  arity: Arity::Exact(1), func: native_type },
     Spec { name: "gc",    arity: Arity::Exact(0), func: native_gc },
+    // v0.14 — `select` / `parallel[]` desugar targets. Internal: a
+    // user writes `select` / `parallel[]`, never these directly.
+    Spec { name: "__select", arity: Arity::Exact(2), func: native_select },
+    Spec {
+        name: "__join",
+        arity: Arity::Exact(1),
+        func: crate::vm::native_modules::task::t_join,
+    },
 ];
 
-const BUILTIN_NAMES: [&str; 11] = [
+const BUILTIN_NAMES: [&str; 13] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type", "gc",
+    "type", "gc", "__select", "__join",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -319,6 +327,66 @@ fn native_rand(_args: &[Value]) -> Result<Value, RuntimeError> {
 // `${live, collections, allocated, freed}`. Collection itself is
 // automatic (it runs at VM safepoints once the heap crosses a size
 // threshold); `gc()` is a read-only window for tests and tuning.
+
+// -- __select -------------------------------------------------------
+//
+// The runtime backing the `select { ... }` block (v0.14). The parser
+// desugars `select` to a `match` over `__select(channels, has_else)`,
+// which blocks until one channel has a message and returns
+// `${index, value}` (or `${index: -1}` for an `else` arm).
+
+fn native_select(args: &[Value]) -> Result<Value, RuntimeError> {
+    use crate::vm::channel::{select, SelectResult};
+
+    let chans = match &args[0] {
+        Value::Array(a) => {
+            let arr = a.borrow();
+            let mut v = Vec::with_capacity(arr.len());
+            for item in arr.iter() {
+                match item {
+                    Value::Channel(h) => v.push(h.clone()),
+                    other => {
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::TypeMismatch(format!(
+                                "select expects channels, got {}",
+                                other.type_name()
+                            )),
+                            0,
+                        ));
+                    }
+                }
+            }
+            v
+        }
+        other => {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(format!(
+                    "select expects an array of channels, got {}",
+                    other.type_name()
+                )),
+                0,
+            ));
+        }
+    };
+    let has_else = matches!(&args[1], Value::Bool(true));
+
+    match select(&chans, has_else) {
+        SelectResult::Fired { index, message } => {
+            let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(2);
+            m.insert(Rc::from("index"), Value::Int(index as i64));
+            m.insert(Rc::from("value"), crate::vm::transfer::decode(message));
+            Ok(Value::Object(gc::alloc_object(m)))
+        }
+        SelectResult::ElseReady => {
+            let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(1);
+            m.insert(Rc::from("index"), Value::Int(-1));
+            Ok(Value::Object(gc::alloc_object(m)))
+        }
+        SelectResult::AllClosed => {
+            Err(RuntimeError::new(RuntimeErrorKind::ChannelClosed, 0))
+        }
+    }
+}
 
 fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
     let s = gc::stats();

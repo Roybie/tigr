@@ -2,19 +2,72 @@
 //! for runtime error reporting.
 
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceId;
 use crate::vm::value::{Function, Value};
 
+/// A compile-time constant in a [`Chunk`]'s pool. Distinct from
+/// [`Value`] so a `Chunk` — and therefore an `Arc<Function>` — is
+/// `Send + Sync`, letting compiled code be shared across actor threads
+/// (v0.14 concurrency). The compiler only ever pools literals, so the
+/// five variants here cover the whole pool; a heap value never reaches
+/// it.
+#[derive(Clone)]
+pub enum Const {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(Box<str>),
+}
+
+impl Const {
+    /// Materialize a runtime [`Value`] — called by `OpCode::LoadConst`.
+    /// `Str` allocates a fresh `Rc<str>` per load.
+    pub fn to_value(&self) -> Value {
+        match self {
+            Const::Null => Value::Null,
+            Const::Bool(b) => Value::Bool(*b),
+            Const::Int(n) => Value::Int(*n),
+            Const::Float(x) => Value::Float(*x),
+            Const::Str(s) => Value::Str(s.as_ref().into()),
+        }
+    }
+
+    /// Build a `Const` from a primitive `Value`. The compiler pools
+    /// only literals, so a non-primitive here is a compiler bug.
+    pub fn from_value(v: &Value) -> Const {
+        match v {
+            Value::Null => Const::Null,
+            Value::Bool(b) => Const::Bool(*b),
+            Value::Int(n) => Const::Int(*n),
+            Value::Float(x) => Const::Float(*x),
+            Value::Str(s) => Const::Str(s.as_ref().into()),
+            other => unreachable!(
+                "non-literal in constant pool: {}",
+                other.type_name()
+            ),
+        }
+    }
+}
+
+impl std::fmt::Debug for Const {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Mirror `Value`'s Debug so disassembly output is unchanged.
+        write!(f, "{:?}", self.to_value())
+    }
+}
+
 #[derive(Default)]
 pub struct Chunk {
     pub code: Vec<u8>,
-    pub constants: Vec<Value>,
+    pub constants: Vec<Const>,
     /// Function templates referenced by `OpCode::Closure` instructions
     /// in this chunk. Indexed by the operand following the opcode.
-    pub functions: Vec<Rc<Function>>,
+    /// `Arc` (not `Rc`) so compiled code can cross actor threads.
+    pub functions: Vec<Arc<Function>>,
     /// One entry per byte of `code`. Source line for that byte. Used
     /// when reporting runtime errors.
     pub lines: Vec<u32>,
@@ -64,7 +117,7 @@ impl Chunk {
 
     /// Add a constant and return its index (or error if the pool is
     /// already full).
-    pub fn add_constant(&mut self, value: Value) -> Result<u8, ()> {
+    pub fn add_constant(&mut self, value: Const) -> Result<u8, ()> {
         if self.constants.len() >= 256 {
             return Err(());
         }
@@ -75,7 +128,7 @@ impl Chunk {
 
     /// Add a function template and return its index in this chunk's
     /// function table.
-    pub fn add_function(&mut self, function: Rc<Function>) -> Result<u8, ()> {
+    pub fn add_function(&mut self, function: Arc<Function>) -> Result<u8, ()> {
         if self.functions.len() >= 256 {
             return Err(());
         }

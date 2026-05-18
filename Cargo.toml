@@ -15,6 +15,14 @@ rustyline = "14"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
+# v0.15 — TLS for the `Net` module's encrypted client connections.
+# `default-features = false` + `ring` selects the `ring` crypto
+# provider over the default `aws-lc-rs`, which would pull in a C
+# toolchain (cmake / NASM). `rustls-native-certs` loads the host OS
+# trust store so enterprise / custom CAs work and the root set never
+# goes stale — unlike a bundled `webpki-roots` snapshot.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
 
 [features]
 # Collect on every VM dispatch step — stress mode that turns any

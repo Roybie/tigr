@@ -1,0 +1,47 @@
+// tcp_echo.tg — a TCP echo server and clients in one process (v0.15).
+//
+// The server actor accepts connections and `spawn`s a handler actor
+// per connection — the per-connection-actor idiom. The accepted socket
+// crosses the actor boundary because a socket is sendable, like a
+// channel; an actor shares nothing else, so it `import`s `Net` itself.
+
+Net   := import 'Net';
+Task  := import 'Task';
+Bytes := import 'Bytes';
+
+listener := Net.listen('127.0.0.1', 0);
+port := Net.local_addr(listener).port;
+print('echo server listening on 127.0.0.1:' + str(port));
+
+// The server: accept three connections, hand each to its own handler
+// actor, then join the handlers and stop.
+server := spawn fn() {
+    N := import 'Net';
+    T := import 'Task';
+    handlers := for[] (i, 1..=3) {
+        conn := N.accept(listener);
+        spawn fn() {
+            M := import 'Net';
+            B := import 'Bytes';
+            line := M.read_line(conn);
+            M.write(conn, B.from_string('echo: ' + line + '\n'));
+            M.close(conn);
+            null
+        }
+    };
+    for (h, handlers) { T.join(h) };
+    N.close(listener);
+    null
+};
+
+// Three clients, each sending one line and reading the echo back.
+replies := for[] (i, 1..=3) {
+    client := Net.connect('127.0.0.1', port);
+    Net.write(client, Bytes.from_string('hello ' + str(i) + '\n'));
+    reply := Net.read_line(client);
+    Net.close(client);
+    reply
+};
+
+print('clients received:', replies);
+Task.join(server);

@@ -34,14 +34,14 @@
 //! time the closure is *called*, the outer init has finished.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::vm::ast::{
     BinOp, Block, Expr, LiteralPat, MatchArm, MatchPattern,
     ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
 };
 use std::path::PathBuf;
-use crate::vm::chunk::Chunk;
+use crate::vm::chunk::{Chunk, Const};
 use crate::vm::error::{CompileError, CompileErrorKind};
 use crate::vm::opcode::OpCode;
 use crate::vm::source_map::SourceId;
@@ -611,6 +611,8 @@ impl Compiler {
             | OpCode::Negate | OpCode::Not | OpCode::Len | OpCode::BitNot
             | OpCode::Import | OpCode::MakeIter
             | OpCode::PushTry | OpCode::PopTry
+            // Spawn pops the function and pushes a Task — net 0.
+            | OpCode::Spawn
             // NoMatchError pops nothing and always raises; the runtime
             // never reaches code after it. Tracked as 0.
             | OpCode::NoMatchError => 0,
@@ -677,7 +679,7 @@ impl Compiler {
     ) -> Result<(), CompileError> {
         let idx = self
             .current_chunk_mut()
-            .add_constant(value)
+            .add_constant(Const::from_value(&value))
             .map_err(|_| CompileError::new(CompileErrorKind::TooManyConstants, span))?;
         self.emit_op(OpCode::LoadConst, line);
         self.emit_byte(idx, line);
@@ -744,6 +746,7 @@ impl Compiler {
                 if let Some(v) = v { self.visit_for_hoist(v, out); }
             }
             Expr::Raise(v) => self.visit_for_hoist(v, out),
+            Expr::Spawn(v) => self.visit_for_hoist(v, out),
             // `try ... catch (e) { handler }` — the handler is a
             // `Scope` per grammar (handles its own hoisting). We only
             // scan the protected body, treating it like any other
@@ -932,6 +935,10 @@ impl Compiler {
 
             Expr::Raise(value) => {
                 self.compile_raise(value, line)?;
+            }
+
+            Expr::Spawn(callee) => {
+                self.compile_spawn(callee, line)?;
             }
 
             Expr::Match { subject, arms } => {
@@ -2142,6 +2149,21 @@ impl Compiler {
         Ok(())
     }
 
+    /// `spawn callee` (v0.14) — compile the callee expression, then
+    /// `Spawn` pops that function and pushes a `Task`. Net stack
+    /// effect is zero, so the result height is `entry + 1`.
+    fn compile_spawn(
+        &mut self,
+        callee: &SpannedExpr,
+        line: u32,
+    ) -> Result<(), CompileError> {
+        let entry_height = self.current().stack_height;
+        self.compile_expr(callee)?;
+        self.emit_op(OpCode::Spawn, line);
+        self.set_stack_height(entry_height + 1);
+        Ok(())
+    }
+
     // -- function literal --------------------------------------------
 
     fn compile_fn(
@@ -2235,7 +2257,7 @@ impl Compiler {
 
         let idx = self
             .current_chunk_mut()
-            .add_function(Rc::new(function))
+            .add_function(Arc::new(function))
             .map_err(|_| CompileError::new(CompileErrorKind::TooManyConstants, span))?;
         self.emit_op(OpCode::Closure, line);
         self.emit_byte(idx, line);

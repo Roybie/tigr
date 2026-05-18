@@ -1,0 +1,26 @@
+// parallel.tg — fan out work and collect the results (v0.14).
+//
+// `parallel[]` runs each iteration of its body as its own actor, all
+// concurrently, and collects the results into an array in input order.
+
+// Each `n * n` runs on its own actor; results come back in order.
+squares := parallel[] (n, 1..=8) { n * n };
+print('squares:', squares);
+
+// The body may capture sendable outer values (copied per actor).
+base    := 100;
+offsets := parallel[] (n, [1, 2, 3]) { base + n };
+print('offsets:', offsets);
+
+// The two-variable form gives index and value.
+labelled := parallel[] (i, name, ['ann', 'bo', 'cy']) {
+    str(i) + ':' + name
+};
+print('labelled:', labelled);
+
+// The first body to raise aborts the block; the error propagates out.
+print(try {
+    parallel[] (n, 1..=5) {
+        if n == 4 { raise 'bad value 4' } else { n }
+    }
+} catch (e) { 'parallel aborted: ' + e });

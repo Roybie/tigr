@@ -1,0 +1,30 @@
+// url.tg — parsing, building, and encoding URLs with the `Url` module.
+//
+// `Url` is a pure-tigr stdlib module — no network access, so this
+// example runs anywhere.
+
+Url := import 'Url';
+
+// Parse splits an absolute URL into its parts.
+u := Url.parse('https://example.com:8443/search?q=tigr+lang&page=2#results');
+print('scheme  ', u.scheme);
+print('host    ', u.host);
+print('port    ', u.port);
+print('path    ', u.path);
+print('query   ', u.query);
+print('fragment', u.fragment);
+
+// build is the inverse — build(parse(u)) round-trips.
+print('rebuilt ', Url.build(u));
+
+// Percent-encoding works byte-wise over UTF-8, so non-ASCII survives.
+encoded := Url.encode('café & crème');
+print('encoded ', encoded);
+print('decoded ', Url.decode(encoded));
+
+// Query strings convert to and from objects. `+` decodes to a space.
+params := Url.parse_query(u.query);
+print('q       ', params.q);
+print('page    ', params.page);
+
+print('built q ', Url.encode_query(${name: 'ada', lang: 'tigr', tag: 'a b'}));

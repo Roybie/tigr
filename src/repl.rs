@@ -19,6 +19,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -73,7 +74,7 @@ impl Repl {
             Compiler::compile_repl_with_source(&program, &self.locals, sid)?;
 
         let closure = crate::vm::gc::alloc_closure(Closure {
-            function: Rc::new(main),
+            function: Arc::new(main),
             upvalues: Vec::new(),
         });
 

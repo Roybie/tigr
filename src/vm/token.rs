@@ -59,6 +59,9 @@ pub enum Token {
     Catch,
     Raise,
     Match,
+    Spawn,
+    Select,
+    Parallel,
 
     // Arithmetic
     Plus,
@@ -147,6 +150,9 @@ impl fmt::Display for Token {
             Break => f.write_str("break"),
             Continue => f.write_str("continue"),
             Return => f.write_str("return"),
+            Spawn => f.write_str("spawn"),
+            Select => f.write_str("select"),
+            Parallel => f.write_str("parallel"),
             Import => f.write_str("import"),
             Try => f.write_str("try"),
             Catch => f.write_str("catch"),

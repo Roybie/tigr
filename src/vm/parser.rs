@@ -570,6 +570,9 @@ impl Parser {
             Token::Import => self.parse_import(),
             Token::Try => self.parse_try(),
             Token::Raise => self.parse_raise(),
+            Token::Spawn => self.parse_spawn(),
+            Token::Select => self.parse_select(),
+            Token::Parallel => self.parse_parallel(),
             Token::Match => self.parse_match(),
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
@@ -611,6 +614,206 @@ impl Parser {
         let value = self.parse_expr()?;
         let span = raise_span.join(value.span);
         Ok(SpannedExpr::new(Expr::Raise(Box::new(value)), span))
+    }
+
+    /// `spawn expr` (v0.14) — `expr` is the function to run as an actor.
+    fn parse_spawn(&mut self) -> Result<SpannedExpr, ParseError> {
+        let kw_span = self.expect(&Token::Spawn)?;
+        let callee = self.parse_expr()?;
+        let span = kw_span.join(callee.span);
+        Ok(SpannedExpr::new(Expr::Spawn(Box::new(callee)), span))
+    }
+
+    /// `select { name := chan => body, ..., else => body }` (v0.14).
+    ///
+    /// Desugars — there is no dedicated AST node — to a `match` over
+    /// the result of the internal `__select` builtin:
+    ///
+    /// ```text
+    /// match __select([chan0, chan1], <has_else>) {
+    ///     ${index: 0, value: name0} => body0,
+    ///     ${index: 1, value: name1} => body1,
+    ///     _ => else_body,            // only when an `else` arm exists
+    /// }
+    /// ```
+    ///
+    /// Each arm binds a plain identifier (or `_`) to the received
+    /// message value.
+    fn parse_select(&mut self) -> Result<SpannedExpr, ParseError> {
+        let kw_span = self.expect(&Token::Select)?;
+        self.expect(&Token::LBrace)?;
+
+        let mut channels: Vec<SpannedExpr> = Vec::new();
+        let mut arms: Vec<MatchArm> = Vec::new();
+        let mut else_body: Option<SpannedExpr> = None;
+
+        while !self.check(&Token::RBrace) {
+            if self.matches(&Token::Else) {
+                self.expect(&Token::FatArrow)?;
+                else_body = Some(self.parse_expr()?);
+                if !self.matches(&Token::Comma) {
+                    break;
+                }
+                continue;
+            }
+            // `name := channel => body`
+            let bind = self.parse_select_binding()?;
+            self.expect(&Token::ColonEq)?;
+            let channel = self.parse_expr()?;
+            self.expect(&Token::FatArrow)?;
+            let body = self.parse_expr()?;
+            let index = channels.len() as i64;
+            channels.push(channel);
+            arms.push(MatchArm {
+                pattern: MatchPattern::Object {
+                    fields: vec![
+                        MatchField {
+                            key: "index".to_string(),
+                            pattern: Some(MatchPattern::Literal(
+                                LiteralPat::Int(index),
+                            )),
+                        },
+                        MatchField {
+                            key: "value".to_string(),
+                            pattern: Some(bind),
+                        },
+                    ],
+                    rest: None,
+                },
+                guard: None,
+                body,
+            });
+            if !self.matches(&Token::Comma) {
+                break;
+            }
+        }
+        let rbrace = self.expect(&Token::RBrace)?;
+        let span = kw_span.join(rbrace);
+
+        let has_else = else_body.is_some();
+        if let Some(eb) = else_body {
+            arms.push(MatchArm {
+                pattern: MatchPattern::Wildcard,
+                guard: None,
+                body: eb,
+            });
+        }
+
+        // subject: __select([channels...], has_else)
+        let arr = SpannedExpr::new(Expr::Array(channels), span);
+        let callee =
+            SpannedExpr::new(Expr::Ident("__select".to_string()), span);
+        let flag = SpannedExpr::new(Expr::Bool(has_else), span);
+        let subject = SpannedExpr::new(
+            Expr::Call(Box::new(callee), vec![arr, flag]),
+            span,
+        );
+
+        Ok(SpannedExpr::new(
+            Expr::Match { subject: Box::new(subject), arms },
+            span,
+        ))
+    }
+
+    /// Parse a `select` arm's binding — a plain identifier, or `_`.
+    fn parse_select_binding(&mut self) -> Result<MatchPattern, ParseError> {
+        match self.peek().clone() {
+            Token::Ident(name) => {
+                self.advance();
+                if name == "_" {
+                    Ok(MatchPattern::Wildcard)
+                } else {
+                    Ok(MatchPattern::Binding(name))
+                }
+            }
+            other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
+        }
+    }
+
+    /// `parallel[] (var, iter) { body }` (v0.14) — runs each iteration
+    /// of the body as its own actor, in parallel, and collects the
+    /// results into an array in input order.
+    ///
+    /// Desugars — no dedicated AST node — to spawn-all then join-all:
+    ///
+    /// ```text
+    /// {
+    ///   $parallel_tasks := for[] (var, iter) { spawn fn() { body } };
+    ///   for[] ($parallel_t, $parallel_tasks) { __join($parallel_t) }
+    /// }
+    /// ```
+    ///
+    /// The first `__join` to see an actor error re-raises it out of the
+    /// block; siblings already spawned run to completion but their
+    /// results are discarded.
+    fn parse_parallel(&mut self) -> Result<SpannedExpr, ParseError> {
+        let kw_span = self.expect(&Token::Parallel)?;
+        // `parallel` is collect-only; an explicit `[]` is canonical
+        // but optional (there is no non-collecting form to confuse it
+        // with).
+        let _ = self.parse_array_form_marker()?;
+        self.expect(&Token::LParen)?;
+
+        let first_var = self.parse_ident_token()?;
+        self.expect(&Token::Comma)?;
+        let next_expr = self.parse_expr()?;
+        let (vars, iter) = if self.matches(&Token::Comma) {
+            let second = match next_expr.expr {
+                Expr::Ident(n) => n,
+                _ => {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidAssignTarget,
+                        next_expr.span,
+                    ));
+                }
+            };
+            (vec![first_var, second], self.parse_expr()?)
+        } else {
+            (vec![first_var], next_expr)
+        };
+        let rparen = self.expect(&Token::RParen)?;
+        let body = self.parse_scope()?;
+        let span = kw_span.join(rparen).join(body.span);
+
+        let s = |e| SpannedExpr::new(e, span);
+
+        // spawn fn() { body }
+        let actor = s(Expr::Fn {
+            params: Vec::new(),
+            defaults: Vec::new(),
+            rest: None,
+            body: Box::new(body),
+        });
+        let spawn_actor = s(Expr::Spawn(Box::new(actor)));
+
+        // $parallel_tasks := for[] (vars, iter) { spawn fn() { body } }
+        let collect = s(Expr::For {
+            is_array: true,
+            vars,
+            iter: Box::new(iter),
+            body: Box::new(spawn_actor),
+        });
+        let decl = s(Expr::Decl(
+            Pattern::Ident("$parallel_tasks".to_string()),
+            Box::new(collect),
+        ));
+
+        // for[] ($parallel_t, $parallel_tasks) { __join($parallel_t) }
+        let join_call = s(Expr::Call(
+            Box::new(s(Expr::Ident("__join".to_string()))),
+            vec![s(Expr::Ident("$parallel_t".to_string()))],
+        ));
+        let join_all = s(Expr::For {
+            is_array: true,
+            vars: vec!["$parallel_t".to_string()],
+            iter: Box::new(s(Expr::Ident("$parallel_tasks".to_string()))),
+            body: Box::new(join_call),
+        });
+
+        Ok(s(Expr::Block(Block {
+            stmts: vec![decl],
+            tail: Some(Box::new(join_all)),
+        })))
     }
 
     /// `match subject { pat => body, pat if guard => body, ... }`

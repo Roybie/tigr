@@ -200,6 +200,13 @@ pub enum RuntimeErrorKind {
     Cycle,
     /// A `match` expression fell through every arm without matching.
     NoMatch,
+    /// A value could not cross an actor/channel boundary: it cannot be
+    /// deep-copied into another heap. Carries a human description of
+    /// the offending value (e.g. a function with live captures, an
+    /// iterator, or a native function). v0.14.
+    NotSendable(String),
+    /// A `send` was attempted on a closed channel. v0.14.
+    ChannelClosed,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -228,6 +235,8 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::StackOverflow => "stack_overflow",
             RuntimeErrorKind::Cycle => "cycle",
             RuntimeErrorKind::NoMatch => "no_match",
+            RuntimeErrorKind::NotSendable(_) => "not_sendable",
+            RuntimeErrorKind::ChannelClosed => "channel_closed",
             RuntimeErrorKind::Raised(_) => "raised",
         }
     }
@@ -256,6 +265,12 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::StackOverflow => f.write_str("call stack depth exceeded"),
             RuntimeErrorKind::Cycle => f.write_str("circular reference"),
             RuntimeErrorKind::NoMatch => f.write_str("no matching arm in match expression"),
+            RuntimeErrorKind::NotSendable(t) => write!(
+                f, "{t} cannot be sent across actors"
+            ),
+            RuntimeErrorKind::ChannelClosed => {
+                f.write_str("send on a closed channel")
+            }
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
         }
     }

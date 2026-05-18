@@ -476,6 +476,9 @@ impl<'src> Lexer<'src> {
             "catch" => Token::Catch,
             "raise" => Token::Raise,
             "match" => Token::Match,
+            "spawn" => Token::Spawn,
+            "select" => Token::Select,
+            "parallel" => Token::Parallel,
             _ => Token::Ident(lexeme.to_string()),
         }
     }

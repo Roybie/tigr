@@ -1,0 +1,48 @@
+// http_server.tg — an HTTP server and clients in one process.
+//
+// The `Http` module's `read_request` / `write_response` pair drives a
+// bounded accept loop here (rather than the infinite `Http.serve`), so
+// the example handles a fixed number of requests and then exits
+// cleanly. Everything runs over the loopback interface — no network
+// access needed.
+
+Http  := import 'Http';
+Net   := import 'Net';
+Task  := import 'Task';
+
+listener := Net.listen('127.0.0.1', 0);
+port := Net.local_addr(listener).port;
+print('serving on 127.0.0.1:' + str(port));
+
+// The server: accept three requests, answer each, then stop. A real
+// server would loop forever (or use `Http.serve`); bounding the loop
+// lets the example terminate. The actor imports its own modules and
+// captures only the (sendable) listener.
+server := spawn fn() {
+    H := import 'Http';
+    N := import 'Net';
+    for (i, 1..=3) {
+        conn := N.accept(listener);
+        req := H.read_request(conn);
+        body := 'you asked for ' + req.path;
+        H.write_response(conn, ${
+            status:  200,
+            headers: ${'content-type': 'text/plain'},
+            body:    body,
+        });
+        N.close(conn)
+    };
+    N.close(listener);
+    null
+};
+
+// Three clients, each a one-line `Http.get` against the loopback
+// server. `Http` handles the connection, request framing, and
+// response parsing.
+base := 'http://127.0.0.1:' + str(port);
+for (path, ['/', '/about', '/contact']) {
+    resp := Http.get(base + path, ${timeout: 3000});
+    print(str(resp.status) + ' ' + resp.status_text + '  —  ' + Http.text(resp))
+};
+
+Task.join(server);

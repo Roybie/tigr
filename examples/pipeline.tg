@@ -1,0 +1,43 @@
+// pipeline.tg — a three-stage actor pipeline (v0.14).
+//
+// producer → transformer → consumer, each stage an actor, connected
+// by channels. Every stage closes its output channel when its input
+// is drained, so the shutdown signal flows down the pipeline.
+
+Channel := import 'Channel';
+Task    := import 'Task';
+
+raw  := Channel.new();
+done := Channel.new();
+
+// Stage 1 — produce the numbers 1..6.
+producer := spawn fn() {
+    C := import 'Channel';
+    for (i, 1..=6) { C.send(raw, i) };
+    C.close(raw)
+};
+
+// Stage 2 — square each number and forward it.
+transformer := spawn fn() {
+    C := import 'Channel';
+    step := fn() {
+        m := C.recv(raw);
+        if m.closed {
+            C.close(done)
+        } else {
+            C.send(done, m.value * m.value);
+            step()
+        }
+    };
+    step()
+};
+
+// Stage 3 — the parent collects the transformed values.
+collect := fn(acc) {
+    m := Channel.recv(done);
+    if m.closed { acc } else { collect(acc + [m.value]) }
+};
+print('pipeline output:', collect([]));
+
+Task.join(producer);
+Task.join(transformer);

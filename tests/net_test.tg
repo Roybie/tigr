@@ -1,0 +1,194 @@
+// tests/net_test.tg — v0.15 networking: the `Net` module.
+//
+// Every case runs in-process over the loopback interface, so the suite
+// stays offline — no case touches the public network. TLS is exercised
+// only by `examples/http_get.tg`, which `tigr test` does not run.
+//
+// The echo and close-unblocks cases pass a socket into a `spawn`ed
+// actor, exercising `Transfer::Socket` across the actor boundary. An
+// actor shares nothing, so it `import`s `Net` itself — only the socket
+// handles are captured (sockets are sendable, like channels).
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Net   := import 'Net';
+Test  := import 'Test';
+Task  := import 'Task';
+Bytes := import 'Bytes';
+Time  := import 'Time';
+
+[
+    Test.suite('Net — TCP connect / listen', [
+        Test.case('a listener bound to port 0 reports its OS-assigned port', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            Net.close(listener);
+            Test.assert(port > 0, 'port 0 should resolve to a real port')
+        }),
+
+        Test.case('a spawned actor echoes bytes back over a socket', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                msg := N.read(conn, 1024);
+                N.write(conn, msg);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.write(client, Bytes.from_string('ping'));
+            reply := Net.read_exact(client, 4);
+            Net.close(client);
+            Task.join(server);
+            Test.assert_eq(Bytes.to_string(reply), 'ping')
+        }),
+    ]),
+
+    Test.suite('Net — framed reads', [
+        Test.case('read_line / read_exact / read_all share the socket buffer', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                N.write(conn, B.from_string('line one\nline two\nABCDEFrest'));
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            l1   := Net.read_line(client);
+            l2   := Net.read_line(client);
+            six  := Net.read_exact(client, 6);
+            rest := Net.read_all(client);
+            Net.close(client);
+            Task.join(server);
+            Test.assert_eq(l1, 'line one');
+            Test.assert_eq(l2, 'line two');
+            Test.assert_eq(Bytes.to_string(six), 'ABCDEF');
+            Test.assert_eq(Bytes.to_string(rest), 'rest')
+        }),
+
+        Test.case('read_line returns null at end-of-stream', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            line := Net.read_line(client);
+            Net.close(client);
+            Task.join(server);
+            Test.assert_eq(line, null)
+        }),
+
+        Test.case('read past end-of-stream yields empty Bytes', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            chunk := Net.read(client, 16);
+            Net.close(client);
+            Task.join(server);
+            Test.assert_eq(#chunk, 0)
+        }),
+    ]),
+
+    Test.suite('Net — close & timeout', [
+        Test.case('close unblocks a reader stuck mid-read', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                N.read_all(conn);            // blocks until the client closes
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            reader := spawn fn() {
+                N := import 'Net';
+                N.read(client, 16)
+            };
+            Time.sleep_ms(100);              // let the reader reach its read
+            Net.close(client);               // unblocks it — read returns EOF
+            got := Task.join(reader);
+            Task.join(server);
+            Test.assert_eq(#got, 0)
+        }),
+
+        Test.case('a read past set_timeout raises timeout', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                N.read_all(conn);            // hold the connection open
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.set_timeout(client, 100);
+            Test.assert_raises(fn() { Net.read(client, 16) }, 'timeout');
+            Net.close(client);
+            Task.join(server)
+        }),
+
+        Test.case('close is idempotent and a closed socket raises closed', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                conn := N.accept(listener);
+                N.read_all(conn);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.close(client);
+            Net.close(client);               // idempotent — no raise
+            Test.assert_raises(fn() { Net.read(client, 8) }, 'closed');
+            Task.join(server)
+        }),
+    ]),
+
+    Test.suite('Net — UDP datagrams', [
+        Test.case('send_to / recv_from round-trip a datagram', fn() {
+            receiver := Net.bind('127.0.0.1', 0);
+            port := Net.local_addr(receiver).port;
+            sender := Net.bind('127.0.0.1', 0);
+            Net.send_to(sender, Bytes.from_string('udp hello'), '127.0.0.1', port);
+            got := Net.recv_from(receiver, 1024);
+            Net.close(sender);
+            Net.close(receiver);
+            Test.assert_eq(Bytes.to_string(got.data), 'udp hello')
+        }),
+    ]),
+
+    Test.suite('Net — argument errors', [
+        Test.case('an operation on a non-socket raises type_mismatch', fn() {
+            Test.assert_raises(fn() { Net.read(42, 8) }, 'type_mismatch')
+        }),
+
+        Test.case('a port outside 0..=65535 is rejected', fn() {
+            Test.assert_raises(fn() { Net.connect('127.0.0.1', 99999) })
+        }),
+    ]),
+]

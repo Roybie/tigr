@@ -393,6 +393,12 @@ pub enum Expr {
     // of this expression.
     Raise(Box<SpannedExpr>),
 
+    // `spawn expr` (v0.14) — evaluates `expr` to a function, runs it
+    // as a new actor on its own OS thread + heap, and evaluates to a
+    // `Task` handle. The function is deep-copied across the boundary,
+    // so it may capture only sendable values.
+    Spawn(Box<SpannedExpr>),
+
     // `match subject { pat => body, pat if guard => body, ... }`
     // (v0.5). Arms are tried top-to-bottom; the value is the body of
     // the first matching arm, or `null` if no arm matches.

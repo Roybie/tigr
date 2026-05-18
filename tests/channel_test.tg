@@ -1,0 +1,100 @@
+// tests/channel_test.tg — v0.14 concurrency: `Channel` primitives.
+//
+// These cases are all single-threaded: they only ever `recv` from a
+// channel that already has a buffered message or is closed, so no
+// case can block. Cross-actor channel use is covered in spawn_test.tg.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test    := import 'Test';
+Channel := import 'Channel';
+
+[
+    Test.suite('Channel — buffered send / recv', [
+        Test.case('recv returns a sent message wrapped in a value object', fn() {
+            ch := Channel.new();
+            Channel.send(ch, 42);
+            Test.assert_eq(Channel.recv(ch).value, 42)
+        }),
+
+        Test.case('messages come back in FIFO order', fn() {
+            ch := Channel.new();
+            for (i, 1..=3) { Channel.send(ch, i) };
+            Test.assert_eq(Channel.recv(ch).value, 1);
+            Test.assert_eq(Channel.recv(ch).value, 2);
+            Test.assert_eq(Channel.recv(ch).value, 3)
+        }),
+
+        Test.case('a null message is a value object, not empty', fn() {
+            ch := Channel.new();
+            Channel.send(ch, null);
+            Test.assert_eq(Channel.recv(ch).value, null)
+        }),
+    ]),
+
+    Test.suite('Channel — close semantics', [
+        Test.case('recv drains buffered messages, then reports closed', fn() {
+            ch := Channel.new();
+            Channel.send(ch, 'a');
+            Channel.send(ch, 'b');
+            Channel.close(ch);
+            Test.assert_eq(Channel.recv(ch).value, 'a');
+            Test.assert_eq(Channel.recv(ch).value, 'b');
+            Test.assert_eq(Channel.recv(ch).closed, true)
+        }),
+
+        Test.case('send on a closed channel raises channel_closed', fn() {
+            ch := Channel.new();
+            Channel.close(ch);
+            Test.assert_raises(fn() { Channel.send(ch, 1) }, 'channel_closed')
+        }),
+    ]),
+
+    Test.suite('Channel — try_recv', [
+        Test.case('try_recv on an empty channel reports empty', fn() {
+            ch := Channel.new();
+            Test.assert_eq(Channel.try_recv(ch).empty, true)
+        }),
+
+        Test.case('try_recv yields a buffered message', fn() {
+            ch := Channel.new();
+            Channel.send(ch, 7);
+            Test.assert_eq(Channel.try_recv(ch).value, 7);
+            Test.assert_eq(Channel.try_recv(ch).empty, true)
+        }),
+    ]),
+
+    Test.suite('Channel — bounded buffer', [
+        Test.case('a bounded channel accepts up to its capacity', fn() {
+            ch := Channel.new(2);
+            Channel.send(ch, 1);
+            Channel.send(ch, 2);          // buffer now full — a 3rd would block
+            Test.assert_eq(Channel.recv(ch).value, 1);
+            Channel.send(ch, 3);          // recv freed a slot
+            Test.assert_eq(Channel.recv(ch).value, 2);
+            Test.assert_eq(Channel.recv(ch).value, 3)
+        }),
+    ]),
+
+    Test.suite('Channel — message semantics', [
+        Test.case('a sent collection is deep-copied, not shared', fn() {
+            ch := Channel.new();
+            original := [1, 2, 3];
+            Channel.send(ch, original);
+            original[0] = 99;             // mutate after sending
+            Test.assert_eq(Channel.recv(ch).value, [1, 2, 3])
+        }),
+
+        Test.case('a closure with no open captures is sendable', fn() {
+            ch := Channel.new();
+            Channel.send(ch, fn(x) { x * 2 });
+            double := Channel.recv(ch).value;
+            Test.assert_eq(double(21), 42)
+        }),
+
+        Test.case('sending a native function raises not_sendable', fn() {
+            ch := Channel.new();
+            Test.assert_raises(fn() { Channel.send(ch, print) }, 'not_sendable')
+        }),
+    ]),
+]

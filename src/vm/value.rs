@@ -11,10 +11,14 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use num_bigint::BigInt as BigIntData;
 
+use crate::vm::channel::ChannelHandle;
 use crate::vm::chunk::Chunk;
+use crate::vm::socket::SocketHandle;
+use crate::vm::task::TaskHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc::{
     ArrayKind, BytesKind, ClosureKind, GcRef, IterKind, MapKind, ObjectKind,
@@ -63,6 +67,20 @@ pub enum Value {
     // Created explicitly via `BigInt.new(...)`; an overflowing `Int`
     // still raises `overflow` (v0.8) rather than promoting here.
     BigInt(Rc<BigIntData>),
+
+    // v0.14 — a message-passing channel between actors. `Arc`-backed
+    // and `Send`; lives outside any heap, so the collector skips it
+    // (a GC leaf, like NativeFn). Equality is handle identity.
+    Channel(ChannelHandle),
+
+    // v0.14 — a handle to a spawned actor's eventual result. Like
+    // `Channel`: `Arc`-backed, `Send`, a GC leaf, identity equality.
+    Task(TaskHandle),
+
+    // v0.15 — a network socket (TCP / UDP / TLS). Like `Channel`:
+    // `Arc`-backed, `Send`, a GC leaf, identity equality — so it can
+    // cross an actor boundary into a `spawn`ed connection handler.
+    Socket(SocketHandle),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,8 +336,10 @@ pub struct UpvalueInfo {
 }
 
 /// Runtime callable: a function template + its captured upvalue cells.
+/// `function` is an `Arc` (not `Rc`) so the immutable compiled code can
+/// be shared with actor worker threads (v0.14 concurrency).
 pub struct Closure {
-    pub function: Rc<Function>,
+    pub function: Arc<Function>,
     pub upvalues: Vec<GcRef<UpvalueKind>>,
 }
 
@@ -390,6 +410,9 @@ impl Value {
             Value::Function(_) => "function",
             Value::NativeFn(_) => "native function",
             Value::BigInt(_) => "bigint",
+            Value::Channel(_) => "channel",
+            Value::Task(_) => "task",
+            Value::Socket(_) => "socket",
         }
     }
 
@@ -423,6 +446,9 @@ impl PartialEq for Value {
             (Iter(a), Iter(b)) => a == b,
             (Function(a), Function(b)) => a == b,
             (NativeFn(a), NativeFn(b)) => Rc::ptr_eq(a, b),
+            (Channel(a), Channel(b)) => Arc::ptr_eq(a, b),
+            (Task(a), Task(b)) => Arc::ptr_eq(a, b),
+            (Socket(a), Socket(b)) => Arc::ptr_eq(a, b),
             (BigInt(a), BigInt(b)) => a == b,
             // A `BigInt` and an `Int` of equal value compare equal,
             // mirroring `Int`/`Float` cross-type equality above.
@@ -556,6 +582,9 @@ impl fmt::Display for Value {
             }
             Value::NativeFn(n) => write!(f, "<native fn {}>", n.name),
             Value::BigInt(n) => write!(f, "{n}"),
+            Value::Channel(_) => f.write_str("<channel>"),
+            Value::Task(_) => f.write_str("<task>"),
+            Value::Socket(s) => write!(f, "<socket #{}>", s.id()),
         }
     }
 }
@@ -566,5 +595,23 @@ impl fmt::Debug for Value {
             Value::Str(s) => write!(f, "'{s}'"),
             other => write!(f, "{other}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::chunk::{Chunk, Const};
+
+    /// v0.14: compiled code must be `Send + Sync` so an `Arc<Function>`
+    /// can be handed to an actor worker thread. A compile-time check —
+    /// the bounds fail to type-check if the invariant ever breaks.
+    #[test]
+    fn compiled_code_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Const>();
+        assert_send_sync::<Chunk>();
+        assert_send_sync::<Function>();
+        assert_send_sync::<Arc<Function>>();
     }
 }

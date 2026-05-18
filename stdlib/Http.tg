@@ -1,0 +1,401 @@
+// Tigr stdlib — `import 'Http'`.
+//
+// An HTTP/1.1 client and server helper, layered on the native `Net`,
+// `String`, `Bytes`, and `JSON` modules. Pure tigr — no Rust.
+//
+// CLIENT.  `request(opts)` and the `get`/`post`/`put`/`delete`/`head`/
+// `patch` wrappers perform one request and return
+//   ${status: Int, status_text: String, headers: Object, body: Bytes}
+// `headers` keys are lowercased; on a duplicate header the last value
+// wins (a documented v1 limitation). `body` is always `Bytes` — use the
+// `text(resp)` / `json(resp)` helpers to decode it. 3xx redirects are
+// followed automatically (cap 10, opt-out via `opts.follow_redirects`);
+// 301/302/303 continue as GET, 307/308 preserve the method and body.
+//
+// `opts` = ${url, method, headers, body, max_redirects, follow_redirects,
+// timeout}. Only `url` is required; `body` may be a `String` or `Bytes`;
+// `timeout` (ms) bounds each socket read/write.
+//
+// SERVER.  `read_request(sock)` / `write_response(sock, resp)` are the
+// low-level pair; `serve(listener, handler)` is an accept loop that
+// `spawn`s one actor per connection. Because a spawned closure is
+// deep-copied across the actor boundary, the `handler` passed to
+// `serve` MUST be sendable — it must `import` any modules it needs
+// inside its own body, never capture them (the same rule as `spawn`).
+//
+// v1 has no keep-alive: every request sends `Connection: close`, so a
+// response with neither `Content-Length` nor chunked framing is read
+// to end-of-stream.
+
+_net   := import 'Net';
+_url   := import 'Url';
+_str   := import 'String';
+_bytes := import 'Bytes';
+_json  := import 'JSON';
+
+// -- byte-buffer helpers ----------------------------------------------
+
+// Append the UTF-8 bytes of `s` to buffer `buf` in place.
+_append := fn(buf, s) { _bytes.extend(buf, _bytes.from_string(s)) };
+
+// Coerce a request/response body (String, Bytes, or null) to Bytes.
+_as_body := fn(b) {
+    if b == null { _bytes.new(0) }
+    else if type(b) == 'string' { _bytes.from_string(b) }
+    else { b }
+};
+
+// -- header & body reading --------------------------------------------
+
+// Read header lines from `sock` until the blank line. Returns an Object
+// with lowercased keys; a repeated header keeps its last value.
+_read_headers := fn(sock) {
+    headers := ${};
+    while true {
+        line := _net.read_line(sock);
+        if line == null { break };               // EOF mid-headers
+        if #line == 0 { break };                  // blank line ends them
+        ci := _str.index_of(line, ':');
+        if ci >= 0 {
+            key := _str.lower(_str.trim(line[0 .. ci]));
+            headers[key] = _str.trim(line[ci + 1 .. #line])
+        }
+    };
+    headers
+};
+
+// Parse a chunk-size line (hex, optional `;ext` suffix) to an Int.
+_parse_hex := fn(s) {
+    t := _str.trim(s);
+    semi := _str.index_of(t, ';');
+    if semi >= 0 { t = t[0 .. semi] };
+    n := 0;
+    for (b, _bytes.from_string(_str.trim(t))) {
+        v := if b >= 48 && b <= 57 { b - 48 }
+             else if b >= 65 && b <= 70 { b - 55 }
+             else if b >= 97 && b <= 102 { b - 87 }
+             else { raise ${kind: 'protocol', message: 'Http: malformed chunk size'} };
+        n = n * 16 + v
+    };
+    n
+};
+
+// Read a `Transfer-Encoding: chunked` body to its terminating 0-chunk.
+_chunked_decode := fn(sock) {
+    body := _bytes.new(0);
+    while true {
+        size_line := _net.read_line(sock);
+        if size_line == null { break };
+        size := _parse_hex(size_line);
+        if size == 0 {
+            // drain optional trailers up to the final blank line
+            while true {
+                t := _net.read_line(sock);
+                if t == null { break };
+                if #t == 0 { break }
+            };
+            break
+        };
+        _bytes.extend(body, _net.read_exact(sock, size));
+        _net.read_line(sock)                       // consume the chunk CRLF
+    };
+    body
+};
+
+// Read a message body: chunked → Content-Length → read-to-EOF.
+_read_body := fn(sock, headers) {
+    te := headers['transfer-encoding'];
+    if te != null && _str.contains(_str.lower(te), 'chunked') {
+        return _chunked_decode(sock)
+    };
+    cl := headers['content-length'];
+    if cl != null {
+        return _net.read_exact(sock, int(_str.trim(cl)))
+    };
+    _net.read_all(sock)
+};
+
+// -- client -----------------------------------------------------------
+
+// Resolve a `Location` value against the URL it was returned from.
+_resolve := fn(base, loc) {
+    if _str.index_of(loc, '://') >= 0 { return loc };       // already absolute
+    b := _url.parse(base);
+    origin := b.scheme + '://' + b.host;
+    if b.port != null { origin = origin + ':' + str(b.port) };
+    if #loc > 0 && loc[0] == '/' { return origin + loc };   // root-relative
+    // relative path — replace the last segment of the base path
+    slashes := _str.find_all(b.path, '/');
+    dir := if #slashes == 0 { '/' } else { b.path[0 .. slashes[#slashes - 1] + 1] };
+    origin + dir + loc
+};
+
+// Perform one HTTP request, following redirects. See the file header
+// for `opts` and the response shape.
+_request := fn(opts) {
+    headers := if opts.headers == null { ${} } else { opts.headers };
+    max_redirects := if opts.max_redirects == null { 10 } else { opts.max_redirects };
+    follow := if opts.follow_redirects == null { true } else { opts.follow_redirects };
+
+    method := if opts.method == null { 'GET' } else { _str.upper(opts.method) };
+    body := _as_body(opts.body);
+    has_body := opts.body != null;
+
+    current := opts.url;
+    redirects := 0;
+    result := null;
+
+    while true {
+        u := _url.parse(current);
+
+        // connect — pick the port and the plain/TLS transport
+        port := u.port;
+        sock := if u.scheme == 'https' {
+            if port == null { port = 443 };
+            _net.connect_tls(u.host, port)
+        } else if u.scheme == 'http' {
+            if port == null { port = 80 };
+            _net.connect(u.host, port)
+        } else {
+            raise ${kind: 'unsupported_scheme',
+                    message: 'Http: unsupported scheme ' + str(u.scheme)}
+        };
+        if opts.timeout != null { _net.set_timeout(sock, opts.timeout) };
+
+        // build the request
+        target := u.path;
+        if u.query != null { target = target + '?' + u.query };
+        host_hdr := u.host;
+        if u.port != null { host_hdr = host_hdr + ':' + str(u.port) };
+
+        req := _bytes.from_string(method + ' ' + target + ' HTTP/1.1\r\n');
+        _append(req, 'Host: ' + host_hdr + '\r\n');
+        _append(req, 'Connection: close\r\n');
+        if has_body { _append(req, 'Content-Length: ' + str(#body) + '\r\n') };
+        for (k, v, headers) { _append(req, k + ': ' + str(v) + '\r\n') };
+        _append(req, '\r\n');
+        if has_body { _bytes.extend(req, body) };
+        _net.write(sock, req);
+
+        // status line
+        status_line := _net.read_line(sock);
+        if status_line == null {
+            _net.close(sock);
+            raise ${kind: 'protocol', message: 'Http: empty response'}
+        };
+        sp1 := _str.index_of(status_line, ' ');
+        if sp1 < 0 {
+            _net.close(sock);
+            raise ${kind: 'protocol', message: 'Http: malformed status line'}
+        };
+        after := status_line[sp1 + 1 .. #status_line];
+        sp2 := _str.index_of(after, ' ');
+        status := int(if sp2 >= 0 { after[0 .. sp2] } else { after });
+        status_text := if sp2 >= 0 { after[sp2 + 1 .. #after] } else { '' };
+
+        // headers, then the body (skipped where the spec forbids one)
+        resp_headers := _read_headers(sock);
+        resp_body := _bytes.new(0);
+        if method != 'HEAD' && status >= 200 && status != 204 && status != 304 {
+            resp_body = _read_body(sock, resp_headers)
+        };
+        _net.close(sock);
+
+        result = ${
+            status:      status,
+            status_text: status_text,
+            headers:     resp_headers,
+            body:        resp_body,
+        };
+
+        // redirect?
+        location := resp_headers['location'];
+        if follow && status >= 300 && status < 400 && location != null {
+            if redirects >= max_redirects {
+                raise ${kind: 'too_many_redirects',
+                        message: 'Http: exceeded ' + str(max_redirects) + ' redirects'}
+            };
+            current = _resolve(current, location);
+            redirects = redirects + 1;
+            // 301/302/303 → GET with no body; 307/308 keep method + body
+            if status == 301 || status == 302 || status == 303 {
+                method = if method == 'HEAD' { 'HEAD' } else { 'GET' };
+                has_body = false;
+                body = _bytes.new(0)
+            };
+            continue
+        };
+        break
+    };
+    result
+};
+
+// `opts` merged with `over` — `over` wins on a key collision.
+_with := fn(opts, over) {
+    base := if opts == null { ${} } else { opts };
+    ${...base, ...over}
+};
+
+_get    := fn(url, opts = null) { _request(_with(opts, ${url: url, method: 'GET'})) };
+_head   := fn(url, opts = null) { _request(_with(opts, ${url: url, method: 'HEAD'})) };
+_delete := fn(url, opts = null) { _request(_with(opts, ${url: url, method: 'DELETE'})) };
+_post   := fn(url, body = null, opts = null) {
+    _request(_with(opts, ${url: url, method: 'POST', body: body}))
+};
+_put    := fn(url, body = null, opts = null) {
+    _request(_with(opts, ${url: url, method: 'PUT', body: body}))
+};
+_patch  := fn(url, body = null, opts = null) {
+    _request(_with(opts, ${url: url, method: 'PATCH', body: body}))
+};
+
+// Decode a response body as UTF-8 text.
+_text := fn(resp) { _bytes.to_string(resp.body) };
+
+// Parse a response body as JSON.
+_json_of := fn(resp) { _json.parse(_bytes.to_string(resp.body)) };
+
+// -- server -----------------------------------------------------------
+
+// Reason phrase for a status code — a small, common set.
+_status_text := fn(code) {
+    match code {
+        200 => 'OK',
+        201 => 'Created',
+        202 => 'Accepted',
+        204 => 'No Content',
+        301 => 'Moved Permanently',
+        302 => 'Found',
+        303 => 'See Other',
+        304 => 'Not Modified',
+        307 => 'Temporary Redirect',
+        308 => 'Permanent Redirect',
+        400 => 'Bad Request',
+        401 => 'Unauthorized',
+        403 => 'Forbidden',
+        404 => 'Not Found',
+        405 => 'Method Not Allowed',
+        500 => 'Internal Server Error',
+        _   => 'Status',
+    }
+};
+
+// Read one HTTP request from an accepted connection. Returns
+// ${method, path, query: Object, headers: Object, body: Bytes}. The
+// body is read only when a `Content-Length` / `Transfer-Encoding`
+// header is present — otherwise a request would block waiting for EOF.
+_read_request := fn(sock) {
+    line := _net.read_line(sock);
+    if line == null {
+        raise ${kind: 'eof', message: 'Http.read_request: connection closed'}
+    };
+    parts := _str.split(line, ' ');
+    target := if #parts > 1 { parts[1] } else { '/' };
+
+    path := target;
+    query := ${};
+    qi := _str.index_of(target, '?');
+    if qi >= 0 {
+        path = target[0 .. qi];
+        query = _url.parse_query(target[qi + 1 .. #target])
+    };
+
+    headers := _read_headers(sock);
+    body := _bytes.new(0);
+    if headers['content-length'] != null || headers['transfer-encoding'] != null {
+        body = _read_body(sock, headers)
+    };
+
+    ${
+        method:  parts[0],
+        path:    path,
+        query:   query,
+        headers: headers,
+        body:    body,
+    }
+};
+
+// Write an HTTP response. `resp` = ${status, headers, body}; `status`
+// defaults to 200, `body` may be a String or Bytes. `Content-Length`
+// and `Connection: close` are always set.
+_write_response := fn(sock, resp) {
+    status := if resp.status == null { 200 } else { resp.status };
+    headers := if resp.headers == null { ${} } else { resp.headers };
+    body := _as_body(resp.body);
+
+    out := _bytes.from_string(
+        'HTTP/1.1 ' + str(status) + ' ' + _status_text(status) + '\r\n');
+    _append(out, 'Content-Length: ' + str(#body) + '\r\n');
+    _append(out, 'Connection: close\r\n');
+    for (k, v, headers) { _append(out, k + ': ' + str(v) + '\r\n') };
+    _append(out, '\r\n');
+    _bytes.extend(out, body);
+    _net.write(sock, out)
+};
+
+// Accept connections on `listener`, handing each to its own `spawn`ed
+// actor. The actor imports `Http`/`Net` fresh and captures only the
+// socket and `handler` — `handler` must therefore be sendable (import
+// modules inside its own body). A `handler` returning a String becomes
+// a `200 text/plain` response; an Object is sent as-is. A handler that
+// raises yields a best-effort `500`, so one bad request never stops
+// the loop.
+//
+// `serve` runs until its `listener` is closed: `close(listener)` (from
+// any actor) makes the next `accept` raise `closed`, which `serve`
+// catches and returns cleanly — so a `serve` actor can be joined after
+// a deliberate shutdown. Any other error propagates.
+_serve := fn(listener, handler) {
+    running := true;
+    while running {
+        conn := try {
+            _net.accept(listener)
+        } catch (e) {
+            if type(e) == 'object' && e.kind == 'closed' {
+                running = false;
+                null
+            } else {
+                raise e
+            }
+        };
+        if conn != null {
+            spawn fn() {
+                H := import 'Http';
+                N := import 'Net';
+                try {
+                    req := H.read_request(conn);
+                    res := handler(req);
+                    response := if type(res) == 'string' {
+                        ${status: 200, headers: ${'content-type': 'text/plain'}, body: res}
+                    } else {
+                        res
+                    };
+                    H.write_response(conn, response)
+                } catch (e) {
+                    try {
+                        H.write_response(conn,
+                            ${status: 500, headers: ${}, body: 'Internal Server Error'})
+                    } catch (e2) { null }
+                };
+                N.close(conn);
+                null
+            }
+        }
+    };
+    null
+};
+
+${
+    request:        _request,
+    get:            _get,
+    post:           _post,
+    put:            _put,
+    delete:         _delete,
+    head:           _head,
+    patch:          _patch,
+    text:           _text,
+    json:           _json_of,
+    read_request:   _read_request,
+    write_response: _write_response,
+    serve:          _serve,
+}

@@ -1,0 +1,40 @@
+// Tigr stdlib — `import 'Channel'`.
+//
+// A `Channel` carries messages between actors (v0.14 concurrency).
+// It is the one reference type that crosses actor threads: values
+// sent through it are deep-copied into the receiving actor's heap.
+//
+// `Channel.new()` is unbounded; `Channel.new(n)` bounds the buffer at
+// `n` messages, so `send` blocks (backpressure) while the buffer is
+// full. Channels are bidirectional — any holder may both send and
+// receive.
+//
+// `recv` and `try_recv` return an object to pattern-match on:
+//   ${value: v}      — a message `v`
+//   ${closed: true}  — the channel is closed and drained
+//   ${empty: true}   — (`try_recv` only) nothing ready right now
+//
+// Thin re-exports of the Rust `_NativeChannel` backend, except `new`,
+// which defaults the capacity.
+
+_c := import '_NativeChannel';
+
+${
+    // `new()` → unbounded channel. `new(n)` → bounded at `n` messages.
+    new: fn(capacity = null) { _c.new(capacity) },
+
+    // `send(ch, msg)` → enqueues `msg` (deep-copied). Blocks on a full
+    // bounded channel; raises `channel_closed` on a closed channel.
+    send: _c.send,
+
+    // `recv(ch)` → blocks for the next message. Returns `${value: v}`
+    // or `${closed: true}`.
+    recv: _c.recv,
+
+    // `try_recv(ch)` → never blocks. Returns `${value: v}`,
+    // `${closed: true}`, or `${empty: true}`.
+    try_recv: _c.try_recv,
+
+    // `close(ch)` → closes the channel, waking blocked actors.
+    close: _c.close,
+}

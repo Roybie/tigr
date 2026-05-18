@@ -1,0 +1,48 @@
+// tests/parallel_test.tg — v0.14 concurrency: the `parallel[]` block.
+//
+// `parallel[]` runs each iteration of its body as its own actor, all
+// concurrently, and collects the results into an array in input
+// order. The body is deep-copied per actor, so it shares nothing —
+// it captures only sendable values.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test := import 'Test';
+
+[
+    Test.suite('parallel — fan out and collect', [
+        Test.case('collects results in input order', fn() {
+            squares := parallel[] (i, 1..=5) { i * i };
+            Test.assert_eq(squares, [1, 4, 9, 16, 25])
+        }),
+
+        Test.case('works over an array', fn() {
+            out := parallel[] (w, ['a', 'b', 'c']) { w + '!' };
+            Test.assert_eq(out, ['a!', 'b!', 'c!'])
+        }),
+
+        Test.case('the body captures sendable outer values', fn() {
+            factor := 10;
+            out := parallel[] (n, 1..=3) { n * factor };
+            Test.assert_eq(out, [10, 20, 30])
+        }),
+
+        Test.case('the two-variable form yields index and value', fn() {
+            out := parallel[] (idx, x, ['p', 'q', 'r']) { str(idx) + x };
+            Test.assert_eq(out, ['0p', '1q', '2r'])
+        }),
+    ]),
+
+    Test.suite('parallel — error propagation', [
+        Test.case('a body raise propagates out of the block', fn() {
+            Test.assert_raises(
+                fn() {
+                    parallel[] (i, 1..=5) {
+                        if i == 3 { raise 'bad input' } else { i }
+                    }
+                },
+                'bad input'
+            )
+        }),
+    ]),
+]

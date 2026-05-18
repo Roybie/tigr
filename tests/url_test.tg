@@ -1,0 +1,86 @@
+// tests/url_test.tg — the `Url` source-stdlib module.
+//
+// Pure and offline: URL parsing, the percent-codec, and query strings.
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Url  := import 'Url';
+Test := import 'Test';
+
+[
+    Test.suite('Url — parse', [
+        Test.case('splits scheme, host, port, path, query, fragment', fn() {
+            u := Url.parse('https://example.com:8080/a/b?x=1&y=2#frag');
+            Test.assert_eq(u.scheme, 'https');
+            Test.assert_eq(u.host, 'example.com');
+            Test.assert_eq(u.port, 8080);
+            Test.assert_eq(u.path, '/a/b');
+            Test.assert_eq(u.query, 'x=1&y=2');
+            Test.assert_eq(u.fragment, 'frag')
+        }),
+
+        Test.case('a port-less URL leaves port null and defaults path', fn() {
+            u := Url.parse('http://example.com');
+            Test.assert_eq(u.port, null);
+            Test.assert_eq(u.path, '/');
+            Test.assert_eq(u.query, null);
+            Test.assert_eq(u.fragment, null)
+        }),
+
+        Test.case('a query with no path still parses', fn() {
+            u := Url.parse('http://h?a=1');
+            Test.assert_eq(u.path, '/');
+            Test.assert_eq(u.query, 'a=1')
+        }),
+
+        Test.case('a missing scheme raises', fn() {
+            Test.assert_raises(fn() { Url.parse('example.com/x') })
+        }),
+
+        Test.case('build(parse(u)) round-trips', fn() {
+            original := 'https://example.com:8080/a/b?x=1#f';
+            Test.assert_eq(Url.build(Url.parse(original)), original)
+        }),
+    ]),
+
+    Test.suite('Url — percent-codec', [
+        Test.case('encode escapes reserved bytes, keeps the unreserved set', fn() {
+            Test.assert_eq(Url.encode('a b/c'), 'a%20b%2Fc');
+            Test.assert_eq(Url.encode('safe-._~'), 'safe-._~')
+        }),
+
+        Test.case('decode reverses encode', fn() {
+            Test.assert_eq(Url.decode('a%20b%2Fc'), 'a b/c')
+        }),
+
+        Test.case('a multibyte UTF-8 string round-trips byte-wise', fn() {
+            s := 'héllo wörld — 日本語';
+            Test.assert_eq(Url.decode(Url.encode(s)), s)
+        }),
+
+        Test.case('a malformed %-escape raises decode', fn() {
+            Test.assert_raises(fn() { Url.decode('%G1') }, 'decode');
+            Test.assert_raises(fn() { Url.decode('%2') }, 'decode')
+        }),
+    ]),
+
+    Test.suite('Url — query strings', [
+        Test.case('parse_query form-decodes both sides; + becomes space', fn() {
+            q := Url.parse_query('name=tigr+lang&note=a%20b');
+            Test.assert_eq(q.name, 'tigr lang');
+            Test.assert_eq(q.note, 'a b')
+        }),
+
+        Test.case('a duplicate key keeps the last value', fn() {
+            Test.assert_eq(Url.parse_query('k=1&k=2').k, '2')
+        }),
+
+        Test.case('encode_query / parse_query round-trip', fn() {
+            obj := ${a: '1', b: 'x y', c: 'p&q'};
+            Test.assert_eq(Url.parse_query(Url.encode_query(obj)), obj)
+        }),
+
+        Test.case('parse_query of the empty string is an empty object', fn() {
+            Test.assert_eq(Url.parse_query(''), ${})
+        }),
+    ]),
+]

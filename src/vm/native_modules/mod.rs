@@ -10,17 +10,20 @@
 pub mod array;
 pub mod bigint;
 pub mod bytes;
+pub mod channel;
 pub mod datetime;
 pub mod io;
 pub mod json;
 pub mod map;
 pub mod math;
+pub mod net;
 pub mod object;
 pub mod os;
 pub mod path;
 pub mod random;
 pub mod set;
 pub mod string;
+pub mod task;
 pub mod time;
 
 use std::rc::Rc;
@@ -45,9 +48,12 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Random" => Some(random::module()),
         "Bytes" => Some(bytes::module()),
         "BigInt" => Some(bigint::module()),
+        "Task" => Some(task::module()),
+        "Net" => Some(net::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
+        "_NativeChannel" => Some(channel::module()),
         "_NativeArray" => Some(array::module()),
         "_NativeMap" => Some(map::module()),
         "_NativeMath" => Some(math::module()),

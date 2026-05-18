@@ -1,0 +1,40 @@
+// worker_pool.tg — a fixed pool of actors draining a job queue (v0.14).
+//
+// A bounded set of worker actors pull jobs from one shared channel
+// and push results to another — the classic way to cap concurrency
+// when there are far more jobs than you want threads.
+
+Channel := import 'Channel';
+Task    := import 'Task';
+
+jobs    := Channel.new();
+results := Channel.new();
+
+// Start four workers. Each pulls jobs until the queue is closed.
+workers := for[] (id, 1..=4) {
+    spawn fn() {
+        C := import 'Channel';
+        work := fn() {
+            job := C.recv(jobs);
+            if job.closed {
+                null
+            } else {
+                C.send(results, job.value * job.value);
+                work()
+            }
+        };
+        work()
+    }
+};
+
+// Enqueue twelve jobs, then close the queue so workers wind down.
+for (n, 1..=12) { Channel.send(jobs, n) };
+Channel.close(jobs);
+
+// Collect the twelve results. Completion order is nondeterministic,
+// but the sum is stable: 1 + 4 + 9 + ... + 144 = 650.
+total := 0;
+for (_, 1..=12) { total = total + Channel.recv(results).value };
+print('sum of squared jobs:', total);
+
+for (w, workers) { Task.join(w) };

@@ -1,10 +1,10 @@
 # Tigr Roadmap
 
 Planned work beyond v0.7b. The `v0.N` line continues — v0.8–v0.11 are
-shipped, v0.12–v0.15 are planned below, and 1.0 is a stabilization
+shipped, v0.12–v0.16 are planned below, and 1.0 is a stabilization
 release after them. Items 1–14 keep the reference number from the
-original design discussion; items 15+ were added in a later roadmap
-extension.
+original design discussion; items 15+ were added in later roadmap
+extensions.
 
 Conventions for every release below:
 
@@ -456,34 +456,98 @@ The one design-led release, and possibly breaking. Everything below
 v0.14 is single-threaded; this release decides whether — and how —
 Tigr runs concurrent work.
 
-### 22. Concurrency model  *(design-led, possibly BREAKING)*
+### 22. Concurrency model — DONE ✅ (v0.14)
 
-The v0.10 GC is deliberately **per-thread** (`memory/
-v10-design-decisions.md`): a thread-local arena heap with `GcRef`
-handles. That decision forecloses shared-memory threading — a `Value`
-cannot safely cross threads — and pushes toward a message-passing
-model where each worker owns its own heap.
+Shipped as an **OS-thread actor model with message-passing channels**.
+The v0.10 GC is deliberately per-thread (a thread-local arena heap with
+`GcRef` handles), which foreclosed shared-memory threading and made
+actors the natural fit: each actor is an OS thread with its own heap,
+and no `Value` is ever shared across threads.
 
-Likely shape, to be confirmed before implementation:
+Resolved design choices (the open questions, settled with the owner):
 
-- **Message-passing actors / structured async**, not shared-memory
-  threads. Each unit of concurrency gets its own heap; communication
-  is by sending values down channels, which deep-copy across the heap
-  boundary.
-- New surface: spawning a task, a channel type, and a `select`/await
-  form — kept expression-oriented like the rest of the language.
-- **Open questions to settle first:** cooperative vs. OS threads;
-  whether channels copy or move; how an uncaught error in a worker
-  surfaces (extend the existing stack traces across the send
-  boundary); GC implications of one heap per worker.
+- **OS threads, not cooperative.** Native functions are bare
+  `fn` pointers that cannot yield, so a cooperative model would have
+  needed an async-I/O reactor and a new native-call ABI. OS-thread
+  actors instead work *with* the per-thread heap — zero GC changes.
+- **Channels deep-copy.** A separate `Send` `Transfer` encoding is
+  built on the sender's thread and decoded into the receiver's heap;
+  a `GcRef` never crosses. A function is sendable iff its captures
+  are; an iterator / native function is not (`not_sendable`).
+- **Worker errors** render on the worker's own `SourceMap` (the
+  parent's is not `Send`) and re-raise at `Task.join` — the raised
+  value verbatim, or a `${kind, message, trace, worker}` object.
 
-This item should get a dedicated design pass — quite possibly an
-explicit decision check with the project owner — before any code
-lands. It is the heaviest item on the extended roadmap.
+Surface (all expression-oriented): `spawn` (→ a `Task`), `Task.join`,
+the `Channel` module (bounded/unbounded, `send`/`recv`/`try_recv`/
+`close`), the `select { ... }` block, and the structured `parallel[]`
+fan-out-collect block. See `LANGUAGE.md` Appendix L and the
+`examples/` concurrency demos (`spawn`, `channels`, `select`,
+`parallel`, `pipeline`, `worker_pool`).
 
 ---
 
-## v0.15 — Editor & developer tooling  *(optional)*
+## v0.15 — Networking
+
+The networking layer foretold by v0.13's `Bytes` design note — *"the
+prerequisite for any future networking work"* — and unblocked by the
+v0.14 actor model. Not in the roadmap's original numbered items; added
+here after concurrency landed.
+
+### 27. `Net` module — DONE ✅ (v0.15)
+
+Shipped as a native `Net` module over **blocking OS-socket I/O**, which
+fits the v0.14 actor model directly: each actor is its own OS thread,
+so a blocking socket call parks only that actor — no async reactor
+needed.
+
+Resolved design choices (settled with the owner):
+
+- **Scope: TCP + UDP + TLS.** A TCP listener and streams, UDP datagram
+  sockets, and a TLS client — `rustls` with the `ring` crypto provider,
+  trust roots loaded from the host OS store via `rustls-native-certs`.
+- **Sockets are a first-class sendable `Value`.** `Value::Socket` is
+  `Arc`-backed, `Send`, a GC leaf with identity equality — exactly like
+  `Channel` / `Task` — and crosses an actor boundary via
+  `Transfer::Socket`. That is what makes the per-connection-actor idiom
+  work: `accept`, then `spawn` a handler that captures the socket.
+- **Two-layer reads.** Low-level `read(sock, n)` plus the framed
+  helpers `read_exact` / `read_line` / `read_until` / `read_all`. No
+  separate buffered-reader type — the socket itself carries the read
+  buffer, so an over-reading helper keeps the surplus.
+- **Timeouts, not socket-`select`.** `set_timeout` bounds blocking ops
+  (a timeout raises a catchable `timeout`); `select` is left
+  channel-only — a reader actor bridges a socket to a channel when
+  multiplexing is needed.
+
+Failures raise catchable structured `${kind, message}` errors (`kind`
+one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`,
+`addr_in_use`, `decode`, `io`). See `LANGUAGE.md` Appendix M and the
+networking `examples/` (`tcp_echo`, `udp`, `http_get`).
+
+### 28. `Http` & `Url` modules — DONE ✅ (v0.15)
+
+The ergonomic layer over raw `Net` sockets — without them every HTTP
+call means hand-building request strings and hand-parsing responses.
+Both are **pure-tigr source-stdlib modules** (`.tg` files in `stdlib/`,
+like `Channel`), so they need no Rust beyond a two-line registration.
+
+- **`Url`** — `parse` / `build`, the RFC-3986 percent-codec
+  (`encode` / `decode`, byte-wise over UTF-8), and query strings
+  (`encode_query` / `parse_query`).
+- **`Http`** — an HTTP/1.1 **client** (`request` plus `get`/`post`/...,
+  returning `${status, status_text, headers, body}` with a `Bytes`
+  body; `text` / `json` helpers) that follows 3xx redirects
+  automatically, and a **server helper** (`read_request` /
+  `write_response` / `serve`). v1 has no keep-alive — every request
+  sends `Connection: close`.
+
+See `LANGUAGE.md` §13.3 + Appendix N and the `examples/`
+(`url`, `http_server`).
+
+---
+
+## v0.16 — Editor & developer tooling  *(optional)*
 
 Make Tigr pleasant to *work in*. v0.11 shipped static Vim completion;
 this release adds the tools that need real program analysis. Pulls two
@@ -533,7 +597,7 @@ a sibling crate) speaking the Language Server Protocol.
 
 After v0.14 the language is feature-complete in every dimension this
 roadmap treats as required: core semantics, diagnostics, stdlib,
-memory model, and concurrency. (The v0.15 editor-tooling release is
+memory model, and concurrency. (The v0.16 editor-tooling release is
 optional — it may land before or after 1.0.) 1.0 is then a
 *stabilization* release, not a feature release:
 
@@ -587,4 +651,4 @@ No new numbered items — 1.0 is the line under the existing ones.
   crate vs. a hand-written engine) reopens at that point.
 
 The formerly-deferred **Language server** and **Formatter** are now
-scheduled (v0.15, items 24 and 23).
+scheduled (v0.16, items 24 and 23).

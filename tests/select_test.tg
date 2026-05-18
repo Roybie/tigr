@@ -1,0 +1,71 @@
+// tests/select_test.tg — v0.14 concurrency: the `select` block.
+//
+// `select` waits on several channels at once and runs the arm of the
+// first that has a message; an `else` arm makes it non-blocking. Each
+// arm binds an identifier to the received message value.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test    := import 'Test';
+Task    := import 'Task';
+Channel := import 'Channel';
+
+[
+    Test.suite('select — basics', [
+        Test.case('fires the arm of a channel with a buffered message', fn() {
+            ch := Channel.new();
+            Channel.send(ch, 'hello');
+            result := select {
+                m := ch => 'got: ' + m
+            };
+            Test.assert_eq(result, 'got: hello')
+        }),
+
+        Test.case('picks the ready channel among several', fn() {
+            a := Channel.new();
+            b := Channel.new();
+            Channel.send(b, 99);
+            result := select {
+                x := a => 'from a',
+                y := b => 'from b: ' + str(y)
+            };
+            Test.assert_eq(result, 'from b: 99')
+        }),
+    ]),
+
+    Test.suite('select — else', [
+        Test.case('the else arm runs when nothing is ready', fn() {
+            a := Channel.new();
+            b := Channel.new();
+            result := select {
+                x := a => 'a',
+                y := b => 'b',
+                else => 'idle'
+            };
+            Test.assert_eq(result, 'idle')
+        }),
+    ]),
+
+    Test.suite('select — blocking across actors', [
+        Test.case('select blocks until a spawned actor sends', fn() {
+            ch := Channel.new();
+            producer := spawn fn() {
+                C := import 'Channel';
+                C.send(ch, 7)
+            };
+            result := select {
+                v := ch => v * 2
+            };
+            Test.assert_eq(result, 14);
+            Task.join(producer)
+        }),
+    ]),
+
+    Test.suite('select — closed channels', [
+        Test.case('select on only-closed channels raises channel_closed', fn() {
+            ch := Channel.new();
+            Channel.close(ch);
+            Test.assert_raises(fn() { select { v := ch => v } }, 'channel_closed')
+        }),
+    ]),
+]

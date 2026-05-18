@@ -1,0 +1,193 @@
+// Tigr stdlib — `import 'Url'`.
+//
+// Parse, build, and codec helpers for URLs and query strings, layered
+// on the native `String` and `Bytes` modules. Pure tigr — no Rust.
+//
+// `parse(url)` splits an absolute URL into
+//   ${scheme, host, port, path, query, fragment}
+// where `port` is an `Int` or `null`, `path` defaults to `'/'`, and
+// `query` / `fragment` are the raw (still-encoded) substrings or
+// `null`. `build(parts)` is its inverse — `build(parse(u))` round-trips.
+//
+// `encode` / `decode` are RFC-3986 percent-coding, byte-wise over the
+// UTF-8 encoding, so non-ASCII text round-trips. `encode` leaves the
+// unreserved set `A-Za-z0-9-._~` untouched. Plain `decode` leaves `+`
+// literal — `+`-means-space is form semantics, applied only inside
+// `parse_query`. `encode_query` / `parse_query` convert between an
+// Object and an `a=1&b=x%20y` query string; on a duplicate key the
+// last value wins.
+
+_str   := import 'String';
+_bytes := import 'Bytes';
+
+// -- percent-codec ----------------------------------------------------
+
+// True when byte `b` is in the RFC-3986 unreserved set.
+_is_unreserved := fn(b) {
+    (b >= 65 && b <= 90)  ||             // A-Z
+    (b >= 97 && b <= 122) ||             // a-z
+    (b >= 48 && b <= 57)  ||             // 0-9
+    b == 45 || b == 46 || b == 95 || b == 126   // - . _ ~
+};
+
+// The ASCII code of the uppercase hex digit for nibble `n` (0..15).
+_hex_digit := fn(n) {
+    if n < 10 { 48 + n } else { 55 + n }
+};
+
+// The 0..15 value of a hex-digit ASCII byte; raises `decode` otherwise.
+_hex_val := fn(b) {
+    if b >= 48 && b <= 57 { b - 48 }
+    else if b >= 65 && b <= 70 { b - 55 }
+    else if b >= 97 && b <= 102 { b - 87 }
+    else { raise ${kind: 'decode', message: 'Url.decode: invalid %-escape digit'} }
+};
+
+// Percent-encode `s`: unreserved bytes pass through, every other byte
+// becomes `%XX` (uppercase). Works on the UTF-8 bytes of `s`.
+_encode := fn(s) {
+    src := _bytes.from_string(s);
+    out := _bytes.new(0);
+    for (b, src) {
+        if _is_unreserved(b) {
+            _bytes.push(out, b)
+        } else {
+            _bytes.push(out, 37);                    // '%'
+            _bytes.push(out, _hex_digit((b - b % 16) / 16));
+            _bytes.push(out, _hex_digit(b % 16))
+        }
+    };
+    _bytes.to_string(out)
+};
+
+// Percent-decode `s`. `+` is left literal (see `parse_query`). Raises a
+// structured `decode` error on a malformed escape.
+_decode := fn(s) {
+    src := _bytes.from_string(s);
+    n := #src;
+    out := _bytes.new(0);
+    i := 0;
+    while i < n {
+        c := src[i];
+        if c == 37 {                                 // '%'
+            if i + 2 >= n {
+                raise ${kind: 'decode', message: 'Url.decode: truncated %-escape'}
+            };
+            _bytes.push(out, _hex_val(src[i + 1]) * 16 + _hex_val(src[i + 2]));
+            i = i + 3
+        } else {
+            _bytes.push(out, c);
+            i = i + 1
+        }
+    };
+    _bytes.to_string(out)
+};
+
+// Form-decode one query component: `+` → space, then percent-decode.
+_form_decode := fn(s) { _decode(_str.replace(s, '+', ' ')) };
+
+// -- parse / build ----------------------------------------------------
+
+_parse := fn(url) {
+    rest := url;
+
+    // fragment — everything after the first '#'
+    fragment := null;
+    fi := _str.index_of(rest, '#');
+    if fi >= 0 {
+        fragment = rest[fi + 1 .. #rest];
+        rest = rest[0 .. fi]
+    };
+
+    // scheme — up to '://'
+    si := _str.index_of(rest, '://');
+    if si < 0 {
+        raise 'Url.parse: missing scheme in ' + url
+    };
+    scheme := _str.lower(rest[0 .. si]);
+    rest = rest[si + 3 .. #rest];
+
+    // query — everything after the first '?' in authority+path
+    query := null;
+    qi := _str.index_of(rest, '?');
+    if qi >= 0 {
+        query = rest[qi + 1 .. #rest];
+        rest = rest[0 .. qi]
+    };
+
+    // authority vs path — split at the first '/'
+    authority := rest;
+    path := '/';
+    slash := _str.index_of(rest, '/');
+    if slash >= 0 {
+        authority = rest[0 .. slash];
+        path = rest[slash .. #rest]
+    };
+    if #path == 0 { path = '/' };
+
+    // host / port within the authority
+    host := authority;
+    port := null;
+    ci := _str.index_of(authority, ':');
+    if ci >= 0 {
+        host = authority[0 .. ci];
+        port = int(authority[ci + 1 .. #authority])
+    };
+
+    ${
+        scheme:   scheme,
+        host:     host,
+        port:     port,
+        path:     path,
+        query:    query,
+        fragment: fragment,
+    }
+};
+
+// Reassemble a parts object (as produced by `parse`) into a URL.
+_build := fn(parts) {
+    out := parts.scheme + '://' + parts.host;
+    if parts.port != null { out = out + ':' + str(parts.port) };
+    out = out + parts.path;
+    if parts.query != null { out = out + '?' + parts.query };
+    if parts.fragment != null { out = out + '#' + parts.fragment };
+    out
+};
+
+// -- query strings ----------------------------------------------------
+
+// Parse `a=1&b=x%20y` into an Object. Both sides are form-decoded; a
+// duplicate key keeps the last value.
+_parse_query := fn(s) {
+    out := ${};
+    if #s == 0 { return out };
+    for (pair, _str.split(s, '&')) {
+        if #pair > 0 {
+            eq := _str.index_of(pair, '=');
+            if eq >= 0 {
+                out[_form_decode(pair[0 .. eq])] = _form_decode(pair[eq + 1 .. #pair])
+            } else {
+                out[_form_decode(pair)] = ''
+            }
+        }
+    };
+    out
+};
+
+// Encode an Object into an `a=1&b=x%20y` query string. Values are
+// stringified via `str` before encoding.
+_encode_query := fn(obj) {
+    parts := for[] (k, v, obj) {
+        _encode(k) + '=' + _encode(str(v))
+    };
+    _str.join(parts, '&')
+};
+
+${
+    parse:        _parse,
+    build:        _build,
+    encode:       _encode,
+    decode:       _decode,
+    encode_query: _encode_query,
+    parse_query:  _parse_query,
+}

@@ -4,6 +4,7 @@
 //! [`compiler`] → [`chunk`] of [`opcode`]s → [`vm`] → [`value`].
 
 pub mod ast;
+pub mod channel;
 pub mod chunk;
 pub mod compiler;
 pub mod error;
@@ -14,10 +15,13 @@ pub mod native_modules;
 pub mod opcode;
 pub mod parser;
 pub mod rng;
+pub mod socket;
 pub mod source_map;
 pub mod source_stdlib;
 pub mod stdlib;
+pub mod task;
 pub mod token;
+pub mod transfer;
 pub mod value;
 pub mod vm;
 

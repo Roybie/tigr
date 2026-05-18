@@ -513,7 +513,12 @@ impl Trace for Value {
             | Value::Str(_)
             | Value::Range(_)
             | Value::NativeFn(_)
-            | Value::BigInt(_) => {}
+            | Value::BigInt(_)
+            // A channel / task / socket is `Arc`-backed, no `GcRef` —
+            // leaves.
+            | Value::Channel(_)
+            | Value::Task(_)
+            | Value::Socket(_) => {}
         }
     }
 }
@@ -561,7 +566,7 @@ impl Trace for IterState {
 
 impl Trace for Closure {
     fn trace(&self, m: &mut Marker) {
-        // `function` is an `Rc<Function>` — immutable, acyclic, unmanaged.
+        // `function` is an `Arc<Function>` — immutable, acyclic, unmanaged.
         for up in &self.upvalues {
             m.mark_upvalue(*up);
         }
@@ -719,8 +724,8 @@ mod tests {
     use crate::vm::chunk::Chunk;
     use crate::vm::value::Function;
 
-    fn test_function() -> Rc<Function> {
-        Rc::new(Function {
+    fn test_function() -> std::sync::Arc<Function> {
+        std::sync::Arc::new(Function {
             arity: 0,
             has_rest: false,
             chunk: Chunk::new(),

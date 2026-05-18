@@ -1,0 +1,78 @@
+// analyze.tg — a parallel codebase analyzer with a live progress
+// monitor (v0.14). One worked example that uses every concurrency
+// primitive: `parallel[]`, `spawn`, `Channel`, `select`, `Task.join`.
+//
+// It scans every `.tg` file in a directory, counts lines, and flags
+// the ones containing `TODO` — processing files in parallel while a
+// background actor prints progress as each one completes.
+
+IO      := import 'IO';
+Os      := import 'Os';
+Path    := import 'Path';
+Array   := import 'Array';
+Time    := import 'Time';
+Channel := import 'Channel';
+Task    := import 'Task';
+
+start := Time.now_ms();
+
+dir   := Os.args[2] || 'stdlib';
+files := for[] (name, Array.sort(IO.list_dir(dir))) {
+    if Path.ext(name) == 'tg' { name } else { continue }
+};
+
+// Two channels: workers stream progress events; main sends control.
+progress := Channel.new();
+control  := Channel.new();
+
+// --- background monitor actor ---------------------------------------
+// Runs concurrently with the (blocked) main thread. It uses `select`
+// because it has two independent inbound channels and must react to
+// whichever speaks next: a worker finishing, or the stop signal.
+monitor := spawn fn() {
+    total := #files;
+    seen  := 0;
+    watch := fn() {
+        select {
+            note := progress => {
+                seen = seen + 1;
+                print('  [{seen}/{total}] {note}');
+                watch()
+            },
+            cmd := control => seen        // 'stop' -> finish, return the count
+        }
+    };
+    watch()
+};
+
+// --- parallel map: every file analyzed at once ----------------------
+// Each iteration runs as its own actor. The body is deep-copied, so it
+// captures only sendable data (the `dir` string, the `progress`
+// channel) and imports its own modules.
+report := parallel[] (name, files) {
+    IO      := import 'IO';
+    Path    := import 'Path';
+    String  := import 'String';
+    Channel := import 'Channel';
+
+    text  := IO.read_file(Path.join(dir, name));
+    lines := #String.lines(text);
+
+    Channel.send(progress, '{name}  ({lines} lines)');
+    ${file: name, lines: lines, todo: String.contains(text, 'TODO')}
+};
+
+// --- shut the monitor down and collect its tally --------------------
+Channel.send(control, 'stop');
+printed := Task.join(monitor);
+
+// --- reduce the per-file results ------------------------------------
+total_lines := 0;
+for (r, report) { total_lines = total_lines + r.lines };
+flagged := for[] (r, report) { if r.todo { r.file } else { continue } };
+
+print('');
+print('analyzed {#report} files, {total_lines} lines ({printed} reported live)');
+print('files containing TODO: {flagged}');
+
+'Time: {Time.now_ms() - start}ms'

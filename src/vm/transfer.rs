@@ -245,6 +245,7 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
         Value::Task(h) => Transfer::Task(h.clone()),
         Value::Socket(h) => Transfer::Socket(h.clone()),
         Value::Iter(_) => return Err(not_sendable("an iterator")),
+        Value::Generator(_) => return Err(not_sendable("a generator")),
         Value::NativeFn(_) => return Err(not_sendable("a native function")),
     })
 }
@@ -401,6 +402,7 @@ mod tests {
             has_rest: false,
             chunk: Chunk::new(),
             upvalues: Vec::new(),
+            is_generator: false,
             name: Some("worker".into()),
         });
         let up = gc::alloc_upvalue(Upvalue::Closed(Value::Int(42)));
@@ -426,6 +428,7 @@ mod tests {
             has_rest: false,
             chunk: Chunk::new(),
             upvalues: Vec::new(),
+            is_generator: false,
             name: None,
         });
         let up = gc::alloc_upvalue(Upvalue::Open { owner: 0, slot: 0 });

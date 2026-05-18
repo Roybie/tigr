@@ -21,8 +21,8 @@ use crate::vm::socket::SocketHandle;
 use crate::vm::task::TaskHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc::{
-    ArrayKind, BytesKind, ClosureKind, GcRef, IterKind, MapKind, ObjectKind,
-    SetKind, UpvalueKind,
+    ArrayKind, BytesKind, ClosureKind, GcRef, GeneratorKind, IterKind, MapKind,
+    ObjectKind, SetKind, UpvalueKind,
 };
 
 #[derive(Clone)]
@@ -83,6 +83,13 @@ pub enum Value {
     // `Arc`-backed, `Send`, a GC leaf, identity equality — so it can
     // cross an actor boundary into a `spawn`ed connection handler.
     Socket(SocketHandle),
+
+    // green threads — a paused generator coroutine. Produced by calling
+    // a `gen fn`; never directly visible to tigr code, which only sees
+    // the `${ next: fn() }` iterator object wrapping it. GC-managed:
+    // the coroutine's frames/stack are reclaimed when the wrapping
+    // object becomes unreachable, even if the generator is undrained.
+    Generator(GcRef<GeneratorKind>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +332,10 @@ pub struct Function {
     /// when the enclosing function constructs a closure.
     pub upvalues: Vec<UpvalueInfo>,
     pub name: Option<String>,
+    /// `true` for a `gen fn`. Calling it does not run `chunk`; the VM
+    /// builds a paused coroutine and returns a `${ next: fn() }`
+    /// iterator object instead (see [`crate::vm::scheduler`]).
+    pub is_generator: bool,
 }
 
 /// One per upvalue in a [`Function`]. `is_local = true` means "capture
@@ -422,6 +433,7 @@ impl Value {
             Value::Channel(_) => "channel",
             Value::Task(_) => "task",
             Value::Socket(_) => "socket",
+            Value::Generator(_) => "generator",
         }
     }
 
@@ -458,6 +470,7 @@ impl PartialEq for Value {
             (Channel(a), Channel(b)) => Arc::ptr_eq(a, b),
             (Task(a), Task(b)) => Arc::ptr_eq(a, b),
             (Socket(a), Socket(b)) => Arc::ptr_eq(a, b),
+            (Generator(a), Generator(b)) => a == b,
             (BigInt(a), BigInt(b)) => a == b,
             // A `BigInt` and an `Int` of equal value compare equal,
             // mirroring `Int`/`Float` cross-type equality above.
@@ -594,6 +607,7 @@ impl fmt::Display for Value {
             Value::Channel(_) => f.write_str("<channel>"),
             Value::Task(_) => f.write_str("<task>"),
             Value::Socket(s) => write!(f, "<socket #{}>", s.id()),
+            Value::Generator(_) => f.write_str("<generator>"),
         }
     }
 }

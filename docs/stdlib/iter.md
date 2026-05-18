@@ -7,6 +7,8 @@ The `Iter` module provides lazy, pull-based iterators. Where `Array.map` followe
 
 An iterator is just an object `${next: fn()}`. Each `next()` call returns `${done: true}` or `${done: false, value: v}`. The functions fall into three groups: adapters create an iterator from a source, combinators wrap one iterator in another and run no work until pulled, and consumers drive the pulling and force evaluation. Callbacks are invoked as `callback(value)`.
 
+The adapters and combinators are `gen fn` generators (see [concurrency](../language/concurrency.md)): each is a coroutine that `yield`s its elements one at a time, and calling it hands back the `${next: fn()}` iterator object. A generator you write yourself with `gen fn` is an iterator the whole module composes with — `Iter.map`, `for`, spread and the rest accept it directly.
+
 A `for` loop and the spread forms `[...it]` and `f(...it)` consume an iterator object directly, so `collect` is only needed when you specifically want an `Array` value. `count` and `repeat` are infinite, so only pair them with a bounding combinator like `take` or a short-circuiting consumer like `find` or `nth`.
 
 ```tigr
@@ -23,9 +25,9 @@ print([1, 2, 3, 4, 5]
 
 ### `from(iterable) -> Iterator`
 
-Wraps a concrete iterable (Array, Range, or String) as an iterator. A non-array source is materialized once up front; an array is iterated in place by index.
+Wraps any iterable — Array, Range, String, Object, Map, Set, or another iterator object — as an iterator, lazily: elements are pulled from the source one at a time as `next()` is called, never materialized up front.
 
-- `iterable` *(Array | Range | String)*: the source to wrap.
+- `iterable`: the source to wrap.
 
 **Returns:** an `Iterator` over the source.
 

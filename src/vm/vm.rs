@@ -25,13 +25,14 @@ use num_bigint::BigInt as BigIntData;
 use num_integer::Integer;
 use num_traits::{Pow, Zero};
 
+use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::gc::{
-    self, ArrayKind, ClosureKind, GcRef, IterKind, Marker, ObjectKind, Trace,
-    UpvalueKind,
+    self, ArrayKind, ClosureKind, GcRef, GeneratorKind, IterKind, Marker,
+    ObjectKind, Trace, UpvalueKind,
 };
 use crate::vm::opcode::OpCode;
-use crate::vm::scheduler::{GreenThread, Scheduler};
+use crate::vm::scheduler::{GenStatus, GeneratorState, GreenThread, Scheduler};
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{
@@ -132,6 +133,33 @@ pub struct Vm {
     /// coroutine's state lives in `frames`/`stack`/`open_upvalues`
     /// above; the scheduler holds only the parked ones.
     scheduler: Scheduler,
+    /// `Some(handle)` while the running coroutine is a generator body.
+    /// `Yield` and a floor `Return` consult this to switch back to the
+    /// resumer (LIFO via `resume_stack`) instead of round-robin.
+    current_gen: Option<GcRef<GeneratorKind>>,
+    /// Saved resumer states, innermost last. A `Resume` pushes the
+    /// caller here before loading the generator; the generator's
+    /// `yield`/return pops the matching entry to switch back. Nesting
+    /// (a generator resuming a generator) is naturally stack-disciplined.
+    resume_stack: Vec<ResumeCtx>,
+}
+
+/// A parked resumer: the coroutine state that was running when a
+/// `Resume` switched into a generator, plus the generator-context flag
+/// to restore when the generator hands control back.
+struct ResumeCtx {
+    frames: Vec<CallFrame>,
+    stack: Vec<Value>,
+    open_upvalues: Vec<GcRef<UpvalueKind>>,
+    /// `current_gen` as it was before this `Resume` — restored when the
+    /// generator yields/returns. `Some` when the resumer was itself a
+    /// generator (a generator pulling another generator).
+    prev_gen: Option<GcRef<GeneratorKind>>,
+    /// The resumer's scheduler `(id, is_main)`, restored alongside its
+    /// execution state. `id` also lets `upvalue_get`/`upvalue_set`
+    /// find this parked resumer's stack when an open upvalue names it.
+    prev_id: u32,
+    prev_is_main: bool,
 }
 
 impl Vm {
@@ -151,6 +179,8 @@ impl Vm {
             in_flight: HashSet::new(),
             source_map,
             scheduler: Scheduler::new(),
+            current_gen: None,
+            resume_stack: Vec::new(),
         }
     }
 
@@ -160,6 +190,8 @@ impl Vm {
         self.frames.clear();
         self.open_upvalues.clear();
         self.scheduler.reset();
+        self.current_gen = None;
+        self.resume_stack.clear();
 
         let main_closure = gc::alloc_closure(Closure {
             function: Arc::new(main),
@@ -188,12 +220,35 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(0, &mut err) {
+                    if !self.catch_with_generators(&mut err) {
                         return Err(err);
                     }
                     // Caught — frame state now points at catch_pc with
                     // the error value on the stack; loop to continue.
                 }
+            }
+        }
+    }
+
+    /// Try to catch `err`, treating a raise that escapes a generator's
+    /// body as one that surfaces at the `next()` call site. When
+    /// `try_catch` finds no handler in the running coroutine and that
+    /// coroutine is a generator, the generator is failed (`Done`), the
+    /// resumer is restored, and the search retries there — walking the
+    /// whole resume chain. Returns `true` once a handler is found.
+    fn catch_with_generators(&mut self, err: &mut RuntimeError) -> bool {
+        loop {
+            if self.try_catch(0, err) {
+                return true;
+            }
+            match self.current_gen {
+                Some(handle) => {
+                    // The generator's frames were already unwound by the
+                    // failed `try_catch`; `park_generator` marks it
+                    // `Done` and reinstates the resumer to retry there.
+                    self.park_generator(handle, GenStatus::Done);
+                }
+                None => return false,
             }
         }
     }
@@ -210,6 +265,8 @@ impl Vm {
         self.frames.clear();
         self.open_upvalues.clear();
         self.scheduler.reset();
+        self.current_gen = None;
+        self.resume_stack.clear();
         // Coroutine #0 = the actor's main closure, invoked with no
         // arguments. Slot 0 holds the closure itself, then arity-
         // padded `null`s — the same layout as `run`'s main frame.
@@ -396,6 +453,7 @@ impl Vm {
                 chunk: crate::vm::chunk::Chunk::new(),
                 upvalues: Vec::new(),
                 name: Some("<repl>".to_string()),
+                is_generator: false,
             }),
             upvalues: Vec::new(),
         });
@@ -431,7 +489,7 @@ impl Vm {
                 Ok(v) => return Ok(v), // Halt exit
                 Err(mut err) => {
                     self.stamp_error_source(&mut err);
-                    if !self.try_catch(0, &mut err) {
+                    if !self.catch_with_generators(&mut err) {
                         // Wall hit — restore stack to pre-line state.
                         self.close_upvalues(snapshot_len);
                         self.stack.truncate(snapshot_len);
@@ -674,6 +732,15 @@ impl Vm {
                         FrameKind::Function | FrameKind::Repl => {}
                     }
                     if self.frames.len() == floor {
+                        if let Some(handle) = self.current_gen {
+                            // A generator body returned. Mark it `Done`
+                            // and hand `${ done: true }` to the resumer.
+                            // The body's return value is discarded — a
+                            // generator communicates only via `yield`.
+                            self.park_generator(handle, GenStatus::Done);
+                            self.stack.push(iter_done_result());
+                            continue;
+                        }
                         if self.scheduler.current_is_main() {
                             return Ok(result);
                         }
@@ -843,9 +910,13 @@ impl Vm {
                             if self.frames.len() >= self.max_call_depth {
                                 return Err(stack_overflow_err(line));
                             }
-                            let (arity, has_rest) = {
+                            let (arity, has_rest, is_gen) = {
                                 let cf = c.borrow();
-                                (cf.function.arity, cf.function.has_rest)
+                                (
+                                    cf.function.arity,
+                                    cf.function.has_rest,
+                                    cf.function.is_generator,
+                                )
                             };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
@@ -856,6 +927,13 @@ impl Vm {
                             } else if n > arity {
                                 let drop_n = n - arity;
                                 self.stack.truncate(self.stack.len() - drop_n);
+                            }
+                            if is_gen {
+                                // A `gen fn` call builds a paused
+                                // coroutine and yields an iterator
+                                // object — it does not run the body.
+                                self.make_generator(c, args_start - 1);
+                                continue;
                             }
                             self.frames.push(CallFrame {
                                 closure: c,
@@ -911,9 +989,13 @@ impl Vm {
                     let callee = self.stack[args_start - 1].clone();
                     match callee {
                         Value::Function(c) => {
-                            let (arity, has_rest) = {
+                            let (arity, has_rest, is_gen) = {
                                 let cf = c.borrow();
-                                (cf.function.arity, cf.function.has_rest)
+                                (
+                                    cf.function.arity,
+                                    cf.function.has_rest,
+                                    cf.function.is_generator,
+                                )
                             };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
@@ -924,6 +1006,14 @@ impl Vm {
                             } else if n > arity {
                                 let drop_n = n - arity;
                                 self.stack.truncate(self.stack.len() - drop_n);
+                            }
+                            if is_gen {
+                                // A tail-positioned `gen fn` call: build
+                                // the iterator object and leave it for
+                                // the compiler-emitted `Return`. The
+                                // frame is not reused — it returns next.
+                                self.make_generator(c, args_start - 1);
+                                continue;
                             }
                             // Reuse the current frame: lift its captured
                             // locals to the heap, then discard them so
@@ -1408,9 +1498,13 @@ impl Vm {
                     let callee = self.stack[args_start - 1].clone();
                     match callee {
                         Value::Function(c) => {
-                            let (arity, has_rest) = {
+                            let (arity, has_rest, is_gen) = {
                                 let cf = c.borrow();
-                                (cf.function.arity, cf.function.has_rest)
+                                (
+                                    cf.function.arity,
+                                    cf.function.has_rest,
+                                    cf.function.is_generator,
+                                )
                             };
                             if has_rest {
                                 self.pack_rest(args_start, n, arity);
@@ -1419,6 +1513,10 @@ impl Vm {
                             } else if n > arity {
                                 let drop_n = n - arity;
                                 self.stack.truncate(self.stack.len() - drop_n);
+                            }
+                            if is_gen {
+                                self.make_generator(c, args_start - 1);
+                                continue;
                             }
                             self.frames.push(CallFrame {
                                 closure: c,
@@ -1767,11 +1865,24 @@ impl Vm {
                     self.stack.push(Value::Null);
                 }
                 OpCode::Yield => {
-                    // The yielded value is discarded in plain
-                    // cooperative scheduling — there is no consumer.
-                    // The `yield` expression evaluates to the resume
-                    // value delivered by `load_green` on resumption.
-                    let _yielded = self.pop(line)?;
+                    let yielded = self.pop(line)?;
+                    if let Some(handle) = self.current_gen {
+                        // Generator yield: park the coroutine into its
+                        // handle and hand `${ done: false, value }`
+                        // back to whoever pulled `next()`.
+                        self.frames.last_mut().unwrap().ip = ip;
+                        // The `yield` expression resumes to `null` —
+                        // push it now so it rides on the parked stack
+                        // and is in place when the generator resumes.
+                        self.stack.push(Value::Null);
+                        self.park_generator(handle, GenStatus::Suspended);
+                        let result = iter_yield_result(yielded);
+                        self.stack.push(result);
+                        continue;
+                    }
+                    // Plain `go` coroutine: the yielded value has no
+                    // consumer. The `yield` expression evaluates to the
+                    // resume value delivered on resumption.
                     match self.scheduler.take_next() {
                         Some(next) => {
                             self.frames.last_mut().unwrap().ip = ip;
@@ -1784,6 +1895,68 @@ impl Vm {
                         None => {
                             // Nothing else ready — resume immediately.
                             self.stack.push(Value::Null);
+                        }
+                    }
+                }
+                OpCode::Resume => {
+                    // Emitted only in a generator's synthetic `next`
+                    // closure. Pull the next value from the generator.
+                    let handle = match self.pop(line)? {
+                        Value::Generator(h) => h,
+                        other => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::TypeMismatch(format!(
+                                    "internal: Resume expects a generator, got {}",
+                                    other.type_name()
+                                )),
+                                line,
+                            ));
+                        }
+                    };
+                    let status = handle.borrow().status;
+                    match status {
+                        GenStatus::Done => {
+                            self.stack.push(iter_done_result());
+                        }
+                        GenStatus::Running => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::TypeMismatch(
+                                    "generator resumed while already running"
+                                        .into(),
+                                ),
+                                line,
+                            ));
+                        }
+                        GenStatus::Suspended => {
+                            // Park the resumer, then load the generator
+                            // coroutine in its place.
+                            self.frames.last_mut().unwrap().ip = ip;
+                            let (prev_id, prev_is_main) =
+                                self.scheduler.current();
+                            self.resume_stack.push(ResumeCtx {
+                                frames: std::mem::take(&mut self.frames),
+                                stack: std::mem::take(&mut self.stack),
+                                open_upvalues: std::mem::take(
+                                    &mut self.open_upvalues,
+                                ),
+                                prev_gen: self.current_gen.take(),
+                                prev_id,
+                                prev_is_main,
+                            });
+                            let gen_id = {
+                                let mut g = handle.borrow_mut();
+                                g.status = GenStatus::Running;
+                                self.frames = std::mem::take(&mut g.frames);
+                                self.stack = std::mem::take(&mut g.stack);
+                                self.open_upvalues =
+                                    std::mem::take(&mut g.open_upvalues);
+                                g.id
+                            };
+                            // The generator runs under its own coroutine
+                            // id so upvalues it captures resolve right.
+                            self.scheduler.set_current(gen_id, false);
+                            self.current_gen = Some(handle);
+                            continue;
                         }
                     }
                 }
@@ -2014,6 +2187,68 @@ impl Vm {
         });
     }
 
+    // -- generators --------------------------------------------------
+
+    /// Build a paused generator coroutine for closure `c` and push its
+    /// `${ next: fn() }` iterator object as the call result. The
+    /// arity-adjusted call frame — callee slot `base` followed by the
+    /// args — is drained off the live stack to become the coroutine's
+    /// private value stack.
+    fn make_generator(&mut self, c: GcRef<ClosureKind>, base: usize) {
+        // The drained region is the standard frame-0 layout: slot 0 =
+        // closure, then the arity-adjusted argument values.
+        let coro_stack: Vec<Value> = self.stack.drain(base..).collect();
+        let id = self.scheduler.fresh_id();
+        let handle = gc::alloc_generator(GeneratorState {
+            id,
+            status: GenStatus::Suspended,
+            frames: vec![CallFrame {
+                closure: c,
+                ip: 0,
+                base_slot: 0,
+                try_frames: Vec::new(),
+                kind: FrameKind::Function,
+            }],
+            stack: coro_stack,
+            open_upvalues: Vec::new(),
+        });
+        // Wrap the handle in the existing `${ next: fn() }` protocol so
+        // `for`, spread and the `Iter` module drive a generator with no
+        // special-casing — the synthetic `next` closure `Resume`s it.
+        let next_closure = gc::alloc_closure(Closure {
+            function: generator_next_fn(),
+            upvalues: vec![gc::alloc_upvalue(Upvalue::Closed(
+                Value::Generator(handle),
+            ))],
+        });
+        let mut obj = IndexMap::new();
+        obj.insert(Arc::from("next"), Value::Function(next_closure));
+        self.stack.push(Value::Object(gc::alloc_object(obj)));
+    }
+
+    /// Park the running generator coroutine into `handle` with
+    /// `status`, then restore the resumer that pulled it (LIFO from
+    /// `resume_stack`). The caller pushes the `${ done, value }` result
+    /// onto the restored stack afterwards.
+    fn park_generator(&mut self, handle: GcRef<GeneratorKind>, status: GenStatus) {
+        {
+            let mut g = handle.borrow_mut();
+            g.status = status;
+            g.frames = std::mem::take(&mut self.frames);
+            g.stack = std::mem::take(&mut self.stack);
+            g.open_upvalues = std::mem::take(&mut self.open_upvalues);
+        }
+        let ctx = self
+            .resume_stack
+            .pop()
+            .expect("generator yield/return without a matching resumer");
+        self.frames = ctx.frames;
+        self.stack = ctx.stack;
+        self.open_upvalues = ctx.open_upvalues;
+        self.current_gen = ctx.prev_gen;
+        self.scheduler.set_current(ctx.prev_id, ctx.prev_is_main);
+    }
+
     fn capture_upvalue(&mut self, stack_slot: usize) -> GcRef<UpvalueKind> {
         // `open_upvalues` only ever holds cells owned by the running
         // coroutine, so deduping by slot alone is correct here.
@@ -2031,19 +2266,31 @@ impl Vm {
         new_up
     }
 
-    /// Read open-upvalue `slot` on coroutine `owner`'s value stack —
-    /// the running coroutine's own stack, or a parked coroutine's
-    /// stack reached through the scheduler.
-    fn upvalue_get(&self, owner: u32, slot: usize) -> Value {
+    /// Borrow coroutine `owner`'s value stack: the running coroutine's
+    /// own (`self.stack`), a round-robin coroutine parked in the
+    /// scheduler, or a resumer parked under a running generator.
+    /// `None` only for the documented unsafe case — a closure with a
+    /// still-open upvalue escaping the coroutine that owns its slot.
+    fn stack_for(&self, owner: u32) -> Option<&Vec<Value>> {
         let (cur, _) = self.scheduler.current();
         if owner == cur {
-            self.stack[slot].clone()
-        } else {
-            self.scheduler
-                .stack_of(owner)
-                .expect("open upvalue references a live coroutine")[slot]
-                .clone()
+            return Some(&self.stack);
         }
+        if let Some(st) = self.scheduler.stack_of(owner) {
+            return Some(st);
+        }
+        self.resume_stack
+            .iter()
+            .rev()
+            .find(|ctx| ctx.prev_id == owner)
+            .map(|ctx| &ctx.stack)
+    }
+
+    /// Read open-upvalue `slot` on coroutine `owner`'s value stack.
+    fn upvalue_get(&self, owner: u32, slot: usize) -> Value {
+        self.stack_for(owner)
+            .expect("open upvalue references a live coroutine")[slot]
+            .clone()
     }
 
     /// Write `v` into open-upvalue `slot` on coroutine `owner`'s stack.
@@ -2051,13 +2298,19 @@ impl Vm {
         let (cur, _) = self.scheduler.current();
         if owner == cur {
             self.stack[slot] = v;
-        } else {
-            let st = self
-                .scheduler
-                .stack_of_mut(owner)
-                .expect("open upvalue references a live coroutine");
-            st[slot] = v;
+            return;
         }
+        if let Some(st) = self.scheduler.stack_of_mut(owner) {
+            st[slot] = v;
+            return;
+        }
+        let ctx = self
+            .resume_stack
+            .iter_mut()
+            .rev()
+            .find(|ctx| ctx.prev_id == owner)
+            .expect("open upvalue references a live coroutine");
+        ctx.stack[slot] = v;
     }
 
     /// Close (lift to heap) every open upvalue whose stack slot is at
@@ -2118,6 +2371,29 @@ impl Vm {
                 v.trace(m);
             }
         }
+        // Resumers parked under a running generator — each is a slice
+        // of execution state the generator's `next()` will return to.
+        for ctx in &self.resume_stack {
+            for v in &ctx.stack {
+                v.trace(m);
+            }
+            for up in &ctx.open_upvalues {
+                m.mark_upvalue(*up);
+            }
+            for frame in &ctx.frames {
+                trace_frame(frame, m);
+            }
+            if let Some(g) = ctx.prev_gen {
+                m.mark_generator(g);
+            }
+        }
+        // The running generator's handle. Its parked coroutine state is
+        // currently live in `frames`/`stack` above; marking the handle
+        // keeps the heap object itself (and a future `Done` status)
+        // reachable through the collection.
+        if let Some(g) = self.current_gen {
+            m.mark_generator(g);
+        }
     }
 
     /// Run one mark-sweep collection over the managed heap.
@@ -2149,6 +2425,62 @@ fn trace_frame(frame: &CallFrame, m: &mut Marker) {
         FrameKind::SpreadPull { target, .. } => m.mark_array(*target),
         FrameKind::Function | FrameKind::Import(_) | FrameKind::Repl => {}
     }
+}
+
+/// A parked generator coroutine roots its saved execution state — the
+/// value stack, open upvalues and call frames — so they survive a
+/// collection that runs while the generator is suspended.
+impl Trace for GeneratorState {
+    fn trace(&self, m: &mut Marker) {
+        for v in &self.stack {
+            v.trace(m);
+        }
+        for up in &self.open_upvalues {
+            m.mark_upvalue(*up);
+        }
+        for frame in &self.frames {
+            trace_frame(frame, m);
+        }
+    }
+}
+
+/// `${ done: false, value }` — an iterator `next()` result carrying a
+/// yielded element.
+fn iter_yield_result(value: Value) -> Value {
+    crate::vm::native_modules::object(&[
+        ("done", Value::Bool(false)),
+        ("value", value),
+    ])
+}
+
+/// `${ done: true }` — an iterator `next()` result signalling the
+/// generator is exhausted.
+fn iter_done_result() -> Value {
+    crate::vm::native_modules::object(&[("done", Value::Bool(true))])
+}
+
+/// The shared body of every generator's synthetic `next` method:
+/// `GetUpvalue 0` loads the captured generator handle, `Resume` pulls
+/// the next value, `Return` hands back the `${ done, value }` object.
+fn generator_next_fn() -> Arc<Function> {
+    use std::sync::OnceLock;
+    static NEXT: OnceLock<Arc<Function>> = OnceLock::new();
+    NEXT.get_or_init(|| {
+        let mut chunk = Chunk::new();
+        chunk.write_op(OpCode::GetUpvalue, 0);
+        chunk.write_byte(0, 0);
+        chunk.write_op(OpCode::Resume, 0);
+        chunk.write_op(OpCode::Return, 0);
+        Arc::new(Function {
+            arity: 0,
+            has_rest: false,
+            chunk,
+            upvalues: Vec::new(),
+            name: Some("next".to_string()),
+            is_generator: false,
+        })
+    })
+    .clone()
 }
 
 /// Fetch and validate the `next` field of an iterator object

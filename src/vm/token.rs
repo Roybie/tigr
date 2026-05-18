@@ -64,6 +64,7 @@ pub enum Token {
     Parallel,
     Go,
     Yield,
+    Gen,
 
     // Arithmetic
     Plus,
@@ -157,6 +158,7 @@ impl fmt::Display for Token {
             Parallel => f.write_str("parallel"),
             Go => f.write_str("go"),
             Yield => f.write_str("yield"),
+            Gen => f.write_str("gen"),
             Import => f.write_str("import"),
             Try => f.write_str("try"),
             Catch => f.write_str("catch"),

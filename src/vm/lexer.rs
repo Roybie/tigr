@@ -483,6 +483,7 @@ impl<'src> Lexer<'src> {
             "parallel" => Token::Parallel,
             "go" => Token::Go,
             "yield" => Token::Yield,
+            "gen" => Token::Gen,
             _ => Token::Ident(lexeme.to_string()),
         }
     }

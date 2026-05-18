@@ -575,6 +575,7 @@ impl Parser {
             Token::Parallel => self.parse_parallel(),
             Token::Go => self.parse_go(),
             Token::Yield => self.parse_yield(),
+            Token::Gen => self.parse_gen(),
             Token::Match => self.parse_match(),
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
@@ -813,6 +814,7 @@ impl Parser {
             defaults: Vec::new(),
             rest: None,
             body: Box::new(body),
+            is_generator: false,
         });
         let spawn_actor = s(Expr::Spawn(Box::new(actor)));
 
@@ -1094,9 +1096,28 @@ impl Parser {
         let body = self.parse_scope()?;
         let span = fn_span.join(body.span);
         Ok(SpannedExpr::new(
-            Expr::Fn { params, defaults, rest, body: Box::new(body) },
+            Expr::Fn {
+                params,
+                defaults,
+                rest,
+                body: Box::new(body),
+                is_generator: false,
+            },
             span,
         ))
+    }
+
+    /// `gen fn (params) { body }` — a generator function. Parses the
+    /// `fn` literal that must follow and flips its `is_generator` flag.
+    fn parse_gen(&mut self) -> Result<SpannedExpr, ParseError> {
+        let gen_span = self.expect(&Token::Gen)?;
+        let mut fn_expr = self.parse_fn()?;
+        match &mut fn_expr.expr {
+            Expr::Fn { is_generator, .. } => *is_generator = true,
+            _ => unreachable!("parse_fn always yields Expr::Fn"),
+        }
+        fn_expr.span = gen_span.join(fn_expr.span);
+        Ok(fn_expr)
     }
 
     fn parse_return(&mut self) -> Result<SpannedExpr, ParseError> {

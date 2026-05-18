@@ -1,0 +1,211 @@
+// tests/generator_test.tg — `gen fn` generators.
+//
+// Calling a `gen fn` does not run its body: it builds a paused
+// coroutine and returns a `${ next: fn() }` iterator object. Each
+// `next()` runs the generator to its next `yield` (-> `${done: false,
+// value}`) or to its return (-> `${done: true}`, sticky thereafter).
+// Because a generator speaks the existing iterator-object protocol,
+// `for`, spread `[...g]`, and the `Iter` module drive it for free.
+//
+// Evaluates to an array of suites so `tigr test` aggregates the tally.
+
+Test := import 'Test';
+Iter := import 'Iter';
+
+[
+    Test.suite('gen fn — basics', [
+        Test.case('next() reports done/value', fn() {
+            ramp := gen fn(n) {
+                i := 0;
+                while i < n { yield i; i = i + 1; };
+            };
+            g := ramp(3);
+            Test.assert_eq(g.next(), ${done: false, value: 0});
+            Test.assert_eq(g.next(), ${done: false, value: 1});
+            Test.assert_eq(g.next(), ${done: false, value: 2});
+            Test.assert_eq(g.next(), ${done: true})
+        }),
+
+        Test.case('done is sticky once exhausted', fn() {
+            once := gen fn() { yield 'a'; };
+            g := once();
+            g.next();
+            Test.assert_eq(g.next(), ${done: true});
+            Test.assert_eq(g.next(), ${done: true})
+        }),
+
+        Test.case('an empty generator is immediately done', fn() {
+            empty := gen fn() {};
+            Test.assert_eq(empty().next(), ${done: true})
+        }),
+
+        Test.case('a generator return value is discarded', fn() {
+            g := gen fn() { yield 1; return 999; };
+            it := g();
+            it.next();
+            Test.assert_eq(it.next(), ${done: true})
+        }),
+
+        Test.case('two calls make independent generators', fn() {
+            ramp := gen fn(n) { i := 0; while i < n { yield i; i = i + 1; }; };
+            a := ramp(5);
+            b := ramp(5);
+            a.next();
+            a.next();
+            // `b` is untouched by pulls on `a`.
+            Test.assert_eq(b.next(), ${done: false, value: 0})
+        }),
+    ]),
+
+    Test.suite('gen fn — driven by for / spread', [
+        Test.case('for loops over a generator', fn() {
+            ramp := gen fn(n) { i := 0; while i < n { yield i; i = i + 1; }; };
+            seen := for[] (x, ramp(4)) { x };
+            Test.assert_eq(seen, [0, 1, 2, 3])
+        }),
+
+        Test.case('spread collects a generator', fn() {
+            letters := gen fn() { yield 'a'; yield 'b'; yield 'c'; };
+            Test.assert_eq([...letters()], ['a', 'b', 'c'])
+        }),
+
+        Test.case('default parameters apply', fn() {
+            ramp := gen fn(n = 3) { i := 0; while i < n { yield i; i = i + 1; }; };
+            Test.assert_eq([...ramp()], [0, 1, 2]);
+            Test.assert_eq([...ramp(5)], [0, 1, 2, 3, 4])
+        }),
+
+        Test.case('an infinite generator is safe when bounded', fn() {
+            naturals := gen fn() { i := 0; while true { yield i; i = i + 1; }; };
+            g := naturals();
+            first := for[] (_, 1..=4) { g.next().value };
+            Test.assert_eq(first, [0, 1, 2, 3])
+        }),
+    ]),
+
+    Test.suite('gen fn — composition', [
+        Test.case('a generator can consume another generator', fn() {
+            naturals := gen fn() { i := 0; while true { yield i; i = i + 1; }; };
+            doubled := gen fn(src) { for (x, src) { yield x * 2; }; };
+            limited := gen fn(src, n) {
+                k := 0;
+                while k < n {
+                    r := src.next();
+                    if r.done { return; };
+                    yield r.value;
+                    k = k + 1;
+                };
+            };
+            Test.assert_eq([...limited(doubled(naturals()), 5)], [0, 2, 4, 6, 8])
+        }),
+
+        Test.case('yield works through a nested for over a generator', fn() {
+            src := gen fn() { yield 1; yield 2; yield 3; };
+            tagged := gen fn(s) { for (v, s) { yield [v, v + 10]; }; };
+            Test.assert_eq([...tagged(src())], [[1, 11], [2, 12], [3, 13]])
+        }),
+
+        Test.case('a generator runs inside a go coroutine', fn() {
+            ramp := gen fn(n) { i := 0; while i < n { yield i; i = i + 1; }; };
+            log := [];
+            go fn() { for (x, ramp(3)) { log = log + [x]; }; };
+            while (#log < 3) { yield };
+            Test.assert_eq(log, [0, 1, 2])
+        }),
+    ]),
+
+    Test.suite('gen fn — errors', [
+        Test.case('a raise inside a generator surfaces at next()', fn() {
+            boom := gen fn() { yield 1; raise 'kaboom'; };
+            g := boom();
+            Test.assert_eq(g.next(), ${done: false, value: 1});
+            Test.assert_raises(fn() { g.next() }, 'kaboom')
+        }),
+
+        Test.case('a failed generator is done afterwards', fn() {
+            boom := gen fn() { raise 'x'; };
+            g := boom();
+            try { g.next() } catch (e) { e };
+            Test.assert_eq(g.next(), ${done: true})
+        }),
+
+        Test.case('yield inside a try/catch spans the suspension', fn() {
+            safe := gen fn() {
+                try {
+                    yield 1;
+                    raise 'oops';
+                } catch (e) {
+                    yield 'caught:' + e;
+                };
+            };
+            Test.assert_eq([...safe()], [1, 'caught:oops'])
+        }),
+    ]),
+
+    Test.suite('Iter — generator-backed pipelines', [
+        Test.case('map / filter / take / collect', fn() {
+            out := 0 |> Iter.count() |> Iter.map(fn(n){ n * n })
+                     |> Iter.take(5) |> Iter.collect();
+            Test.assert_eq(out, [0, 1, 4, 9, 16])
+        }),
+
+        Test.case('filter keeps matching elements', fn() {
+            out := Iter.from([1, 2, 3, 4, 5, 6])
+                |> Iter.filter(fn(n){ n % 2 == 0 })
+                |> Iter.collect();
+            Test.assert_eq(out, [2, 4, 6])
+        }),
+
+        Test.case('from wraps a range and a string', fn() {
+            Test.assert_eq(Iter.from(1..=3) |> Iter.collect(), [1, 2, 3]);
+            Test.assert_eq(Iter.from('hi') |> Iter.collect(), ['h', 'i'])
+        }),
+
+        Test.case('drop / enumerate', fn() {
+            Test.assert_eq(
+                Iter.from([1, 2, 3, 4, 5]) |> Iter.drop(2) |> Iter.collect(),
+                [3, 4, 5]);
+            Test.assert_eq(
+                Iter.from(['a', 'b']) |> Iter.enumerate() |> Iter.collect(),
+                [[0, 'a'], [1, 'b']])
+        }),
+
+        Test.case('zip stops at the shorter side', fn() {
+            z := Iter.zip(Iter.from([1, 2, 3]), Iter.from([10, 20]));
+            Test.assert_eq(Iter.collect(z), [[1, 10], [2, 20]])
+        }),
+
+        Test.case('chain concatenates two iterators', fn() {
+            c := Iter.chain(Iter.from([1, 2]), Iter.from([3, 4]));
+            Test.assert_eq(Iter.collect(c), [1, 2, 3, 4])
+        }),
+
+        Test.case('repeat is infinite but take bounds it', fn() {
+            Test.assert_eq(
+                Iter.repeat(7) |> Iter.take(3) |> Iter.collect(),
+                [7, 7, 7])
+        }),
+
+        Test.case('reduce / count_of', fn() {
+            Test.assert_eq(
+                Iter.from([1, 2, 3, 4]) |> Iter.reduce(fn(a, b){ a + b }, 0),
+                10);
+            Test.assert_eq(
+                Iter.from([5, 6, 7]) |> Iter.count_of(),
+                3)
+        }),
+
+        Test.case('find / nth short-circuit an infinite source', fn() {
+            big := 0 |> Iter.count() |> Iter.find(fn(n){ n > 100 });
+            Test.assert_eq(big, 101);
+            tenth := 0 |> Iter.count() |> Iter.nth(10);
+            Test.assert_eq(tenth, 10)
+        }),
+
+        Test.case('for_each visits every element', fn() {
+            sum := 0;
+            Iter.from([1, 2, 3, 4]) |> Iter.for_each(fn(n){ sum = sum + n });
+            Test.assert_eq(sum, 10)
+        }),
+    ]),
+]

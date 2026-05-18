@@ -227,6 +227,7 @@ impl Compiler {
                 chunk: fc.chunk,
                 upvalues: fc.upvalues,
                 name: fc.name,
+                is_generator: false,
             })
         })()
         .map_err(|mut e: CompileError| {
@@ -326,6 +327,7 @@ impl Compiler {
                 chunk: fc.chunk,
                 upvalues: fc.upvalues,
                 name: fc.name,
+                is_generator: false,
             },
             new_locals,
         ))
@@ -615,8 +617,11 @@ impl Compiler {
             | OpCode::Spawn
             // Go pops the function and pushes `null` — net 0.
             // Yield pops the yielded value and pushes the resume
-            // value — net 0.
-            | OpCode::Go | OpCode::Yield
+            // value — net 0. Resume pops a generator handle and pushes
+            // the `${ done, value }` result — net 0; the compiler
+            // never emits it directly (it lives in a synthetic chunk),
+            // but the match must stay exhaustive.
+            | OpCode::Go | OpCode::Yield | OpCode::Resume
             // NoMatchError pops nothing and always raises; the runtime
             // never reaches code after it. Tracked as 0.
             | OpCode::NoMatchError => 0,
@@ -1274,8 +1279,15 @@ impl Compiler {
                 }
             }
 
-            Expr::Fn { params, defaults, rest, body } => {
-                self.compile_fn(params, defaults, rest.as_deref(), body, e.span)?
+            Expr::Fn { params, defaults, rest, body, is_generator } => {
+                self.compile_fn(
+                    params,
+                    defaults,
+                    rest.as_deref(),
+                    body,
+                    *is_generator,
+                    e.span,
+                )?
             }
 
             Expr::Import(path) => self.compile_import(path, line)?,
@@ -2220,6 +2232,7 @@ impl Compiler {
         defaults: &[Option<Box<SpannedExpr>>],
         rest: Option<&str>,
         body: &SpannedExpr,
+        is_generator: bool,
         span: Span,
     ) -> Result<(), CompileError> {
         let line = span.line;
@@ -2301,6 +2314,7 @@ impl Compiler {
             chunk: fc.chunk,
             upvalues: fc.upvalues,
             name: fc.name,
+            is_generator,
         };
 
         let idx = self

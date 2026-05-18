@@ -5,12 +5,12 @@
 // one element through the whole chain at a time and never builds an
 // intermediate array.
 //
-// An iterator is just an object `${ next: fn() }`. Each `next()` call
-// returns either `${done: true}` or `${done: false, value: v}`. The
-// adapters (`from`/`count`/`repeat`) create iterators; the combinators
-// (`map`/`filter`/`take`/...) wrap one iterator in another and run no
-// work until pulled; the consumers (`collect`/`reduce`/...) drive the
-// pulling and force evaluation.
+// The adapters (`from`/`count`/`repeat`) and combinators
+// (`map`/`filter`/`take`/...) are `gen fn` generators: calling one
+// builds a paused coroutine and hands back a `${ next: fn() }`
+// iterator object. Each `next()` runs the generator to its next
+// `yield`. The consumers (`collect`/`reduce`/...) drive the pulling
+// and force evaluation.
 //
 //   0 |> Iter.count() |> Iter.map(fn(n){ n*n }) |> Iter.take(5)
 //     |> Iter.collect()        // [0, 1, 4, 9, 16]
@@ -23,131 +23,88 @@ _na := import '_NativeArray';
 ${
     // -------- adapters: build an iterator from a source --------
 
-    // Wrap a concrete iterable (Array / Range / String) as an
-    // iterator. A non-array source is materialized once via `for[]`;
-    // an array is iterated in place by index.
-    from: fn(it) {
-        src := if type(it) == 'array' { it } else { for[] (x, it) { x } };
-        i := 0;
-        ${ next: fn() {
-            if i >= #src {
-                ${ done: true }
-            } else {
-                v := src[i];
-                i = i + 1;
-                ${ done: false, value: v }
-            }
-        } }
+    // Wrap any concrete iterable (Array / Range / String / Object /
+    // Map / Set — or another iterator object) as an iterator.
+    from: gen fn(it) {
+        for (x, it) { yield x; };
     },
 
     // Infinite: start, start+1, start+2, ...
-    count: fn(start) {
+    count: gen fn(start) {
         n := start;
-        ${ next: fn() {
-            v := n;
+        while true {
+            yield n;
             n = n + 1;
-            ${ done: false, value: v }
-        } }
+        };
     },
 
     // Infinite: v, v, v, ...
-    repeat: fn(v) {
-        ${ next: fn() { ${ done: false, value: v } } }
+    repeat: gen fn(v) {
+        while true { yield v; };
     },
 
     // -------- combinators: iterator -> iterator, all lazy --------
 
     // Apply `f` to each element as it is pulled.
-    map: fn(src, f) {
-        ${ next: fn() {
-            r := src.next();
-            if r.done { r } else { ${ done: false, value: f(r.value) } }
-        } }
+    map: gen fn(src, f) {
+        for (x, src) { yield f(x); };
     },
 
-    // Keep only elements for which `pred` is truthy. Pulls from `src`
-    // until a passing element appears or `src` is exhausted.
-    filter: fn(src, pred) {
-        ${ next: fn() {
-            r := src.next();
-            while !r.done && !pred(r.value) {
-                r = src.next()
-            };
-            r
-        } }
+    // Keep only elements for which `pred` is truthy.
+    filter: gen fn(src, pred) {
+        for (x, src) {
+            if pred(x) { yield x; };
+        };
     },
 
-    // Yield at most the first `n` elements, then report done without
-    // pulling `src` again — this is what makes infinite sources safe.
-    take: fn(src, n) {
+    // Yield at most the first `n` elements, then stop without pulling
+    // `src` again — this is what makes infinite sources safe.
+    take: gen fn(src, n) {
         taken := 0;
-        ${ next: fn() {
-            if taken >= n {
-                ${ done: true }
-            } else {
-                r := src.next();
-                if !r.done { taken = taken + 1 };
-                r
-            }
-        } }
+        while taken < n {
+            r := src.next();
+            if r.done { return; };
+            yield r.value;
+            taken = taken + 1;
+        };
     },
 
     // Skip the first `n` elements, then yield the rest.
-    drop: fn(src, n) {
-        skipped := false;
-        ${ next: fn() {
-            if !skipped {
-                skipped = true;
-                k := 0;
-                while k < n {
-                    src.next();
-                    k = k + 1
-                }
+    drop: gen fn(src, n) {
+        skipped := 0;
+        for (x, src) {
+            if skipped < n {
+                skipped = skipped + 1;
+            } else {
+                yield x;
             };
-            src.next()
-        } }
+        };
     },
 
     // Yield `[index, value]` pairs, index starting at 0.
-    enumerate: fn(src) {
+    enumerate: gen fn(src) {
         i := 0;
-        ${ next: fn() {
-            r := src.next();
-            if r.done { r } else {
-                idx := i;
-                i = i + 1;
-                ${ done: false, value: [idx, r.value] }
-            }
-        } }
+        for (x, src) {
+            yield [i, x];
+            i = i + 1;
+        };
     },
 
     // Yield `[a_elem, b_elem]` pairs; done as soon as either side is.
-    zip: fn(a, b) {
-        ${ next: fn() {
-            ra := a.next();
-            rb := if ra.done { ${ done: true } } else { b.next() };
-            if ra.done || rb.done {
-                ${ done: true }
-            } else {
-                ${ done: false, value: [ra.value, rb.value] }
-            }
-        } }
+    zip: gen fn(a, b) {
+        ra := a.next();
+        rb := if ra.done { ${ done: true } } else { b.next() };
+        while !ra.done && !rb.done {
+            yield [ra.value, rb.value];
+            ra = a.next();
+            rb = if ra.done { ${ done: true } } else { b.next() };
+        };
     },
 
     // Yield every element of `a`, then every element of `b`.
-    chain: fn(a, b) {
-        first := true;
-        ${ next: fn() {
-            if first {
-                r := a.next();
-                if !r.done { r } else {
-                    first = false;
-                    b.next()
-                }
-            } else {
-                b.next()
-            }
-        } }
+    chain: gen fn(a, b) {
+        for (x, a) { yield x; };
+        for (x, b) { yield x; };
     },
 
     // -------- consumers: force evaluation --------
@@ -159,7 +116,7 @@ ${
         r := it.next();
         while !r.done {
             _na.push(out, r.value);
-            r = it.next()
+            r = it.next();
         };
         out
     },
@@ -170,7 +127,7 @@ ${
         r := it.next();
         while !r.done {
             acc = f(acc, r.value);
-            r = it.next()
+            r = it.next();
         };
         acc
     },
@@ -180,7 +137,7 @@ ${
         r := it.next();
         while !r.done {
             f(r.value);
-            r = it.next()
+            r = it.next();
         };
         null
     },
@@ -192,7 +149,7 @@ ${
         r := it.next();
         while !r.done {
             n = n + 1;
-            r = it.next()
+            r = it.next();
         };
         n
     },
@@ -202,8 +159,8 @@ ${
     find: fn(it, pred) {
         r := it.next();
         while !r.done {
-            if pred(r.value) { return r.value };
-            r = it.next()
+            if pred(r.value) { return r.value; };
+            r = it.next();
         };
         null
     },
@@ -214,9 +171,9 @@ ${
         i := 0;
         r := it.next();
         while !r.done {
-            if i == n { return r.value };
+            if i == n { return r.value; };
             i = i + 1;
-            r = it.next()
+            r = it.next();
         };
         null
     },

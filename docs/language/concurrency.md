@@ -70,9 +70,45 @@ Each body is deep-copied per actor, so the same sendability rule as `spawn` appl
 
 `parallel[]` is the structured, common-case form for a simple fan-out. Reach for raw `spawn`, `Channel`, and `select` when the work is not a plain fan-out, for example a pipeline or a worker pool.
 
+## Green threads: `go` and `yield`
+
+An actor is heavyweight: one OS thread, one heap, deep-copied messages. For many lightweight tasks that share state inside a single actor, that is the wrong tool. **Green threads** are the lighter axis. `go fn` spawns a function as a coroutine inside the current actor. It shares that actor's heap, so no copying and no channels are needed, and it is scheduled cooperatively onto the same OS thread.
+
+```tigr
+log := [];
+go fn() { log = log + ['from the coroutine'] };
+while (#log == 0) { yield };
+print(log);   // => [from the coroutine]
+```
+
+Scheduling is cooperative and has no preemption. A coroutine runs until it `yield`s or returns, then the scheduler hands control to the next ready one, round-robin. `yield` with nothing else ready resumes immediately. The actor's main program is itself coroutine zero, so the `while (...) { yield }` idiom above pumps the scheduler until a coroutine has done its work. A coroutine that never yields starves the rest, and a blocking call (file IO, `Net`, channel `recv`) stalls every coroutine in the actor. `go` evaluates to `null`: there is no handle yet.
+
+Two-level mental model: `spawn` is real parallelism across cores, with separate heaps and copied messages; `go` is cheap concurrency on one core, with a shared heap and cooperative hand-off. Pick the axis the work needs.
+
+## Generators: `gen fn`
+
+A `gen fn` is a generator function. Calling it does not run the body. It builds a paused coroutine and returns an iterator object `${next: fn()}`. Each `next()` call runs the body until the next `yield`, which produces a value (`${done: false, value}`); when the body returns, `next()` reports `${done: true}` from then on.
+
+```tigr
+ramp := gen fn(n) {
+    i := 0;
+    while i < n { yield i; i = i + 1; };
+};
+
+g := ramp(3);
+print(g.next());   // => ${done: false, value: 0}
+print([...ramp(3)]);   // => [0, 1, 2]
+for (x, ramp(3)) { print(x); };   // => 0, 1, 2
+```
+
+Because a generator speaks the ordinary iterator protocol, a `for` loop, the spread forms `[...g]` and `f(...g)`, and the whole [`Iter`](../stdlib/iter.md) module drive it directly. Generators are the natural way to write infinite or streaming sequences: a `gen fn` with `while true` only computes the next value when it is pulled. They compose, too, a generator can `for`-loop over another generator and `yield` transformed values. A `raise` that escapes a generator's body surfaces at the `next()` call site, so it can be caught with an ordinary `try` around the pull.
+
+`Iter` itself is built from `gen fn` generators, so a generator you write drops straight into an `Iter` pipeline.
+
 ## See also
 
 - [Channel module](../stdlib/channel.md): the full `Channel` API
+- [Iter module](../stdlib/iter.md): lazy pipelines, built from generators
 - [Garbage collection](gc.md): the per-thread heap each actor runs on
 - [Errors](errors.md): `not_sendable`, `channel_closed`, and `cycle`
 - [LANGUAGE.md Appendix L](../../LANGUAGE.md#appendix-l--changes-in-v014): the authoritative spec

@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
 
+use crate::vm::scheduler::GeneratorState;
 use crate::vm::value::{Closure, IterState, MapKey, Upvalue, Value};
 
 /// Object-count the heap starts (and never drops below) as a collection
@@ -279,6 +280,8 @@ pub struct Heap {
     iters: Arena<IterState>,
     closures: Arena<Closure>,
     upvalues: Arena<Upvalue>,
+    /// green threads — parked generator coroutines.
+    generators: Arena<GeneratorState>,
     /// Live object count across all arenas — the collection trigger.
     live: usize,
     /// `live` value at which the next collection fires.
@@ -299,6 +302,7 @@ impl Heap {
             iters: Arena::new(),
             closures: Arena::new(),
             upvalues: Arena::new(),
+            generators: Arena::new(),
             live: 0,
             threshold: MIN_THRESHOLD,
             collections: 0,
@@ -326,6 +330,7 @@ impl Heap {
             + self.iters.sweep()
             + self.closures.sweep()
             + self.upvalues.sweep()
+            + self.generators.sweep()
     }
 }
 
@@ -387,6 +392,7 @@ gc_kind!(BytesKind, Vec<u8>, bytes, alloc_bytes);
 gc_kind!(IterKind, IterState, iters, alloc_iter);
 gc_kind!(ClosureKind, Closure, closures, alloc_closure);
 gc_kind!(UpvalueKind, Upvalue, upvalues, alloc_upvalue);
+gc_kind!(GeneratorKind, GeneratorState, generators, alloc_generator);
 
 // ---------------------------------------------------------------------
 // Tracing: the `Trace` trait, the `Marker`, and `collect`
@@ -407,6 +413,7 @@ enum AnyRef {
     Iter(GcRef<IterKind>),
     Closure(GcRef<ClosureKind>),
     Upvalue(GcRef<UpvalueKind>),
+    Generator(GcRef<GeneratorKind>),
 }
 
 /// Drives the mark phase. Carries the heap plus an explicit worklist —
@@ -461,6 +468,11 @@ impl<'h> Marker<'h> {
             self.worklist.push(AnyRef::Upvalue(r));
         }
     }
+    pub fn mark_generator(&mut self, r: GcRef<GeneratorKind>) {
+        if self.heap.generators.mark(r.index, r.generation) {
+            self.worklist.push(AnyRef::Generator(r));
+        }
+    }
 
     /// Drain the worklist, tracing each freshly-marked object.
     fn run(&mut self) {
@@ -492,6 +504,10 @@ impl<'h> Marker<'h> {
                     let cell = self.heap.upvalues.cell(r.index, r.generation);
                     cell.borrow().trace(self);
                 }
+                AnyRef::Generator(r) => {
+                    let cell = self.heap.generators.cell(r.index, r.generation);
+                    cell.borrow().trace(self);
+                }
             }
         }
     }
@@ -507,6 +523,7 @@ impl Trace for Value {
             Value::Bytes(r) => m.mark_bytes(*r),
             Value::Iter(r) => m.mark_iter(*r),
             Value::Function(r) => m.mark_closure(*r),
+            Value::Generator(r) => m.mark_generator(*r),
             Value::Null
             | Value::Bool(_)
             | Value::Int(_)
@@ -733,6 +750,7 @@ mod tests {
             chunk: Chunk::new(),
             upvalues: Vec::new(),
             name: None,
+            is_generator: false,
         })
     }
 

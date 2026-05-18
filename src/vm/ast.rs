@@ -361,11 +361,17 @@ pub enum Expr {
     // `Some(expr)` default for `params[i]`, used when that argument
     // slot is `null`. Defaults are only permitted on `Pattern::Ident`
     // parameters (the parser enforces this).
+    //
+    // `is_generator` is set for `gen fn` — a generator function.
+    // Calling one does not run the body; it builds a paused coroutine
+    // and returns a `${ next: fn() }` iterator object. `yield` inside
+    // the body produces the iterator's values.
     Fn {
         params: Vec<Pattern>,
         defaults: Vec<Option<Box<SpannedExpr>>>,
         rest: Option<String>,
         body: Box<SpannedExpr>,
+        is_generator: bool,
     },
 
     // `return` (None) or `return value` / `return (expr)` (Some).

@@ -263,6 +263,12 @@ pub enum OpCode {
     /// it. A no-op (resumes immediately with `null`) when no other
     /// coroutine is ready. Operand: none.
     Yield,
+    /// Pop a generator handle and resume its coroutine: park the
+    /// running coroutine, run the generator until it `yield`s or
+    /// returns, and push the `${ done, value }` result. Emitted only
+    /// inside the synthetic `next` closure of a generator's iterator
+    /// object — never reachable from surface syntax. Operand: none.
+    Resume,
 }
 
 impl OpCode {
@@ -338,6 +344,7 @@ impl OpCode {
             66 => Spawn,
             67 => Go,
             68 => Yield,
+            69 => Resume,
             _ => return None,
         })
     }

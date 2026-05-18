@@ -34,6 +34,39 @@ pub struct GreenThread {
     pub(crate) parked_resume: Option<Value>,
 }
 
+/// Lifecycle of a generator coroutine.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GenStatus {
+    /// Parked — `GeneratorState`'s fields hold the coroutine, ready to
+    /// resume. Covers both "not yet started" and "paused at a yield".
+    Suspended,
+    /// Resumed: the coroutine's state is live in the `Vm`, or it is an
+    /// ancestor on the resume chain. Resuming it again is an error.
+    Running,
+    /// The body returned. `next()` reports `${ done: true }` forever.
+    Done,
+}
+
+/// A generator coroutine: a suspended slice of VM execution state,
+/// resumed on demand by the `${ next: fn() }` iterator object that
+/// wraps it. Unlike a [`GreenThread`] it is not scheduled round-robin
+/// — it runs only when something pulls its `next()`, and `yield`
+/// inside it hands a value back to that puller. Lives on the GC heap
+/// (`GeneratorKind`); `Trace` keeps the parked state's roots alive.
+pub struct GeneratorState {
+    /// Scheduler coroutine id — its own slot in the owner-tagged
+    /// open-upvalue scheme, so a closure created inside the generator
+    /// body resolves against the right value stack.
+    pub(crate) id: u32,
+    pub(crate) status: GenStatus,
+    /// The parked coroutine. Populated iff `status == Suspended`;
+    /// emptied while the generator runs (its state is in the `Vm`) and
+    /// once it is `Done`.
+    pub(crate) frames: Vec<CallFrame>,
+    pub(crate) stack: Vec<Value>,
+    pub(crate) open_upvalues: Vec<GcRef<UpvalueKind>>,
+}
+
 /// Per-actor cooperative scheduler: a FIFO run-queue of ready,
 /// not-currently-running coroutines plus bookkeeping for the running
 /// one.

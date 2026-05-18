@@ -1,0 +1,92 @@
+// Generators: `gen fn`
+//
+// A `gen fn` is a generator function. Calling it does not run the
+// body — it builds a paused coroutine and hands back an iterator
+// object `${next: fn()}`. Each `next()` runs the body until the next
+// `yield`, which produces a value; when the body returns, the
+// iterator is done.
+//
+// Because a generator speaks the ordinary iterator protocol, `for`,
+// spread `[...g]`, and the whole `Iter` module drive it for free.
+
+// A finite generator: yields 0, 1, ..., n-1.
+ramp := gen fn(n) {
+    i := 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    };
+};
+
+// `next()` pulls one value at a time.
+g := ramp(3);
+print(g.next());        // ${done: false, value: 0}
+print(g.next());        // ${done: false, value: 1}
+print(g.next());        // ${done: false, value: 2}
+print(g.next());        // ${done: true}
+
+// A `for` loop drives a generator directly.
+total := 0;
+for (x, ramp(5)) { total = total + x; };
+print('sum 0..4 = {total}');                   // 10
+
+// Spread collects every yielded value into an array.
+print([...ramp(4)]);                            // [0, 1, 2, 3]
+
+// Generators can be infinite — they only compute on demand. Pair an
+// infinite generator with something that stops pulling.
+naturals := gen fn() {
+    i := 0;
+    while true {
+        yield i;
+        i = i + 1;
+    };
+};
+
+first5 := [];
+nat := naturals();
+for (_, 1..=5) { first5 = first5 + [nat.next().value]; };
+print('first five naturals: {first5}');         // [0, 1, 2, 3, 4]
+
+// Generators compose: one generator can consume another.
+fib := gen fn() {
+    a := 0;
+    b := 1;
+    while true {
+        yield a;
+        next := a + b;
+        a = b;
+        b = next;
+    };
+};
+
+evens := gen fn(src) {
+    for (v, src) {
+        if v % 2 == 0 { yield v; };
+    };
+};
+
+take := gen fn(src, n) {
+    k := 0;
+    while k < n {
+        r := src.next();
+        if r.done { return; };
+        yield r.value;
+        k = k + 1;
+    };
+};
+
+print('first 6 even Fibonacci numbers:');
+print([...take(evens(fib()), 6)]);              // [0, 2, 8, 34, 144, 610]
+
+// The Iter module is itself built from generators, so a generator
+// you write drops straight into an Iter pipeline.
+Iter := import 'Iter';
+
+print(naturals()
+    |> Iter.map(fn(n) { n * n })
+    |> Iter.filter(fn(n) { n % 2 == 1 })
+    |> Iter.take(5)
+    |> Iter.collect());                         // [1, 9, 25, 49, 81]
+
+print('done');

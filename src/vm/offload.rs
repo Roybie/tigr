@@ -33,6 +33,13 @@ pub type BlockingJob = Box<dyn FnOnce() -> OffloadResult + Send>;
 /// `Send`; neither holds a heap reference.
 pub type OffloadResult = Result<OffloadOk, OffloadErr>;
 
+/// A `Send` thunk that reconstructs an offloaded call's result on the
+/// actor thread. It captures only POD; running it may allocate into
+/// the thread-local heap (which a worker thread must never touch). See
+/// [`OffloadOk::Deferred`].
+pub type DeferredDecode =
+    Box<dyn FnOnce() -> Result<Value, RuntimeError> + Send>;
+
 /// The raw, `Send` success payload of an offloaded blocking call.
 /// [`decode`] turns each variant into a `Value` on the actor thread.
 /// Grows one variant at a time as more natives are converted.
@@ -57,6 +64,12 @@ pub enum OffloadOk {
     RecvFrom { data: Vec<u8>, host: String, port: u16 },
     /// `Os.run` — child-process exit code plus captured output.
     Run { code: i64, stdout: String, stderr: String },
+    /// An escape hatch for blocking calls whose result needs
+    /// module-specific reconstruction on the actor thread — channel
+    /// receive, `join`, `select`, where rebuilding the value (or the
+    /// error) means decoding a `Transfer` into the heap. The worker
+    /// captures only POD into the thunk; the actor thread runs it.
+    Deferred(DeferredDecode),
 }
 
 /// The `Send` error payload — a POD form of the structured error a
@@ -68,11 +81,26 @@ pub struct OffloadErr {
     pub message: String,
 }
 
+impl OffloadOk {
+    /// Wrap an actor-thread reconstruction thunk as a finished
+    /// [`OffloadResult`]. Convenience for blocking natives whose result
+    /// needs the heap to rebuild (channel receive, `join`, `select`) —
+    /// see [`OffloadOk::Deferred`].
+    pub fn deferred(
+        thunk: impl FnOnce() -> Result<Value, RuntimeError> + Send + 'static,
+    ) -> OffloadResult {
+        Ok(OffloadOk::Deferred(Box::new(thunk)))
+    }
+}
+
 /// Turn a worker's raw result back into a `Value` (allocating into this
 /// actor's thread-local heap) or the `RuntimeError` the native would
 /// have raised. Runs only on the actor thread.
 pub fn decode(result: OffloadResult) -> Result<Value, RuntimeError> {
     match result {
+        // A `Deferred` payload carries its own actor-thread thunk —
+        // it decides value-vs-error itself, so run it directly.
+        Ok(OffloadOk::Deferred(thunk)) => thunk(),
         Ok(ok) => Ok(decode_ok(ok)),
         Err(e) => Err(decode_err(e)),
     }
@@ -80,6 +108,10 @@ pub fn decode(result: OffloadResult) -> Result<Value, RuntimeError> {
 
 fn decode_ok(ok: OffloadOk) -> Value {
     match ok {
+        // Handled by `decode` before reaching here.
+        OffloadOk::Deferred(_) => {
+            unreachable!("decode handles OffloadOk::Deferred directly")
+        }
         OffloadOk::Unit => Value::Null,
         OffloadOk::Int(n) => Value::Int(n),
         OffloadOk::Str(s) => Value::Str(s.into()),

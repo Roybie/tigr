@@ -7,6 +7,8 @@ A `Channel` carries messages between actors (the v0.14 concurrency model). It is
 
 `Channel.new()` is unbounded. `Channel.new(n)` bounds the buffer at `n` messages, so `send` blocks (backpressure) while the buffer is full. `recv` and `try_recv` return an object to inspect or `match`: `${value: v}` for a message, `${closed: true}` once the channel is closed and drained, and `${empty: true}` from `try_recv` when nothing is ready. The functions are thin re-exports of the native `_NativeChannel` backend, except `new`, which defaults the capacity.
 
+`send` and `recv` are blocking natives: inside a green thread they are offloaded to a worker pool, so a coroutine waiting on a channel does not stall the actor's siblings (see [concurrency](../language/concurrency.md)). This also means one green thread may `recv` from a channel that a *sibling* green thread feeds, in the same actor, without deadlocking. `try_recv` and `close` never wait and run inline.
+
 ```tigr
 Channel := import 'Channel';
 

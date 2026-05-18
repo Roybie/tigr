@@ -14,16 +14,19 @@ use indexmap::IndexMap;
 use crate::vm::channel::{ChannelHandle, ChannelInner, RecvOutcome};
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
+use crate::vm::offload::{BlockingJob, OffloadOk};
 use crate::vm::transfer::{decode, encode};
 use crate::vm::value::{Arity, Value};
 
-use super::{native, object};
+use super::{native, native_blocking, object};
 
 pub fn module() -> Value {
     object(&[
         ("new", native("new", Arity::Exact(1), c_new)),
-        ("send", native("send", Arity::Exact(2), c_send)),
-        ("recv", native("recv", Arity::Exact(1), c_recv)),
+        // `send` blocks on a bounded channel's backpressure, `recv`
+        // blocks for a message — both offload inside a green thread.
+        ("send", native_blocking("send", Arity::Exact(2), c_send)),
+        ("recv", native_blocking("recv", Arity::Exact(1), c_recv)),
         ("try_recv", native("try_recv", Arity::Exact(1), c_try_recv)),
         ("close", native("close", Arity::Exact(1), c_close)),
     ])
@@ -75,24 +78,38 @@ fn c_new(args: &[Value]) -> Result<Value, RuntimeError> {
 
 /// `send(channel, message)` — transfer-encodes and enqueues `message`.
 /// Raises `not_sendable`/`cycle` for an un-sendable value, or
-/// `channel_closed` if the channel is closed. Returns `null`.
-fn c_send(args: &[Value]) -> Result<Value, RuntimeError> {
-    let ch = as_channel(&args[0])?;
+/// `channel_closed` if the channel is closed. Returns `null`. A
+/// blocking native — a bounded channel's `send` waits while the
+/// buffer is full. `message` is transfer-encoded here, on the actor
+/// thread (it needs the heap); only the encoded `Transfer` crosses to
+/// the worker.
+fn c_send(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let ch = as_channel(&args[0])?.clone();
     let msg = encode(&args[1])?;
-    match ch.send(msg) {
-        Ok(()) => Ok(Value::Null),
-        Err(()) => Err(RuntimeError::new(RuntimeErrorKind::ChannelClosed, 0)),
-    }
+    Ok(Box::new(move || {
+        let outcome = ch.send(msg);
+        OffloadOk::deferred(move || match outcome {
+            Ok(()) => Ok(Value::Null),
+            Err(()) => {
+                Err(RuntimeError::new(RuntimeErrorKind::ChannelClosed, 0))
+            }
+        })
+    }))
 }
 
 /// `recv(channel)` — blocks for a message. Returns `${value: v}`, or
-/// `${closed: true}` once the channel is closed and drained.
-fn c_recv(args: &[Value]) -> Result<Value, RuntimeError> {
-    let ch = as_channel(&args[0])?;
-    Ok(match ch.recv() {
-        RecvOutcome::Message(t) => tagged("value", decode(t)),
-        RecvOutcome::Closed => tagged("closed", Value::Bool(true)),
-    })
+/// `${closed: true}` once the channel is closed and drained. A
+/// blocking native; the received `Transfer` is decoded into the
+/// caller's heap back on the actor thread.
+fn c_recv(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let ch = as_channel(&args[0])?.clone();
+    Ok(Box::new(move || {
+        let outcome = ch.recv();
+        OffloadOk::deferred(move || Ok(match outcome {
+            RecvOutcome::Message(t) => tagged("value", decode(t)),
+            RecvOutcome::Closed => tagged("closed", Value::Bool(true)),
+        }))
+    }))
 }
 
 /// `try_recv(channel)` — never blocks. Returns `${value: v}`,

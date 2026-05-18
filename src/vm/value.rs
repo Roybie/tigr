@@ -397,6 +397,7 @@ pub struct NativeFn {
 /// or network IO); the VM can offload them to a worker pool so a green
 /// thread doing IO does not stall its siblings (see
 /// [`crate::vm::offload`]).
+#[derive(Clone, Copy)]
 pub enum NativeKind {
     /// Runs inline on the actor thread — the historical behaviour.
     Pure(fn(&[Value]) -> Result<Value, crate::vm::error::RuntimeError>),

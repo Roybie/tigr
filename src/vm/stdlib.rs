@@ -15,6 +15,7 @@ use num_traits::ToPrimitive;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
+use crate::vm::offload::{BlockingJob, OffloadOk};
 use crate::vm::rng;
 use crate::vm::task::JoinOutcome;
 use crate::vm::transfer::{decode, TransferError};
@@ -34,7 +35,7 @@ pub fn builtins() -> Vec<Value> {
         .map(|nf| Value::NativeFn(Rc::new(NativeFn {
             name: nf.name,
             arity: nf.arity,
-            kind: NativeKind::Pure(nf.func),
+            kind: nf.kind,
         })))
         .collect()
 }
@@ -42,26 +43,41 @@ pub fn builtins() -> Vec<Value> {
 struct Spec {
     name: &'static str,
     arity: Arity,
-    func: fn(&[Value]) -> Result<Value, RuntimeError>,
+    kind: NativeKind,
+}
+
+/// Shorthand for an ordinary inline built-in.
+const fn pure(f: fn(&[Value]) -> Result<Value, RuntimeError>) -> NativeKind {
+    NativeKind::Pure(f)
 }
 
 const BUILTINS: &[Spec] = &[
-    Spec { name: "print", arity: Arity::Variadic, func: native_print },
-    Spec { name: "str",   arity: Arity::Range(1, 3), func: native_str },
-    Spec { name: "num",   arity: Arity::Exact(1), func: native_num },
-    Spec { name: "int",   arity: Arity::Exact(1), func: native_int },
-    Spec { name: "float", arity: Arity::Exact(1), func: native_float },
-    Spec { name: "bool",  arity: Arity::Exact(1), func: native_bool },
-    Spec { name: "floor", arity: Arity::Exact(1), func: native_floor },
-    Spec { name: "ceil",  arity: Arity::Exact(1), func: native_ceil },
-    Spec { name: "rand",  arity: Arity::Exact(0), func: native_rand },
-    Spec { name: "type",  arity: Arity::Exact(1), func: native_type },
-    Spec { name: "gc",    arity: Arity::Exact(0), func: native_gc },
+    Spec { name: "print", arity: Arity::Variadic, kind: pure(native_print) },
+    Spec { name: "str",   arity: Arity::Range(1, 3), kind: pure(native_str) },
+    Spec { name: "num",   arity: Arity::Exact(1), kind: pure(native_num) },
+    Spec { name: "int",   arity: Arity::Exact(1), kind: pure(native_int) },
+    Spec { name: "float", arity: Arity::Exact(1), kind: pure(native_float) },
+    Spec { name: "bool",  arity: Arity::Exact(1), kind: pure(native_bool) },
+    Spec { name: "floor", arity: Arity::Exact(1), kind: pure(native_floor) },
+    Spec { name: "ceil",  arity: Arity::Exact(1), kind: pure(native_ceil) },
+    Spec { name: "rand",  arity: Arity::Exact(0), kind: pure(native_rand) },
+    Spec { name: "type",  arity: Arity::Exact(1), kind: pure(native_type) },
+    Spec { name: "gc",    arity: Arity::Exact(0), kind: pure(native_gc) },
     // v0.14 — concurrency. `join` waits for a `spawn`ed actor; it is
     // also the desugar target for `parallel[]`. `__select` backs the
     // `select` block — internal: a user writes `select`, never it.
-    Spec { name: "__select", arity: Arity::Exact(2), func: native_select },
-    Spec { name: "join", arity: Arity::Exact(1), func: native_join },
+    // Both wait, so they are `Blocking`: inside a green thread they
+    // offload to the worker pool instead of freezing the actor.
+    Spec {
+        name: "__select",
+        arity: Arity::Exact(2),
+        kind: NativeKind::Blocking(native_select),
+    },
+    Spec {
+        name: "join",
+        arity: Arity::Exact(1),
+        kind: NativeKind::Blocking(native_join),
+    },
 ];
 
 const BUILTIN_NAMES: [&str; 13] = [
@@ -335,7 +351,7 @@ fn native_rand(_args: &[Value]) -> Result<Value, RuntimeError> {
 // which blocks until one channel has a message and returns
 // `${index, value}` (or `${index: -1}` for an `else` arm).
 
-fn native_select(args: &[Value]) -> Result<Value, RuntimeError> {
+fn native_select(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
     use crate::vm::channel::{select, SelectResult};
 
     let chans = match &args[0] {
@@ -370,22 +386,27 @@ fn native_select(args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let has_else = matches!(&args[1], Value::Bool(true));
 
-    match select(&chans, has_else) {
-        SelectResult::Fired { index, message } => {
-            let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(2);
-            m.insert(Arc::from("index"), Value::Int(index as i64));
-            m.insert(Arc::from("value"), crate::vm::transfer::decode(message));
-            Ok(Value::Object(gc::alloc_object(m)))
-        }
-        SelectResult::ElseReady => {
-            let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(1);
-            m.insert(Arc::from("index"), Value::Int(-1));
-            Ok(Value::Object(gc::alloc_object(m)))
-        }
-        SelectResult::AllClosed => {
-            Err(RuntimeError::new(RuntimeErrorKind::ChannelClosed, 0))
-        }
-    }
+    Ok(Box::new(move || {
+        let result = select(&chans, has_else);
+        OffloadOk::deferred(move || match result {
+            SelectResult::Fired { index, message } => {
+                let mut m: IndexMap<Arc<str>, Value> =
+                    IndexMap::with_capacity(2);
+                m.insert(Arc::from("index"), Value::Int(index as i64));
+                m.insert(Arc::from("value"), decode(message));
+                Ok(Value::Object(gc::alloc_object(m)))
+            }
+            SelectResult::ElseReady => {
+                let mut m: IndexMap<Arc<str>, Value> =
+                    IndexMap::with_capacity(1);
+                m.insert(Arc::from("index"), Value::Int(-1));
+                Ok(Value::Object(gc::alloc_object(m)))
+            }
+            SelectResult::AllClosed => {
+                Err(RuntimeError::new(RuntimeErrorKind::ChannelClosed, 0))
+            }
+        })
+    }))
 }
 
 fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -407,9 +428,15 @@ fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
 /// `join(task)` — block for the actor's result. Returns its value, or
 /// raises: the actor's own `raise`d value verbatim, or — for a
 /// built-in actor error — an object `${kind, message, trace, worker}`.
-fn native_join(args: &[Value]) -> Result<Value, RuntimeError> {
+///
+/// A blocking native: the Condvar wait for the worker actor runs on
+/// the offload pool, so a green thread joining a `spawn`ed actor does
+/// not freeze its siblings. (`join` on a *green-thread* handle never
+/// reaches here — the VM intercepts that case for a cooperative
+/// `coop_join` before the native is invoked.)
+fn native_join(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
     let task = match &args[0] {
-        Value::Task(t) => t,
+        Value::Task(t) => t.clone(),
         other => {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::TypeMismatch(format!(
@@ -420,16 +447,19 @@ fn native_join(args: &[Value]) -> Result<Value, RuntimeError> {
             ));
         }
     };
-    match task.join() {
-        JoinOutcome::Outcome(Ok(transfer)) => Ok(decode(transfer)),
-        JoinOutcome::Outcome(Err(te)) => Err(actor_error(te)),
-        JoinOutcome::AlreadyJoined => Err(RuntimeError::new(
-            RuntimeErrorKind::Raised(Value::Str(
-                "task has already been joined".into(),
+    Ok(Box::new(move || {
+        let outcome = task.join();
+        OffloadOk::deferred(move || match outcome {
+            JoinOutcome::Outcome(Ok(transfer)) => Ok(decode(transfer)),
+            JoinOutcome::Outcome(Err(te)) => Err(actor_error(te)),
+            JoinOutcome::AlreadyJoined => Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "task has already been joined".into(),
+                )),
+                0,
             )),
-            0,
-        )),
-    }
+        })
+    }))
 }
 
 /// Reconstruct a catchable error in the joining actor from a worker's

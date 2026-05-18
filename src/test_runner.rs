@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+#[cfg(test)]
 use std::sync::Arc;
 
 use crate::vm;

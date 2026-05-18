@@ -31,7 +31,9 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    Str(Rc<str>),
+    /// `Arc<str>` (not `Rc`) so a string can be pooled in a `Const`
+    /// and loaded across actor threads without re-allocating per load.
+    Str(Arc<str>),
 
     // Phase 3+ — GC-managed (see `crate::vm::gc`).
     Array(GcRef<ArrayKind>),
@@ -133,7 +135,7 @@ pub enum MapKey {
     Null,
     Bool(bool),
     Int(i64),
-    Str(Rc<str>),
+    Str(Arc<str>),
 }
 
 impl MapKey {
@@ -200,7 +202,7 @@ pub enum IterState {
         index: usize,
     },
     String {
-        string: Rc<str>,
+        string: Arc<str>,
         char_index: usize,
         byte_index: usize,
     },

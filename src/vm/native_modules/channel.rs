@@ -7,7 +7,7 @@
 //! pattern-matches: `${value: v}`, `${closed: true}`, or — `try_recv`
 //! only — `${empty: true}`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -49,8 +49,8 @@ fn as_channel(v: &Value) -> Result<&ChannelHandle, RuntimeError> {
 
 /// Build a single-field result object (`${key: val}`).
 fn tagged(key: &str, val: Value) -> Value {
-    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(1);
-    m.insert(Rc::from(key), val);
+    let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(1);
+    m.insert(Arc::from(key), val);
     Value::Object(gc::alloc_object(m))
 }
 

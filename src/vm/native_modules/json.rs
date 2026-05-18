@@ -11,7 +11,7 @@
 //! GC handles and raises a catchable `cycle` error on a repeat. A
 //! non-cyclic shared subtree (DAG) still serializes fine.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -330,7 +330,7 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self) -> Result<Value, RuntimeError> {
         self.expect(b'{', "`{`")?;
         self.skip_ws();
-        let mut map: IndexMap<Rc<str>, Value> = IndexMap::new();
+        let mut map: IndexMap<Arc<str>, Value> = IndexMap::new();
         if self.peek() == Some(b'}') {
             self.advance();
             return Ok(Value::Object(gc::alloc_object(map)));
@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
             self.skip_ws();
             self.expect(b':', "`:`")?;
             let value = self.parse_value()?;
-            map.insert(Rc::from(key.as_str()), value);
+            map.insert(Arc::from(key.as_str()), value);
             self.skip_ws();
             match self.peek() {
                 Some(b',') => { self.advance(); }

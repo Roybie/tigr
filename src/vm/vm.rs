@@ -262,13 +262,13 @@ impl Vm {
                 let caught = match &err.kind {
                     RuntimeErrorKind::Raised(v) => v.clone(),
                     kind => {
-                        let mut m: IndexMap<Rc<str>, Value> =
+                        let mut m: IndexMap<Arc<str>, Value> =
                             IndexMap::with_capacity(3);
-                        m.insert(Rc::from("kind"),
+                        m.insert(Arc::from("kind"),
                             Value::Str(kind.kind_tag().into()));
-                        m.insert(Rc::from("message"),
+                        m.insert(Arc::from("message"),
                             Value::Str(format!("{err}").into()));
-                        m.insert(Rc::from("line"),
+                        m.insert(Arc::from("line"),
                             Value::Int(err.line as i64));
                         Value::Object(gc::alloc_object(m))
                     }
@@ -643,7 +643,7 @@ impl Vm {
                     ip += 1;
                     let start = self.stack.len() - n * 2;
                     let drained: Vec<Value> = self.stack.drain(start..).collect();
-                    let mut obj: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(n);
+                    let mut obj: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(n);
                     let mut iter = drained.into_iter();
                     while let (Some(k), Some(v)) = (iter.next(), iter.next()) {
                         let key = match k {
@@ -1280,7 +1280,7 @@ impl Vm {
                 OpCode::ObjRest => {
                     let keys_val = self.pop(line)?;
                     let src_val = self.pop(line)?;
-                    let exclude: Vec<Rc<str>> = match keys_val {
+                    let exclude: Vec<Arc<str>> = match keys_val {
                         Value::Array(a) => a.borrow().iter()
                             .filter_map(|v| match v {
                                 Value::Str(s) => Some(s.clone()),
@@ -1304,7 +1304,7 @@ impl Vm {
                             line,
                         )),
                     };
-                    let mut out: IndexMap<Rc<str>, Value> = IndexMap::new();
+                    let mut out: IndexMap<Arc<str>, Value> = IndexMap::new();
                     for (k, v) in src_obj.borrow().iter() {
                         if !exclude.iter().any(|x| x == k) {
                             out.insert(k.clone(), v.clone());
@@ -2287,7 +2287,7 @@ fn index_set(coll: &Value, key: &Value, value: Value, line: u32) -> Result<(), R
             Ok(())
         }
         Value::Object(o) => {
-            let key: Rc<str> = match key {
+            let key: Arc<str> = match key {
                 Value::Str(s) => s.clone(),
                 other => return Err(RuntimeError::new(
                     RuntimeErrorKind::InvalidIndexType(other.type_name().into()),

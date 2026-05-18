@@ -7,6 +7,7 @@
 //! instances at startup.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -371,14 +372,14 @@ fn native_select(args: &[Value]) -> Result<Value, RuntimeError> {
 
     match select(&chans, has_else) {
         SelectResult::Fired { index, message } => {
-            let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(2);
-            m.insert(Rc::from("index"), Value::Int(index as i64));
-            m.insert(Rc::from("value"), crate::vm::transfer::decode(message));
+            let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(2);
+            m.insert(Arc::from("index"), Value::Int(index as i64));
+            m.insert(Arc::from("value"), crate::vm::transfer::decode(message));
             Ok(Value::Object(gc::alloc_object(m)))
         }
         SelectResult::ElseReady => {
-            let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(1);
-            m.insert(Rc::from("index"), Value::Int(-1));
+            let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(1);
+            m.insert(Arc::from("index"), Value::Int(-1));
             Ok(Value::Object(gc::alloc_object(m)))
         }
         SelectResult::AllClosed => {
@@ -389,11 +390,11 @@ fn native_select(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
     let s = gc::stats();
-    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(4);
-    m.insert(Rc::from("live"), Value::Int(s.live as i64));
-    m.insert(Rc::from("collections"), Value::Int(s.collections as i64));
-    m.insert(Rc::from("allocated"), Value::Int(s.total_allocated as i64));
-    m.insert(Rc::from("freed"), Value::Int(s.total_freed as i64));
+    let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(4);
+    m.insert(Arc::from("live"), Value::Int(s.live as i64));
+    m.insert(Arc::from("collections"), Value::Int(s.collections as i64));
+    m.insert(Arc::from("allocated"), Value::Int(s.total_allocated as i64));
+    m.insert(Arc::from("freed"), Value::Int(s.total_freed as i64));
     Ok(Value::Object(gc::alloc_object(m)))
 }
 
@@ -441,11 +442,11 @@ fn actor_error(te: TransferError) -> RuntimeError {
     }
     // A built-in worker error surfaces as an object carrying the
     // worker's kind, message, and rendered trace.
-    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(4);
-    m.insert(Rc::from("kind"), Value::Str(te.kind_tag.into()));
-    m.insert(Rc::from("message"), Value::Str(te.message.into()));
-    m.insert(Rc::from("trace"), Value::Str(te.rendered_trace.into()));
-    m.insert(Rc::from("worker"), Value::Bool(true));
+    let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(4);
+    m.insert(Arc::from("kind"), Value::Str(te.kind_tag.into()));
+    m.insert(Arc::from("message"), Value::Str(te.message.into()));
+    m.insert(Arc::from("trace"), Value::Str(te.rendered_trace.into()));
+    m.insert(Arc::from("worker"), Value::Bool(true));
     RuntimeError::new(
         RuntimeErrorKind::Raised(Value::Object(gc::alloc_object(m))),
         0,

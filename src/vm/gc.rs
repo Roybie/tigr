@@ -27,6 +27,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -269,7 +270,7 @@ pub struct HeapStats {
 /// The whole managed heap — one [`Arena`] per collectable kind.
 pub struct Heap {
     arrays: Arena<Vec<Value>>,
-    objects: Arena<IndexMap<Rc<str>, Value>>,
+    objects: Arena<IndexMap<Arc<str>, Value>>,
     maps: Arena<IndexMap<MapKey, Value>>,
     sets: Arena<IndexSet<MapKey>>,
     /// v0.13 — `Bytes` buffers. A `Vec<u8>` owns no handles, so this
@@ -379,7 +380,7 @@ macro_rules! gc_kind {
 }
 
 gc_kind!(ArrayKind, Vec<Value>, arrays, alloc_array);
-gc_kind!(ObjectKind, IndexMap<Rc<str>, Value>, objects, alloc_object);
+gc_kind!(ObjectKind, IndexMap<Arc<str>, Value>, objects, alloc_object);
 gc_kind!(MapKind, IndexMap<MapKey, Value>, maps, alloc_map);
 gc_kind!(SetKind, IndexSet<MapKey>, sets, alloc_set);
 gc_kind!(BytesKind, Vec<u8>, bytes, alloc_bytes);
@@ -531,7 +532,7 @@ impl Trace for Vec<Value> {
     }
 }
 
-impl Trace for IndexMap<Rc<str>, Value> {
+impl Trace for IndexMap<Arc<str>, Value> {
     fn trace(&self, m: &mut Marker) {
         for v in self.values() {
             v.trace(m);
@@ -748,7 +749,7 @@ mod tests {
     fn collect_reclaims_unrooted_object_cycle() {
         let o = alloc_object(IndexMap::new());
         // o.self = o — a reference cycle `Rc` could never reclaim.
-        o.borrow_mut().insert(Rc::from("self"), Value::Object(o));
+        o.borrow_mut().insert(Arc::from("self"), Value::Object(o));
         collect(|_m| {}); // no roots
         assert_eq!(stats().live, 0, "unrooted cycle must be reclaimed");
     }

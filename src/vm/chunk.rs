@@ -20,19 +20,21 @@ pub enum Const {
     Bool(bool),
     Int(i64),
     Float(f64),
-    Str(Box<str>),
+    /// `Arc<str>` (the same backing as `Value::Str`) so a load is a
+    /// refcount bump, not a fresh allocation — see `to_value`.
+    Str(Arc<str>),
 }
 
 impl Const {
     /// Materialize a runtime [`Value`] — called by `OpCode::LoadConst`.
-    /// `Str` allocates a fresh `Rc<str>` per load.
+    /// `Str` shares the pooled `Arc<str>`: no allocation per load.
     pub fn to_value(&self) -> Value {
         match self {
             Const::Null => Value::Null,
             Const::Bool(b) => Value::Bool(*b),
             Const::Int(n) => Value::Int(*n),
             Const::Float(x) => Value::Float(*x),
-            Const::Str(s) => Value::Str(s.as_ref().into()),
+            Const::Str(s) => Value::Str(s.clone()),
         }
     }
 
@@ -44,7 +46,7 @@ impl Const {
             Value::Bool(b) => Const::Bool(*b),
             Value::Int(n) => Const::Int(*n),
             Value::Float(x) => Const::Float(*x),
-            Value::Str(s) => Const::Str(s.as_ref().into()),
+            Value::Str(s) => Const::Str(s.clone()),
             other => unreachable!(
                 "non-literal in constant pool: {}",
                 other.type_name()

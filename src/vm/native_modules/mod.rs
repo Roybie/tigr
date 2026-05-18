@@ -26,6 +26,7 @@ pub mod string;
 pub mod time;
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -73,11 +74,11 @@ pub(crate) fn native(
 
 /// Build a `Value::Object` from a list of (key, value) pairs in source
 /// order. Keys are static `&'static str` since module entry names are
-/// fixed; the IndexMap uses `Rc<str>` internally.
+/// fixed; the IndexMap uses `Arc<str>` internally.
 pub(crate) fn object(entries: &[(&'static str, Value)]) -> Value {
-    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(entries.len());
+    let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(entries.len());
     for (k, v) in entries {
-        m.insert(Rc::from(*k), v.clone());
+        m.insert(Arc::from(*k), v.clone());
     }
     Value::Object(gc::alloc_object(m))
 }

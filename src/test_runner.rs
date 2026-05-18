@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::vm;
 use crate::vm::source_map::SourceMap;
@@ -194,8 +195,8 @@ mod tests {
     fn aggregate_sums_object_and_array() {
         let suite = |p: i64, f: i64| {
             let mut m = indexmap::IndexMap::new();
-            m.insert(Rc::from("passed"), Value::Int(p));
-            m.insert(Rc::from("failed"), Value::Int(f));
+            m.insert(Arc::from("passed"), Value::Int(p));
+            m.insert(Arc::from("failed"), Value::Int(f));
             Value::Object(crate::vm::gc::alloc_object(m))
         };
         let mut totals = Totals::default();

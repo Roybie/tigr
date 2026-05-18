@@ -8,7 +8,7 @@
 //! ms, weekday, yearday}` — `month` is 1-12, `weekday` is 0=Sunday,
 //! `yearday` is the 1-based day of the year.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -252,7 +252,7 @@ fn expect_int(v: &Value, label: &str) -> Result<i64, RuntimeError> {
     }
 }
 
-fn field(map: &IndexMap<Rc<str>, Value>, key: &str, default: i64) -> Result<i64, RuntimeError> {
+fn field(map: &IndexMap<Arc<str>, Value>, key: &str, default: i64) -> Result<i64, RuntimeError> {
     match map.get(key) {
         None | Some(Value::Null) => Ok(default),
         Some(Value::Int(n)) => Ok(*n),

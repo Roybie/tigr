@@ -183,7 +183,7 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
                 return Err(cycle());
             }
             g.objects.push(*o);
-            let pairs: Vec<(Rc<str>, Value)> = o
+            let pairs: Vec<(Arc<str>, Value)> = o
                 .borrow()
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -277,9 +277,9 @@ pub fn decode(t: Transfer) -> Value {
             Value::Array(gc::alloc_array(v))
         }
         Transfer::Object(pairs) => {
-            let mut m: IndexMap<Rc<str>, Value> = IndexMap::new();
+            let mut m: IndexMap<Arc<str>, Value> = IndexMap::new();
             for (k, v) in pairs {
-                m.insert(Rc::from(k.as_str()), decode(v));
+                m.insert(Arc::from(k.as_str()), decode(v));
             }
             Value::Object(gc::alloc_object(m))
         }
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(roundtrip(arr.clone()), arr);
 
         let mut obj = IndexMap::new();
-        obj.insert(Rc::from("k"), Value::Int(9));
+        obj.insert(Arc::from("k"), Value::Int(9));
         let obj = Value::Object(gc::alloc_object(obj));
         assert_eq!(roundtrip(obj.clone()), obj);
 

@@ -8,6 +8,7 @@
 //! immutable and acyclic, so they stay plain `Rc` — `Rc` reclaims
 //! acyclic data fine and the collector skips them.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
@@ -492,6 +493,37 @@ impl Value {
     }
 }
 
+thread_local! {
+    /// Recursion depth of the structural [`Value`] equality compare.
+    /// Heap collections can form cycles, so comparing two *distinct*
+    /// cyclic structures would recurse until the native stack
+    /// overflows. Past [`EQ_DEPTH_LIMIT`] the compare gives up and
+    /// reports unequal — a cyclic structure equals nothing but itself,
+    /// and that case is caught by the `GcRef`-identity short-circuit
+    /// without ever recursing.
+    static EQ_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Native-stack-recursion ceiling for [`Value`] equality — far past any
+/// realistic nesting, well short of overflowing the stack.
+const EQ_DEPTH_LIMIT: u32 = 1000;
+
+/// Run one structural-equality step under the [`EQ_DEPTH`] guard.
+/// Returns `false` once the depth limit is hit, which breaks an
+/// otherwise unbounded recursion through a cyclic collection.
+fn eq_guarded(step: impl FnOnce() -> bool) -> bool {
+    EQ_DEPTH.with(|d| {
+        let depth = d.get();
+        if depth >= EQ_DEPTH_LIMIT {
+            return false;
+        }
+        d.set(depth + 1);
+        let equal = step();
+        d.set(depth);
+        equal
+    })
+}
+
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         use Value::*;
@@ -505,9 +537,15 @@ impl PartialEq for Value {
             // `a == b` is GcRef identity (slot + generation) — the role
             // `Rc::ptr_eq` played before — and short-circuits the deep
             // structural compare for the same-object case.
-            (Array(a), Array(b)) => a == b || *a.borrow() == *b.borrow(),
-            (Object(a), Object(b)) => a == b || *a.borrow() == *b.borrow(),
-            (Map(a), Map(b)) => a == b || *a.borrow() == *b.borrow(),
+            (Array(a), Array(b)) => {
+                a == b || eq_guarded(|| *a.borrow() == *b.borrow())
+            }
+            (Object(a), Object(b)) => {
+                a == b || eq_guarded(|| *a.borrow() == *b.borrow())
+            }
+            (Map(a), Map(b)) => {
+                a == b || eq_guarded(|| *a.borrow() == *b.borrow())
+            }
             (Set(a), Set(b)) => a == b || *a.borrow() == *b.borrow(),
             (Bytes(a), Bytes(b)) => a == b || *a.borrow() == *b.borrow(),
             (Range(a), Range(b)) => a == b,

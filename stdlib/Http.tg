@@ -38,6 +38,16 @@ _json  := import 'JSON';
 // Append the UTF-8 bytes of `s` to buffer `buf` in place.
 _append := fn(buf, s) { _bytes.extend(buf, _bytes.from_string(s)) };
 
+// HTTP header keys this module frames itself — `Host`, `Connection`,
+// and `Content-Length`. A caller- or handler-supplied duplicate of any
+// of these would make the message malformed (RFC 7230 forbids a
+// repeated `Content-Length`), so they are dropped from user-supplied
+// header objects before the rest are written out.
+_framing_header := fn(key) {
+    k := _str.lower(key);
+    k == 'host' || k == 'connection' || k == 'content-length'
+};
+
 // Coerce a request/response body (String, Bytes, or null) to Bytes.
 _as_body := fn(b) {
     if b == null { _bytes.new(0) }
@@ -172,7 +182,9 @@ _request := fn(opts) {
         _append(req, 'Host: ' + host_hdr + '\r\n');
         _append(req, 'Connection: close\r\n');
         if has_body { _append(req, 'Content-Length: ' + str(#body) + '\r\n') };
-        for (k, v, headers) { _append(req, k + ': ' + str(v) + '\r\n') };
+        for (k, v, headers) {
+            if !_framing_header(k) { _append(req, k + ': ' + str(v) + '\r\n') }
+        };
         _append(req, '\r\n');
         if has_body { _bytes.extend(req, body) };
         _net.write(sock, req);
@@ -327,7 +339,9 @@ _write_response := fn(sock, resp) {
         'HTTP/1.1 ' + str(status) + ' ' + _status_text(status) + '\r\n');
     _append(out, 'Content-Length: ' + str(#body) + '\r\n');
     _append(out, 'Connection: close\r\n');
-    for (k, v, headers) { _append(out, k + ': ' + str(v) + '\r\n') };
+    for (k, v, headers) {
+        if !_framing_header(k) { _append(out, k + ': ' + str(v) + '\r\n') }
+    };
     _append(out, '\r\n');
     _bytes.extend(out, body);
     _net.write(sock, out)

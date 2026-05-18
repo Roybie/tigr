@@ -41,6 +41,11 @@ values := Test.suite('Constant folding — values are preserved', [
         Test.assert_eq(2 + 3, x + y);
         Test.assert_eq(7 * 6, (fn(a, b) { a * b })(7, 6))
     }),
+
+    Test.case('i64::MIN % -1 folds to its true remainder, 0', fn() {
+        // The bare `%` traps on this case; the folder must yield 0.
+        Test.assert_eq((1 << 63) % -1, 0)
+    }),
 ]);
 
 raises := Test.suite('Constant folding — raising operations are not folded', [
@@ -55,6 +60,12 @@ raises := Test.suite('Constant folding — raising operations are not folded', [
 
     Test.case('out-of-range literal shift still raises', fn() {
         Test.assert_raises(fn() { 1 << 64 })
+    }),
+
+    Test.case('i64::MIN / -1 is not folded — the VM still raises overflow', fn() {
+        // `1 << 63` folds to i64::MIN; dividing it by -1 overflows i64
+        // (a hardware trap), so the folder must leave it for the VM.
+        Test.assert_raises(fn() { (1 << 63) / -1 }, 'overflow')
     }),
 ]);
 

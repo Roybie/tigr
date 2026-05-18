@@ -335,23 +335,29 @@ ${
     },
 
     sort_by: fn(arr, key) {
+        // Decorate each element with its key computed once, insertion-
+        // sort the [key, value] pairs, then strip the keys. Comparing
+        // `kx < y[0]` against the cached key keeps `key` evaluated
+        // exactly once per element, not once per comparison (O(n^2)).
         out := [];
         for (x, arr) {
             kx := key(x);
             inserted := false;
             new_out := [];
             for (y, out) {
-                if !inserted && kx < key(y) {
-                    _na.push(new_out, x);
+                if !inserted && kx < y[0] {
+                    _na.push(new_out, [kx, x]);
                     _na.push(new_out, y);
                     inserted = true
                 } else {
                     _na.push(new_out, y)
                 }
             };
-            if !inserted { _na.push(new_out, x) };
+            if !inserted { _na.push(new_out, [kx, x]) };
             out = new_out
         };
-        out
+        result := [];
+        for (pair, out) { _na.push(result, pair[1]) };
+        result
     },
 }

@@ -25,6 +25,13 @@ Test := import 'Test';
             Test.assert_eq(glob[2], "{");
             Test.assert_eq(glob[8], "}")
         }),
+        Test.case('a raw string with braces nests inside an interpolation', fn() {
+            // The `}` in the raw string must not close the enclosing
+            // `{ ... }` interpolation early. The expected value is a
+            // raw string so its own braces do not interpolate either.
+            id := fn(s) { s };
+            Test.assert_eq('wrapped: { id("a}b{c") }', "wrapped: a}b{c")
+        }),
     ]),
 
     Test.suite('raw strings — no escaping', [

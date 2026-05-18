@@ -57,6 +57,17 @@ Test.suite('garbage collector', [
                     'closure cycles should not accumulate, got {after.live}');
     }),
 
+    Test.case('comparing distinct cyclic structures terminates', fn() {
+        // Two separate self-referential objects. `==` recurses
+        // structurally; without a depth guard it would overflow the
+        // native stack. They are distinct, so the answer is `false` —
+        // the point is that the compare returns at all.
+        a := ${}; a.link = a;
+        b := ${}; b.link = b;
+        Test.assert_eq(a == b, false);
+        Test.assert_eq(a == a, true);
+    }),
+
     Test.case('gc() counters rise monotonically', fn() {
         a := gc();
         for (i, 0..2000) { junk := [i, i, i]; };

@@ -248,6 +248,35 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
             Test.assert(String.contains(received, 'served ok'))
         }),
 
+        Test.case('serve drops handler headers that collide with framing', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                H := import 'Http';
+                // The handler returns a `content-length` of its own; a
+                // duplicate would make the response malformed, so
+                // `serve` must drop it and keep only its computed one.
+                H.serve(listener, fn(req) {
+                    ${status: 200,
+                      headers: ${'content-length': '999', 'x-tag': 'kept'},
+                      body: 'hi'}
+                });
+                null
+            };
+            client := Net.connect('127.0.0.1', port);
+            Net.set_timeout(client, TIMEOUT);
+            Net.write(client, Bytes.from_string('GET / HTTP/1.1\r\nHost: x\r\n\r\n'));
+            received := Bytes.to_string(Net.read_all(client));
+            Net.close(client);
+            Net.close(listener);
+            join(server);
+            Test.assert(!String.contains(received, '999'),
+                'the colliding content-length must be dropped: ' + received);
+            Test.assert(String.contains(received, 'x-tag: kept'),
+                'a non-colliding handler header must survive');
+            Test.assert(String.contains(received, 'hi'))
+        }),
+
         Test.case('closing the listener stops serve and raises in accept', fn() {
             listener := Net.listen('127.0.0.1', 0);
             // No client ever connects — serve sits in its poll loop.

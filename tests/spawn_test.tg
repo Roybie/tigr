@@ -1,7 +1,7 @@
-// tests/spawn_test.tg — v0.14 concurrency: `spawn` and `Task.join`.
+// tests/spawn_test.tg — v0.14 concurrency: `spawn` and `join`.
 //
 // `spawn` runs a function as an actor on its own OS thread + heap;
-// `Task.join` blocks for its result. Actors share nothing — they
+// `join` blocks for its result. Actors share nothing — they
 // communicate only through channels, and a spawned function is
 // deep-copied across the boundary (so it captures only sendable data
 // and imports its own modules).
@@ -9,7 +9,6 @@
 // Evaluates to an array of suites so `tigr test` aggregates each tally.
 
 Test    := import 'Test';
-Task    := import 'Task';
 Channel := import 'Channel';
 String  := import 'String';
 
@@ -17,18 +16,18 @@ String  := import 'String';
     Test.suite('spawn — basics', [
         Test.case('join returns the actor return value', fn() {
             t := spawn fn() { 21 * 2 };
-            Test.assert_eq(Task.join(t), 42)
+            Test.assert_eq(join(t), 42)
         }),
 
         Test.case('an actor captures sendable values by copy', fn() {
             n := 10;
             t := spawn fn() { n + 5 };
-            Test.assert_eq(Task.join(t), 15)
+            Test.assert_eq(join(t), 15)
         }),
 
         Test.case('many actors run at once, joined in order', fn() {
             tasks := for[] (i, 1..=8) { spawn fn() { i * i } };
-            results := for[] (t, tasks) { Task.join(t) };
+            results := for[] (t, tasks) { join(t) };
             Test.assert_eq(results, [1, 4, 9, 16, 25, 36, 49, 64])
         }),
     ]),
@@ -44,28 +43,28 @@ String  := import 'String';
             got := for[] (i, 1..=3) { Channel.recv(ch).value };
             Test.assert_eq(got, [1, 2, 3]);
             Test.assert_eq(Channel.recv(ch).closed, true);
-            Task.join(producer)
+            join(producer)
         }),
     ]),
 
     Test.suite('spawn — error propagation', [
         Test.case('an actor raise re-raises the same value at join', fn() {
             t := spawn fn() { raise ${kind: 'boom', detail: 'overheated'} };
-            caught := try { Task.join(t) } catch (e) { e };
+            caught := try { join(t) } catch (e) { e };
             Test.assert_eq(caught.kind, 'boom');
             Test.assert_eq(caught.detail, 'overheated')
         }),
 
         Test.case('a built-in actor error carries kind and a worker flag', fn() {
             t := spawn fn() { 1 / 0 };
-            caught := try { Task.join(t) } catch (e) { e };
+            caught := try { join(t) } catch (e) { e };
             Test.assert_eq(caught.kind, 'div_by_zero');
             Test.assert_eq(caught.worker, true)
         }),
 
         Test.case('a joined actor error is catchable like any error', fn() {
             t := spawn fn() { raise 'kaboom' };
-            Test.assert_raises(fn() { Task.join(t) }, 'kaboom')
+            Test.assert_raises(fn() { join(t) }, 'kaboom')
         }),
     ]),
 

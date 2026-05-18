@@ -1000,6 +1000,7 @@ shadowed, passed around, and stored.
 | `rand`    | `rand() -> Float`        | Uniform in [0, 1); seedable via `Random.seed` (§13.2) |
 | `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
 | `gc`      | `gc() -> Object`         | Garbage-collector counters (v0.10): `${live, collections, allocated, freed}` |
+| `join`    | `join(task) -> value`    | Block for a `spawn`ed actor's result (v0.14, §concurrency) |
 
 `gc()` returns a read-only snapshot of the tracing collector's state
 (§15.1): `live` is the current managed-object count, `collections` the
@@ -2162,10 +2163,12 @@ Additive changes:
 
 ## Appendix L — Changes in v0.14
 
-52. **Actors: `spawn` and `Task`** (§concurrency). `spawn fn` runs a
+52. **Actors: `spawn` and `join`** (§concurrency). `spawn fn` runs a
     function as an *actor* — an OS thread with its own heap — and
-    evaluates immediately to a `Task` handle. `Task.join(t)` blocks
-    until the actor finishes and yields its result. Actors share no
+    evaluates immediately to a `Task` handle. `join(t)`, a global
+    built-in, blocks until the actor finishes and yields its result.
+    `spawn` and `join` are a symmetric pair; neither needs an import.
+    Actors share no
     mutable state: a spawned function is **deep-copied** across the
     heap boundary, so it may capture only *sendable* values
     (primitives, `String`, `Bytes`, `Range`, `BigInt`, the four

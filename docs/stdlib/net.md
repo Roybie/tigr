@@ -42,7 +42,6 @@ Blocks until the next inbound connection arrives, then returns it.
 
 ```tigr
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -56,7 +55,7 @@ server := spawn fn() {
 client := Net.connect('127.0.0.1', port);
 print(Net.peer_addr(client).port == port);      // => true
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `connect(host, port) -> Socket`
@@ -72,7 +71,6 @@ Opens a TCP stream to `host:port`.
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -91,7 +89,7 @@ Net.write(client, Bytes.from_string('world\n'));
 reply := Net.read_all(client);
 print(Bytes.to_string(reply));                  // => hello, world
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `connect_tls(host, port) -> Socket`
@@ -189,7 +187,6 @@ Reads up to `n` bytes from a stream. This is the low-level read; it returns as s
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -206,7 +203,7 @@ client := Net.connect('127.0.0.1', port);
 chunk := Net.read(client, 64);
 print(Bytes.to_string(chunk));                  // => abc
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `write(sock, bytes) -> Int`
@@ -222,7 +219,6 @@ Writes every byte of `bytes` to a stream.
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -237,7 +233,7 @@ server := spawn fn() {
 client := Net.connect('127.0.0.1', port);
 print(Net.write(client, Bytes.from_string('hello')));   // => 5
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `read_exact(sock, n) -> Bytes`
@@ -253,7 +249,6 @@ Reads exactly `n` bytes, blocking until all of them have arrived.
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -270,7 +265,7 @@ client := Net.connect('127.0.0.1', port);
 head := Net.read_exact(client, 3);
 print(Bytes.to_string(head));                   // => abc
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `read_line(sock) -> String`
@@ -285,7 +280,6 @@ Reads one line, terminated by `\n`. A trailing `\r\n` or `\n` is stripped from t
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -302,7 +296,7 @@ client := Net.connect('127.0.0.1', port);
 first := Net.read_line(client);
 print(first);                           // => one
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `read_until(sock, byte) -> Bytes`
@@ -318,7 +312,6 @@ Reads up to and including the next occurrence of `byte`.
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -335,7 +328,7 @@ client := Net.connect('127.0.0.1', port);
 field := Net.read_until(client, 59);    // 59 is ';'
 print(Bytes.to_string(field));                  // => field;
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `read_all(sock) -> Bytes`
@@ -350,7 +343,6 @@ Reads every remaining byte until end-of-stream.
 ```tigr
 Net   := import 'Net';
 Bytes := import 'Bytes';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -367,7 +359,7 @@ client := Net.connect('127.0.0.1', port);
 all := Net.read_all(client);
 print(Bytes.to_string(all));                    // => payload
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `local_addr(sock) -> Object`
@@ -396,7 +388,6 @@ Returns the address of the connected peer.
 
 ```tigr
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -410,7 +401,7 @@ server := spawn fn() {
 client := Net.connect('127.0.0.1', port);
 print(Net.peer_addr(client).host);              // => 127.0.0.1
 Net.close(client);
-Task.join(server);
+join(server);
 ```
 
 ### `set_timeout(sock, ms) -> null`
@@ -451,5 +442,4 @@ Net.close(sock);                        // idempotent, no error
 
 - [LANGUAGE.md §13.2](../../LANGUAGE.md#net-v015): the authoritative spec for `Net`
 - [Bytes](bytes.md): the buffer type that socket reads and writes use
-- [Task](task.md): joining the `spawn`ed actors that handle connections
 - [Errors](../language/errors.md): catching the structured `${kind, message}` errors

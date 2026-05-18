@@ -6,7 +6,6 @@
 // channel; an actor shares nothing else, so it `import`s `Net` itself.
 
 Net   := import 'Net';
-Task  := import 'Task';
 Bytes := import 'Bytes';
 
 listener := Net.listen('127.0.0.1', 0);
@@ -17,7 +16,6 @@ print('echo server listening on 127.0.0.1:' + str(port));
 // actor, then join the handlers and stop.
 server := spawn fn() {
     N := import 'Net';
-    T := import 'Task';
     handlers := for[] (i, 1..=3) {
         conn := N.accept(listener);
         spawn fn() {
@@ -29,7 +27,7 @@ server := spawn fn() {
             null
         }
     };
-    for (h, handlers) { T.join(h) };
+    for (h, handlers) { join(h) };
     N.close(listener);
     null
 };
@@ -44,4 +42,4 @@ replies := for[] (i, 1..=3) {
 };
 
 print('clients received:', replies);
-Task.join(server);
+join(server);

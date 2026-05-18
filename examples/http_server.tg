@@ -8,7 +8,6 @@
 
 Http  := import 'Http';
 Net   := import 'Net';
-Task  := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
@@ -45,4 +44,4 @@ for (path, ['/', '/about', '/contact']) {
     print(str(resp.status) + ' ' + resp.status_text + '  —  ' + Http.text(resp))
 };
 
-Task.join(server);
+join(server);

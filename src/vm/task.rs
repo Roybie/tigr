@@ -1,7 +1,7 @@
 //! Runtime task handle — the result of `spawn` (v0.14 concurrency).
 //!
 //! A `spawn` starts an actor on its own OS thread and immediately
-//! yields a `Task`. `Task.join` blocks until the actor finishes and
+//! yields a `Task`. The `join` built-in blocks until the actor finishes and
 //! then produces its result — decoded into the joining thread's heap,
 //! or re-raised as the actor's error. The handle is `Arc`-backed and
 //! `Send`, so it can itself be passed between actors.

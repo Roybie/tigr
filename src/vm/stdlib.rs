@@ -15,6 +15,8 @@ use num_traits::ToPrimitive;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc;
 use crate::vm::rng;
+use crate::vm::task::JoinOutcome;
+use crate::vm::transfer::{decode, TransferError};
 use crate::vm::value::{bigint_to_f64, Arity, NativeFn, Value};
 
 /// Returns the ordered list of built-in names. The compiler uses this
@@ -54,19 +56,16 @@ const BUILTINS: &[Spec] = &[
     Spec { name: "rand",  arity: Arity::Exact(0), func: native_rand },
     Spec { name: "type",  arity: Arity::Exact(1), func: native_type },
     Spec { name: "gc",    arity: Arity::Exact(0), func: native_gc },
-    // v0.14 — `select` / `parallel[]` desugar targets. Internal: a
-    // user writes `select` / `parallel[]`, never these directly.
+    // v0.14 — concurrency. `join` waits for a `spawn`ed actor; it is
+    // also the desugar target for `parallel[]`. `__select` backs the
+    // `select` block — internal: a user writes `select`, never it.
     Spec { name: "__select", arity: Arity::Exact(2), func: native_select },
-    Spec {
-        name: "__join",
-        arity: Arity::Exact(1),
-        func: crate::vm::native_modules::task::t_join,
-    },
+    Spec { name: "join", arity: Arity::Exact(1), func: native_join },
 ];
 
 const BUILTIN_NAMES: [&str; 13] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type", "gc", "__select", "__join",
+    "type", "gc", "__select", "join",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -396,4 +395,59 @@ fn native_gc(_args: &[Value]) -> Result<Value, RuntimeError> {
     m.insert(Rc::from("allocated"), Value::Int(s.total_allocated as i64));
     m.insert(Rc::from("freed"), Value::Int(s.total_freed as i64));
     Ok(Value::Object(gc::alloc_object(m)))
+}
+
+// -- join (v0.14 concurrency) ---------------------------------------
+//
+// `join(task)` blocks for a `spawn`ed actor's result. It either decodes
+// the actor's return value into the caller's heap, or re-raises the
+// actor's error so the caller can `try`/`catch` it.
+
+/// `join(task)` — block for the actor's result. Returns its value, or
+/// raises: the actor's own `raise`d value verbatim, or — for a
+/// built-in actor error — an object `${kind, message, trace, worker}`.
+fn native_join(args: &[Value]) -> Result<Value, RuntimeError> {
+    let task = match &args[0] {
+        Value::Task(t) => t,
+        other => {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(format!(
+                    "join() expects a task, got {}",
+                    other.type_name()
+                )),
+                0,
+            ));
+        }
+    };
+    match task.join() {
+        JoinOutcome::Outcome(Ok(transfer)) => Ok(decode(transfer)),
+        JoinOutcome::Outcome(Err(te)) => Err(actor_error(te)),
+        JoinOutcome::AlreadyJoined => Err(RuntimeError::new(
+            RuntimeErrorKind::Raised(Value::Str(
+                "task has already been joined".into(),
+            )),
+            0,
+        )),
+    }
+}
+
+/// Reconstruct a catchable error in the joining actor from a worker's
+/// `TransferError`.
+fn actor_error(te: TransferError) -> RuntimeError {
+    // A `raise <value>` in the worker re-raises that exact value, so
+    // the parent's `catch` binds what the worker raised.
+    if let Some(raised) = te.raised {
+        return RuntimeError::new(RuntimeErrorKind::Raised(decode(raised)), 0);
+    }
+    // A built-in worker error surfaces as an object carrying the
+    // worker's kind, message, and rendered trace.
+    let mut m: IndexMap<Rc<str>, Value> = IndexMap::with_capacity(4);
+    m.insert(Rc::from("kind"), Value::Str(te.kind_tag.into()));
+    m.insert(Rc::from("message"), Value::Str(te.message.into()));
+    m.insert(Rc::from("trace"), Value::Str(te.rendered_trace.into()));
+    m.insert(Rc::from("worker"), Value::Bool(true));
+    RuntimeError::new(
+        RuntimeErrorKind::Raised(Value::Object(gc::alloc_object(m))),
+        0,
+    )
 }

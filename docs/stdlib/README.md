@@ -1,6 +1,6 @@
 # Standard library
 
-Tigr's standard library is 22 modules plus a handful of global builtin functions. Every module is loaded with `import`:
+Tigr's standard library is 21 modules plus a handful of global builtin functions. Every module is loaded with `import`:
 
 ```tigr
 Array := import 'Array';
@@ -10,7 +10,7 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 
 ## Builtins
 
-- [Builtins](builtins.md): `print`, `str`, `num`, `int`, `float`, `bool`, `type`, `gc`, `rand`, `floor`, `ceil`. Always in scope, no import needed.
+- [Builtins](builtins.md): `print`, `str`, `num`, `int`, `float`, `bool`, `type`, `gc`, `rand`, `floor`, `ceil`, `join`. Always in scope, no import needed.
 
 ## Collections and data
 
@@ -40,7 +40,6 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 ## Concurrency
 
 - [Channel](channel.md): typed message channels between actors
-- [Task](task.md): joining spawned actors
 
 ## Networking
 

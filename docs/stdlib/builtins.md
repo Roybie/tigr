@@ -163,8 +163,26 @@ print(snap.live >= 0);         // => true
 print(type(snap.collections)); // => int
 ```
 
+### `join(task) -> value`
+
+Blocks until the actor behind `task` finishes, then returns its result. `task` is the `Task` handle the `spawn` keyword produced. The returned value is deep-copied into the calling actor's heap. If the actor ended in an error, `join` re-raises it here so the caller can `try` and `catch` it. `spawn` and `join` are a pair: `spawn` starts an actor, `join` waits for it, and neither needs an import.
+
+- `task` *(Task)*: the handle of the actor to wait for.
+
+**Returns:** the value the actor's function evaluated to.
+**Raises:** whatever the actor raised. A `raise`d value comes back verbatim. A built-in runtime error in the actor comes back as an object `${kind, message, trace, worker}`, where `worker` is `true`. Joining the same task a second time raises a string error.
+
+```tigr
+t := spawn fn() { 6 * 7 };
+print(join(t));   // => 42
+
+tasks := for[] (i, 1..=4) { spawn fn() { i * i } };
+print(for[] (t, tasks) { join(t) });  // => [1, 4, 9, 16]
+```
+
 ## See also
 
 - [LANGUAGE.md §13.1](../../LANGUAGE.md#131-required-built-ins-for-v02): the authoritative spec for the built-ins
+- [Concurrency](../language/concurrency.md): `spawn`, `join`, channels, and `select`
 - [Math](math.md): rounding, trigonometry, and the rest of the numeric toolkit
 - [Random](random.md): a seedable PRNG that backs `rand`

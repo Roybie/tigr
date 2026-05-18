@@ -1,6 +1,6 @@
 // analyze.tg — a parallel codebase analyzer with a live progress
 // monitor (v0.14). One worked example that uses every concurrency
-// primitive: `parallel[]`, `spawn`, `Channel`, `select`, `Task.join`.
+// primitive: `parallel[]`, `spawn`, `Channel`, `select`, `join`.
 //
 // It scans every `.tg` file in a directory, counts lines, and flags
 // the ones containing `TODO` — processing files in parallel while a
@@ -12,7 +12,6 @@ Path    := import 'Path';
 Array   := import 'Array';
 Time    := import 'Time';
 Channel := import 'Channel';
-Task    := import 'Task';
 
 start := Time.now_ms();
 
@@ -64,7 +63,7 @@ report := parallel[] (name, files) {
 
 // --- shut the monitor down and collect its tally --------------------
 Channel.send(control, 'stop');
-printed := Task.join(monitor);
+printed := join(monitor);
 
 // --- reduce the per-file results ------------------------------------
 total_lines := 0;

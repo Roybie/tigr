@@ -13,7 +13,6 @@
 
 Net   := import 'Net';
 Test  := import 'Test';
-Task  := import 'Task';
 Bytes := import 'Bytes';
 Time  := import 'Time';
 
@@ -42,7 +41,7 @@ Time  := import 'Time';
             Net.write(client, Bytes.from_string('ping'));
             reply := Net.read_exact(client, 4);
             Net.close(client);
-            Task.join(server);
+            join(server);
             Test.assert_eq(Bytes.to_string(reply), 'ping')
         }),
     ]),
@@ -66,7 +65,7 @@ Time  := import 'Time';
             six  := Net.read_exact(client, 6);
             rest := Net.read_all(client);
             Net.close(client);
-            Task.join(server);
+            join(server);
             Test.assert_eq(l1, 'line one');
             Test.assert_eq(l2, 'line two');
             Test.assert_eq(Bytes.to_string(six), 'ABCDEF');
@@ -86,7 +85,7 @@ Time  := import 'Time';
             client := Net.connect('127.0.0.1', port);
             line := Net.read_line(client);
             Net.close(client);
-            Task.join(server);
+            join(server);
             Test.assert_eq(line, null)
         }),
 
@@ -103,7 +102,7 @@ Time  := import 'Time';
             client := Net.connect('127.0.0.1', port);
             chunk := Net.read(client, 16);
             Net.close(client);
-            Task.join(server);
+            join(server);
             Test.assert_eq(#chunk, 0)
         }),
     ]),
@@ -127,8 +126,8 @@ Time  := import 'Time';
             };
             Time.sleep_ms(100);              // let the reader reach its read
             Net.close(client);               // unblocks it — read returns EOF
-            got := Task.join(reader);
-            Task.join(server);
+            got := join(reader);
+            join(server);
             Test.assert_eq(#got, 0)
         }),
 
@@ -147,7 +146,7 @@ Time  := import 'Time';
             Net.set_timeout(client, 100);
             Test.assert_raises(fn() { Net.read(client, 16) }, 'timeout');
             Net.close(client);
-            Task.join(server)
+            join(server)
         }),
 
         Test.case('close is idempotent and a closed socket raises closed', fn() {
@@ -165,7 +164,7 @@ Time  := import 'Time';
             Net.close(client);
             Net.close(client);               // idempotent — no raise
             Test.assert_raises(fn() { Net.read(client, 8) }, 'closed');
-            Task.join(server)
+            join(server)
         }),
     ]),
 

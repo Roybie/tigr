@@ -4,14 +4,13 @@ Spec: [LANGUAGE.md Appendix L](../../LANGUAGE.md#appendix-l--changes-in-v014)
 
 Tigr runs concurrent work as **actors**. Each `spawn` starts a function on its own OS thread with its own heap. Actors share no mutable state. They communicate only by passing messages through channels, and a message is deep-copied across the heap boundary as it travels. That makes the model race-free by construction, and it fits the per-thread garbage collector with no changes to it (see [Garbage collection](gc.md)).
 
-## `spawn` and `Task.join`
+## `spawn` and `join`
 
-`spawn fn` runs a function as an actor and evaluates immediately to a `Task` handle. It does not block. `Task.join(t)` blocks until the actor finishes and yields its result.
+`spawn fn` runs a function as an actor and evaluates immediately to a `Task` handle. It does not block. `join(t)` blocks until the actor finishes and yields its result. Both `spawn` and `join` are built in, so neither needs an import.
 
 ```tigr
-Task := import 'Task';
 t := spawn fn() { 21 * 2 };
-print(Task.join(t));   // => 42
+print(join(t));   // => 42
 ```
 
 A spawned function is copied across the heap boundary, so it may capture only **sendable** values: primitives, `String`, `Bytes`, `Range`, `BigInt`, the four collections, channels, tasks, and functions whose own captures are themselves sendable. Capturing an iterator, a native function, or a function with a still-open capture raises a catchable `not_sendable`. A cyclic collection raises `cycle`.
@@ -74,7 +73,6 @@ Each body is deep-copied per actor, so the same sendability rule as `spawn` appl
 ## See also
 
 - [Channel module](../stdlib/channel.md): the full `Channel` API
-- [Task module](../stdlib/task.md): the `Task` handle and `join`
 - [Garbage collection](gc.md): the per-thread heap each actor runs on
 - [Errors](errors.md): `not_sendable`, `channel_closed`, and `cycle`
 - [LANGUAGE.md Appendix L](../../LANGUAGE.md#appendix-l--changes-in-v014): the authoritative spec

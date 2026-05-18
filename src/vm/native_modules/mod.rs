@@ -23,7 +23,6 @@ pub mod path;
 pub mod random;
 pub mod set;
 pub mod string;
-pub mod task;
 pub mod time;
 
 use std::rc::Rc;
@@ -48,7 +47,6 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Random" => Some(random::module()),
         "Bytes" => Some(bytes::module()),
         "BigInt" => Some(bigint::module()),
-        "Task" => Some(task::module()),
         "Net" => Some(net::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import

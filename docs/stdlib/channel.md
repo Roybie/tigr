@@ -9,7 +9,6 @@ A `Channel` carries messages between actors (the v0.14 concurrency model). It is
 
 ```tigr
 Channel := import 'Channel';
-Task    := import 'Task';
 
 ch := Channel.new();
 producer := spawn fn() {
@@ -21,7 +20,7 @@ producer := spawn fn() {
 print(Channel.recv(ch).value);          // => ping
 print(Channel.recv(ch).value);          // => pong
 print(Channel.recv(ch).closed);         // => true
-Task.join(producer);
+join(producer);
 ```
 
 ## Functions
@@ -69,7 +68,6 @@ Blocks for the next message.
 
 ```tigr
 Channel := import 'Channel';
-Task    := import 'Task';
 
 ch := Channel.new(4);
 t := spawn fn() {
@@ -88,7 +86,7 @@ while !drained {
     }
 };
 print(sum);                     // => 60
-Task.join(t);
+join(t);
 ```
 
 ### `try_recv(ch) -> Object`

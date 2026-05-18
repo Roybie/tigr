@@ -739,11 +739,11 @@ impl Parser {
     /// ```text
     /// {
     ///   $parallel_tasks := for[] (var, iter) { spawn fn() { body } };
-    ///   for[] ($parallel_t, $parallel_tasks) { __join($parallel_t) }
+    ///   for[] ($parallel_t, $parallel_tasks) { join($parallel_t) }
     /// }
     /// ```
     ///
-    /// The first `__join` to see an actor error re-raises it out of the
+    /// The first `join` to see an actor error re-raises it out of the
     /// block; siblings already spawned run to completion but their
     /// results are discarded.
     fn parse_parallel(&mut self) -> Result<SpannedExpr, ParseError> {
@@ -798,9 +798,9 @@ impl Parser {
             Box::new(collect),
         ));
 
-        // for[] ($parallel_t, $parallel_tasks) { __join($parallel_t) }
+        // for[] ($parallel_t, $parallel_tasks) { join($parallel_t) }
         let join_call = s(Expr::Call(
-            Box::new(s(Expr::Ident("__join".to_string()))),
+            Box::new(s(Expr::Ident("join".to_string()))),
             vec![s(Expr::Ident("$parallel_t".to_string()))],
         ));
         let join_all = s(Expr::For {

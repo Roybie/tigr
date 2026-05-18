@@ -4,7 +4,6 @@
 // Values sent through it are deep-copied into the receiver's heap.
 
 Channel := import 'Channel';
-Task    := import 'Task';
 
 ch := Channel.new();
 
@@ -25,4 +24,4 @@ drain := fn() {
 };
 print('sum of received values:', drain());
 
-Task.join(producer);
+join(producer);

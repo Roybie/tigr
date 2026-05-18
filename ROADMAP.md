@@ -479,11 +479,11 @@ Resolved design choices (the open questions, settled with the owner):
   a `GcRef` never crosses. A function is sendable iff its captures
   are; an iterator / native function is not (`not_sendable`).
 - **Worker errors** render on the worker's own `SourceMap` (the
-  parent's is not `Send`) and re-raise at `Task.join` — the raised
+  parent's is not `Send`) and re-raise at `join` — the raised
   value verbatim, or a `${kind, message, trace, worker}` object.
 
-Surface (all expression-oriented): `spawn` (→ a `Task`), `Task.join`,
-the `Channel` module (bounded/unbounded, `send`/`recv`/`try_recv`/
+Surface (all expression-oriented): `spawn` (→ a `Task`), the `join`
+built-in, the `Channel` module (bounded/unbounded, `send`/`recv`/`try_recv`/
 `close`), the `select { ... }` block, and the structured `parallel[]`
 fan-out-collect block. See `LANGUAGE.md` Appendix L and the
 `examples/` concurrency demos (`spawn`, `channels`, `select`,

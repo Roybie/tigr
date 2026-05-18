@@ -11,7 +11,6 @@
 
 Http   := import 'Http';
 Net    := import 'Net';
-Task   := import 'Task';
 Bytes  := import 'Bytes';
 String := import 'String';
 Test   := import 'Test';
@@ -56,7 +55,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
             server := respond_once(listener,
                 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello');
             resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(resp.status, 200);
             Test.assert_eq(resp.status_text, 'OK');
             Test.assert_eq(resp.headers['content-type'], 'text/plain');
@@ -70,7 +69,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
                 + '5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n');
             resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(Http.text(resp), 'hello world')
         }),
 
@@ -80,7 +79,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
             server := respond_once(listener,
                 'HTTP/1.1 200 OK\r\n\r\nunframed payload');
             resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(Http.text(resp), 'unframed payload')
         }),
 
@@ -90,7 +89,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
             server := respond_once(listener,
                 'HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n\{"n":7}');
             resp := Http.get(url_for(port, '/'), ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(Http.json(resp).n, 7)
         }),
     ]),
@@ -111,7 +110,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 null
             };
             resp := Http.post(url_for(port, '/'), 'ping', ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(resp.status, 200);
             Test.assert_eq(Http.text(resp), 'echo:ping')
         }),
@@ -146,7 +145,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 null
             };
             resp := Http.get(url_for(port, '/start'), ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(resp.status, 200);
             Test.assert_eq(Http.text(resp), 'hello')
         }),
@@ -161,7 +160,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 follow_redirects: false,
                 timeout: TIMEOUT,
             });
-            Task.join(server);
+            join(server);
             Test.assert_eq(resp.status, 302);
             Test.assert_eq(resp.headers['location'], '/elsewhere')
         }),
@@ -192,7 +191,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 null
             };
             resp := Http.post(url_for(port, '/start'), 'load', ${timeout: TIMEOUT});
-            Task.join(server);
+            join(server);
             Test.assert_eq(Http.text(resp), 'POST:load')
         }),
     ]),
@@ -222,7 +221,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 + 'Content-Length: 4\r\n\r\ndata'));
             received := Bytes.to_string(Net.read_all(client));
             Net.close(client);
-            Task.join(server);
+            join(server);
             Test.assert(String.contains(received, 'POST /submit name=tigr body=data'),
                 'response was: ' + received)
         }),
@@ -243,7 +242,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
             received := Bytes.to_string(Net.read_all(client));
             Net.close(client);
             Net.close(listener);          // stops the serve accept loop
-            Task.join(server);            // serve returns cleanly
+            join(server);            // serve returns cleanly
             Test.assert(String.contains(received, '200'), 'response was: ' + received);
             Test.assert(String.contains(received, 'text/plain'));
             Test.assert(String.contains(received, 'served ok'))
@@ -258,7 +257,7 @@ url_for := fn(port, path) { 'http://127.0.0.1:' + str(port) + path };
                 'stopped'
             };
             Net.close(listener);
-            Test.assert_eq(Task.join(server), 'stopped')
+            Test.assert_eq(join(server), 'stopped')
         }),
     ]),
 ]

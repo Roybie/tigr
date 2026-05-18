@@ -1,24 +1,23 @@
 // spawn.tg — run work on actors and join their results (v0.14).
 //
 // `spawn` runs a function as an actor on its own OS thread and heap,
-// returning a `Task` immediately. `Task.join` blocks for the result.
+// returning a `Task` immediately. `join` blocks for the result.
 
-Task := import 'Task';
 
 double := fn(n) { n * 2 };
 
 // Spawn one actor, do other things, then join.
 t := spawn fn() { double(21) };
 print('spawned a task; the actor runs while we carry on...');
-print('joined result:', Task.join(t));
+print('joined result:', join(t));
 
 // Spawn many at once — they run in parallel across cores. Joining in
 // order collects their results in order.
 tasks   := for[] (i, 1..=6) { spawn fn() { i * i } };
-squares := for[] (task, tasks) { Task.join(task) };
+squares := for[] (task, tasks) { join(task) };
 print('squares:', squares);
 
 // An actor's uncaught error surfaces at `join`, catchable like any
 // other error.
 boom := spawn fn() { raise 'the actor failed' };
-print(try { Task.join(boom) } catch (e) { 'caught from actor: ' + e });
+print(try { join(boom) } catch (e) { 'caught from actor: ' + e });

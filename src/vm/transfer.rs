@@ -74,7 +74,7 @@ pub enum Transfer {
 
 /// A worker actor's error, rendered to `Send`-able form so it can cross
 /// back to the parent — the worker's `SourceMap` is `Rc` and cannot
-/// itself be sent. Used by `Task.join` / `parallel[]` (v0.14 Phase 4).
+/// itself be sent. Used by `join` / `parallel[]` (v0.14 Phase 4).
 pub struct TransferError {
     /// Stable snake-case tag (`RuntimeErrorKind::kind_tag`).
     pub kind_tag: String,

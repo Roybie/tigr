@@ -12,7 +12,6 @@ The server side is the low-level pair `read_request(sock)` and `write_response(s
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -26,7 +25,7 @@ resp := Http.get(base + '/world');
 print(resp.status);         // => 200
 print(Http.text(resp));     // => hello /world
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ## Functions
@@ -43,7 +42,6 @@ Performs one HTTP request, following 3xx redirects automatically.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -59,7 +57,7 @@ resp := Http.request(${
 });
 print(Http.text(resp));     // => agent=tigr-doc
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `get(url, opts?) -> Object`
@@ -75,7 +73,6 @@ Performs a GET request. A convenience wrapper over `request`.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -86,7 +83,7 @@ server := spawn fn() {
 
 print(Http.text(Http.get(base + '/page')));     // => GET /page
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `post(url, body?, opts?) -> Object`
@@ -103,7 +100,6 @@ Performs a POST request with an optional body.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 JSON := import 'JSON';
 
 listener := Net.listen('127.0.0.1', 0);
@@ -121,7 +117,7 @@ resp := Http.post(base + '/users', JSON.stringify(${name: 'ada'}));
 print(resp.status);             // => 201
 print(Http.json(resp).echo);    // => ada
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `put(url, body?, opts?) -> Object`
@@ -138,7 +134,6 @@ Performs a PUT request with an optional body.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -152,7 +147,7 @@ server := spawn fn() {
 
 print(Http.text(Http.put(base + '/item/1', 'updated')));   // => got: updated
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `delete(url, opts?) -> Object`
@@ -168,7 +163,6 @@ Performs a DELETE request.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -179,7 +173,7 @@ server := spawn fn() {
 
 print(Http.text(Http.delete(base + '/item/1')));    // => DELETE /item/1
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `head(url, opts?) -> Object`
@@ -195,7 +189,6 @@ Performs a HEAD request. The server sends no body for a HEAD, so the response `b
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -208,7 +201,7 @@ resp := Http.head(base + '/');
 print(resp.status);     // => 200
 print(#resp.body);      // => 0
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `patch(url, body?, opts?) -> Object`
@@ -225,7 +218,6 @@ Performs a PATCH request with an optional body.
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -239,7 +231,7 @@ server := spawn fn() {
 
 print(Http.text(Http.patch(base + '/item/1', 'x')));    // => patched: x
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ### `text(resp) -> String`
@@ -287,7 +279,6 @@ Reads one HTTP request from an accepted connection. The body is read only when a
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -302,7 +293,7 @@ server := spawn fn() {
 };
 
 print(Http.text(Http.get(base + '/')));     // => method was GET
-Task.join(server);
+join(server);
 ```
 
 ### `write_response(sock, resp) -> Int`
@@ -317,7 +308,6 @@ Writes an HTTP response to a connection. `Content-Length` and `Connection: close
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -334,7 +324,7 @@ server := spawn fn() {
 resp := Http.get(base + '/');
 print(resp.status);         // => 201
 print(Http.text(resp));     // => created
-Task.join(server);
+join(server);
 ```
 
 ### `serve(listener, handler) -> Null`
@@ -349,7 +339,6 @@ Runs an accept loop on `listener`, handing each connection to its own `spawn`ed 
 ```tigr
 Http := import 'Http';
 Net  := import 'Net';
-Task := import 'Task';
 
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
@@ -362,7 +351,7 @@ server := spawn fn() {
 
 print(Http.text(Http.get(base + '/greet')));    // => echo /greet
 Net.close(listener);
-Task.join(server);
+join(server);
 ```
 
 ## See also

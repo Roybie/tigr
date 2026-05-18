@@ -5,7 +5,6 @@
 // when there are far more jobs than you want threads.
 
 Channel := import 'Channel';
-Task    := import 'Task';
 
 jobs    := Channel.new();
 results := Channel.new();
@@ -37,4 +36,4 @@ total := 0;
 for (_, 1..=12) { total = total + Channel.recv(results).value };
 print('sum of squared jobs:', total);
 
-for (w, workers) { Task.join(w) };
+for (w, workers) { join(w) };

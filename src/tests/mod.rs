@@ -5693,14 +5693,13 @@ fn v13_bigint_rejected_as_map_key() {
 fn v14_hundred_actors_sum_through_a_channel() {
     let src = "
         Channel := import 'Channel';
-        Task := import 'Task';
         ch := Channel.new();
         workers := for[] (i, 1..=100) {
             spawn fn() { C := import 'Channel'; C.send(ch, i) }
         };
         sum := 0;
         for (_, 1..=100) { sum = sum + Channel.recv(ch).value };
-        for (w, workers) { Task.join(w) };
+        for (w, workers) { join(w) };
         sum
     ";
     assert_eq!(format!("{:?}", run(src)), "5050");
@@ -5710,9 +5709,8 @@ fn v14_hundred_actors_sum_through_a_channel() {
 #[test]
 fn v14_actor_return_value_joins() {
     let src = "
-        Task := import 'Task';
         t := spawn fn() { [1, 2, 3] };
-        Task.join(t)
+        join(t)
     ";
     assert_eq!(format!("{:?}", run(src)), "[1, 2, 3]");
 }
@@ -5721,9 +5719,8 @@ fn v14_actor_return_value_joins() {
 #[test]
 fn v14_actor_error_propagates_to_join() {
     let src = "
-        Task := import 'Task';
         t := spawn fn() { 1 / 0 };
-        try { Task.join(t) } catch (e) { e.kind }
+        try { join(t) } catch (e) { e.kind }
     ";
     assert_eq!(format!("{:?}", run(src)), "'div_by_zero'");
 }

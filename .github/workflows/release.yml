@@ -32,8 +32,10 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          # Windows is intentionally absent: the Net reactor registers raw
+          # fds via mio's os-ext (SourceFd), and Os.run / file-permission
+          # code use std::os::unix. Add a target back here once that code
+          # is cross-platform.
 
     steps:
       - name: Checkout
@@ -65,28 +67,16 @@ jobs:
 
       # Asset names are unversioned so install.sh can fetch them via the
       # releases/latest/download/<asset> endpoint without resolving a version.
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Package
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr
 
-      - name: Package (windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.zip" tigr.exe
-
       # softprops/action-gh-release creates the release for the pushed tag
       # on first upload and appends assets on subsequent matrix jobs.
-      # Non-matching `files` patterns are skipped, so listing both archive
-      # forms is harmless.
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            tigr-${{ matrix.target }}.tar.gz
-            tigr-${{ matrix.target }}.zip
+          files: tigr-${{ matrix.target }}.tar.gz

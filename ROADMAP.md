@@ -682,9 +682,11 @@ For anyone to *use* Tigr on another machine there must be a one-step
 install.
 
 - **Prebuilt release binaries.** ✅ done — `.github/workflows/release.yml`
-  builds `tigr` for all five targets (macOS arm64 + x86_64, Linux x86_64
-  + arm64 glibc, Windows x86_64) on every `v*` tag and attaches the
-  archives to the GitHub Release.
+  builds `tigr` for four targets (macOS arm64 + x86_64, Linux x86_64 +
+  arm64 glibc) on every `v*` tag and attaches the archives to the GitHub
+  Release. Windows is excluded: the `Net` reactor and `Os`/file-permission
+  code use `std::os::unix` and `mio` raw-fd registration; add it back once
+  that code is cross-platform.
 - **`curl | sh` install script.** ✅ done — `install.sh` (served from
   Pages at `https://roybie.github.io/tigr/install.sh`) detects OS/arch,
   downloads the matching release binary, and places it on `PATH`:

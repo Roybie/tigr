@@ -415,6 +415,30 @@ kbd {
   background: color-mix(in oklch, var(--accent) 8%, var(--bg));
 }
 
+/* The "Yours" group holds the single persistent scratch slot, pinned
+   above the bundled examples and fenced off by a divider. */
+.examples-group-yours {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* A dashed icon marks the scratch slot as a different kind of thing —
+   a sandbox, not a read-only example — without needing a new control. */
+.example-item-scratch .example-icon { border-style: dashed; }
+
+/* "auto-saved" hint, pushed to the row's trailing edge. */
+.example-meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+  flex-shrink: 0;
+}
+.example-item:hover .example-meta { color: var(--ink-3); }
+.example-item.is-active .example-meta { color: var(--accent); }
+
 /* ─── Panes (editor + output) ─────────────────────────────────────────── */
 
 .pane {

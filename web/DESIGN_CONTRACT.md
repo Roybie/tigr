@@ -69,6 +69,12 @@ selection by toggling `.is-active` on the chosen item. (The original
 contract specified a `<select>`; the as-built design uses a `<nav>`
 sidebar list, and the glue follows the `data-value` model above.)
 
+One reserved exception: `data-value="scratch"` is a persistent sandbox
+slot, not a bundled example. The glue loads its contents from
+`localStorage` (falling back to a placeholder) and autosaves edits back
+while it is selected. It is the `.is-active` item on first load, so the
+playground opens onto the sandbox.
+
 `#editor` may be a plain `<textarea>` or a mount node for a richer
 editor (CodeMirror) — the glue handles either. `#editor-output` is
 populated with the same `.entry-output` / `.entry-value` /

@@ -112,12 +112,22 @@
           clicks here and read data-value from .example-item. The selected
           item carries .is-active (toggled by glue, same convention used
           for tabs and panels).
+
+          The first item, data-value="scratch", is not a bundled example:
+          it is a persistent sandbox whose contents the glue loads from
+          and autosaves to localStorage. See app.js.
         -->
         <nav id="editor-examples" class="examples-list" aria-label="Examples">
+          <div class="examples-group examples-group-yours">
+            <div class="examples-group-label">Yours</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item example-item-scratch is-active" data-value="scratch"><span class="example-icon" aria-hidden="true">.tg</span>scratch.tg<span class="example-meta">auto-saved</span></button></li>
+            </ul>
+          </div>
           <div class="examples-group">
             <div class="examples-group-label">Basics</div>
             <ul class="examples-group-list">
-              <li><button type="button" class="example-item is-active" data-value="expressions"><span class="example-icon" aria-hidden="true">.tg</span>expressions.tg</button></li>
+              <li><button type="button" class="example-item" data-value="expressions"><span class="example-icon" aria-hidden="true">.tg</span>expressions.tg</button></li>
               <li><button type="button" class="example-item" data-value="pipelines"><span class="example-icon" aria-hidden="true">.tg</span>pipelines.tg</button></li>
             </ul>
           </div>
@@ -160,10 +170,8 @@
                   <path d="M4.5 3 L8 6 L4.5 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
                 </svg>
               </label>
-              <span class="pane-title pane-title-mono">
-                <span class="tab-dot" aria-hidden="true"></span>
-                editor
-              </span>
+              <span class="pane-title">Editor</span>
+              <span class="pane-meta" id="editor-file">scratch.tg</span>
             </div>
             <div class="pane-bar-right">
               <button type="button" id="editor-stop" class="btn btn-ghost">

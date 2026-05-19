@@ -187,9 +187,10 @@ const tigrTheme = EditorView.theme({
 
 // --- public API ------------------------------------------------------
 
-// Mount a CodeMirror editor into `parent`. `onRun` fires on Mod-Enter.
+// Mount a CodeMirror editor into `parent`. `onRun` fires on Mod-Enter;
+// `onChange` fires after any edit to the document.
 // Returns a small handle so app.js need not know CodeMirror internals.
-export function createEditor(parent, doc, onRun) {
+export function createEditor(parent, doc, onRun, onChange) {
   const view = new EditorView({
     parent,
     doc,
@@ -206,6 +207,7 @@ export function createEditor(parent, doc, onRun) {
         indentWithTab,
         { key: 'Mod-Enter', preventDefault: true, run: () => { onRun?.(); return true; } },
       ])),
+      EditorView.updateListener.of((u) => { if (u.docChanged) onChange?.(); }),
     ],
   });
 

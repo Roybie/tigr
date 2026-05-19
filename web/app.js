@@ -60,7 +60,7 @@ const ui = {};
 const HOOKS = [
   'tab-repl', 'tab-editor', 'panel-repl', 'panel-editor',
   'repl-scrollback', 'repl-prompt', 'repl-input', 'repl-reset',
-  'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-meta', 'editor-exit', 'editor-examples',
+  'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-meta', 'editor-exit', 'editor-examples', 'editor-file',
   'status',
 ];
 
@@ -83,6 +83,12 @@ function setStatus(text) {
   if (ui.status) ui.status.textContent = text;
 }
 
+// The editor pane's filename meta — mirrors the selected example, the
+// same way the Output pane's meta line carries the run time.
+function setEditorFile(key) {
+  if (ui.editor_file) ui.editor_file.textContent = `${key}.tg`;
+}
+
 // Remove the design's placeholder `.entry` blocks, leaving any sibling
 // chrome (the REPL banner) in place.
 function clearDemoEntries(container) {
@@ -101,6 +107,51 @@ function renderResult(target, result) {
   } else {
     target.appendChild(el('pre', 'entry-error', result.error));
   }
+}
+
+// --- Scratch sandbox -------------------------------------------------
+
+// The "Yours" example slot (data-value="scratch") is a persistent
+// sandbox: unlike the bundled examples its contents live in
+// localStorage, and the editor autosaves to it while it is selected.
+const SCRATCH_KEY = 'tigr.playground.scratch';
+const SCRATCH_PLACEHOLDER =
+  '// scratch — your sandbox.\n// nothing here yet. type away.\n';
+
+// True while the scratch slot is the selected example — gates autosave
+// so loading a bundled example never overwrites the saved sandbox.
+let scratchActive = false;
+let scratchSaveTimer = null;
+
+// Saved sandbox text, or the placeholder when nothing is stored yet. An
+// empty string counts as stored (the user cleared it on purpose).
+function loadScratch() {
+  try {
+    const saved = localStorage.getItem(SCRATCH_KEY);
+    return saved !== null ? saved : SCRATCH_PLACEHOLDER;
+  } catch {
+    return SCRATCH_PLACEHOLDER;
+  }
+}
+
+function saveScratch(text) {
+  try {
+    localStorage.setItem(SCRATCH_KEY, text);
+  } catch {
+    // Storage full or disabled (private mode) — losing autosave is not
+    // fatal, so swallow it rather than interrupt editing.
+  }
+}
+
+// Debounced autosave wired to the editor's onChange. Re-checks
+// scratchActive when the timer fires: a pending save must not land
+// after the user has switched to a bundled example.
+function onEditorChange() {
+  if (!scratchActive) return;
+  clearTimeout(scratchSaveTimer);
+  scratchSaveTimer = setTimeout(() => {
+    if (scratchActive) saveScratch(editor.getValue());
+  }, 400);
 }
 
 // --- Tabs ------------------------------------------------------------
@@ -234,20 +285,30 @@ function stopProgram(vm) {
 // The design's examples list is a <nav> of .example-item buttons, each
 // with a data-value key into EXAMPLES. Delegate clicks on the nav,
 // mirror selection by toggling .is-active (same convention as tabs).
+// data-value="scratch" is special — it loads the localStorage sandbox
+// rather than a bundled example.
 function loadExamples() {
   if (!ui.editor_examples) return;
   ui.editor_examples.addEventListener('click', (e) => {
     const item = e.target.closest('.example-item');
     if (!item || !ui.editor_examples.contains(item)) return;
-    const src = EXAMPLES[item.dataset.value];
+    const key = item.dataset.value;
+    const isScratch = key === 'scratch';
+    const src = isScratch ? loadScratch() : EXAMPLES[key];
     if (src === undefined) {
-      console.warn(`playground: no example for data-value="${item.dataset.value}"`);
+      console.warn(`playground: no example for data-value="${key}"`);
       return;
     }
     ui.editor_examples.querySelectorAll('.example-item.is-active')
       .forEach((n) => n.classList.remove('is-active'));
     item.classList.add('is-active');
+    // Drop any pending scratch save before swapping the document, then
+    // flip the flag so the setValue below does not autosave the new
+    // content over the saved sandbox.
+    clearTimeout(scratchSaveTimer);
+    scratchActive = isScratch;
     editor.setValue(src);
+    setEditorFile(key);
   });
 }
 
@@ -312,12 +373,17 @@ function main() {
   clearDemoEntries(ui.repl_scrollback);
   replPrompt();
 
-  // Editor: CodeMirror mounts into #editor, seeded with the example
-  // marked .is-active in the design markup (hello). ⌘/Ctrl+Enter runs.
+  // Editor: CodeMirror mounts into #editor, seeded from the example
+  // marked .is-active in the design markup. That is the scratch slot by
+  // default, so the playground opens onto the saved sandbox.
+  // ⌘/Ctrl+Enter runs.
   if (ui.editor) {
     const active = ui.editor_examples?.querySelector('.example-item.is-active');
-    const seed = EXAMPLES[active?.dataset.value] ?? EXAMPLES.expressions;
-    editor = createEditor(ui.editor, seed, () => runProgram(vm));
+    const key = active?.dataset.value;
+    scratchActive = key === 'scratch';
+    const seed = scratchActive ? loadScratch() : (EXAMPLES[key] ?? EXAMPLES.expressions);
+    setEditorFile(scratchActive ? 'scratch' : (EXAMPLES[key] ? key : 'expressions'));
+    editor = createEditor(ui.editor, seed, () => runProgram(vm), onEditorChange);
   }
   ui.editor_run?.addEventListener('click', () => runProgram(vm));
   // CodeMirror's Mod-Enter binding is ⌘ on macOS, Ctrl elsewhere — make

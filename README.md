@@ -44,7 +44,7 @@ entirely client-side, so `Net`, `Os`, and filesystem IO are unavailable
 there (importing them raises a clean error); everything else, green
 threads included, works.
 
-[Try it out here](https://roybie.guithub.io/tigr)
+[Try it out here](https://roybie.github.io/tigr)
 
 Or run it locally:
 ```bash

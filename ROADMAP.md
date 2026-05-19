@@ -1,10 +1,11 @@
 # Tigr Roadmap
 
-Planned work beyond v0.7b. The `v0.N` line continues — v0.8–v0.11 are
-shipped, v0.12–v0.17 are planned below, and 1.0 is a stabilization
-release after them. Items 1–14 keep the reference number from the
-original design discussion; items 15+ were added in later roadmap
-extensions.
+Planned work beyond v0.7b. The `v0.N` line continues — v0.8 through
+v0.17 are shipped, and their sections below are kept as a record of
+what landed and why. Everything still open is gathered under *Future
+Work*, with 1.0 a stabilization release after it. Items 1–14 keep the
+reference number from the original design discussion; items 15+ were
+added in later roadmap extensions.
 
 Conventions for every release below:
 
@@ -551,59 +552,15 @@ See `LANGUAGE.md` §13.3 + Appendix N and the `examples/`
 
 ---
 
-## v0.16 — Editor & developer tooling  *(optional)*
+## v0.17 — Polish & documentation
 
-Make Tigr pleasant to *work in*. v0.11 shipped static Vim completion;
-this release adds the tools that need real program analysis. Pulls two
-items off the Deferred list.
-
-This release is **optional**: the language is feature-complete without
-it (see *Toward 1.0*), so it can land before or after 1.0 as
-developer-experience polish rather than gating the stable release.
-
-### 23. Formatter — `tigr fmt`  *(tooling)*
-
-A canonical-form pretty-printer over the AST.
-
-- `tigr fmt <file.tg>` rewrites in place; `tigr fmt --check` exits
-  non-zero on unformatted input (CI-friendly).
-- Reuses the existing parser; the only new code is AST → source.
-- **Design detail:** decide comment handling first. The parser must
-  retain comments (or attach them to AST nodes) or `fmt` drops them —
-  this may need a small lexer/parser change.
-
-### 24. Language server (LSP)  *(tooling — formerly Deferred)*
-
-The big editor-tooling unlock. A standalone LSP binary (`tigr lsp`, or
-a sibling crate) speaking the Language Server Protocol.
-
-- Tier 1: diagnostics — lex/parse/compile errors as you type,
-  reusing the existing error machinery.
-- Tier 2: scope-aware completion and go-to-definition — the
-  vim-tigr "tier 2" that v0.11 explicitly blocked on this.
-- Hover showing inferred binding kind / stdlib signatures.
-- **Design detail:** the compiler runs front-to-back and bails on the
-  first error. An LSP wants error-recovery parsing and a reusable
-  symbol table — scope this honestly; it may be the largest single
-  item on the extended roadmap.
-
-### 25. Test coverage reporting  *(tooling)*
-
-`tigr test` reports pass/fail counts but not what the suite exercised.
-
-- Instrument the VM (line hits via the source map); have
-  `tigr test --coverage` report per-file line coverage.
-- Optional: a coverage-threshold flag for CI.
-
----
-
-## v0.17 — Polish, documentation & distribution
-
-The release that turns Tigr from a repo you build into a language
-other people can pick up and use. Three independent strands —
-a surface-syntax addition, a navigable doc set, and a real install
-story. None changes runtime semantics; item 29 is the only one that
-touches surface syntax, and it must land before the 1.0 spec freeze.
+The release that makes Tigr a language other people can read up on, not
+just a repo you build. Two strands shipped here — a surface-syntax
+addition and a navigable doc set. The third strand originally planned
+for this release, a real install story (item 31), is not yet done and
+now lives under *Future Work*. Neither shipped item changes runtime
+semantics; item 29 is the only one that touches surface syntax, and it
+must land before the 1.0 spec freeze.
 
 ### 29. Non-interpolating double-quoted strings  *✅ done  (language — additive)*
 
@@ -633,8 +590,8 @@ case has now appeared.
   resolve explicitly at implementation time.
 - Resolves the §8.2 open question; §8.2 is rewritten to document both
   forms. Surface syntax, so it must land **before** the 1.0 spec
-  freeze. If v0.16 (`fmt`, LSP) has already shipped, both need a small
-  follow-up to handle the new literal.
+  freeze. If the `fmt` / LSP tooling (items 23–24) has already shipped,
+  both need a small follow-up to handle the new literal.
 
 ### 30. Traversable documentation  ✅ done  *(docs)*
 
@@ -667,6 +624,56 @@ means scrolling a 100 KB file.
   shares the host with item 31's install script.
 - Supersedes the *Documentation pass* bullet under *Toward 1.0*.
 
+---
+
+## Future Work
+
+Everything the roadmap still has open: an editor-tooling strand, the
+distribution and install story, the 1.0 stabilization pass, and a set
+of explicitly deferred ideas. None of it is required for the language
+to be feature-complete — see *Toward 1.0* below.
+
+Items 23–25 were previously scoped as an optional v0.16 release. They
+make Tigr pleasant to *work in* — v0.11 shipped static Vim completion,
+and these add the tools that need real program analysis. The strand is
+optional: the language is feature-complete without it, so it can land
+before or after 1.0 as developer-experience polish rather than gating
+the stable release.
+
+### 23. Formatter — `tigr fmt`  *(tooling)*
+
+A canonical-form pretty-printer over the AST.
+
+- `tigr fmt <file.tg>` rewrites in place; `tigr fmt --check` exits
+  non-zero on unformatted input (CI-friendly).
+- Reuses the existing parser; the only new code is AST → source.
+- **Design detail:** decide comment handling first. The parser must
+  retain comments (or attach them to AST nodes) or `fmt` drops them —
+  this may need a small lexer/parser change.
+
+### 24. Language server (LSP)  *(tooling)*
+
+The big editor-tooling unlock. A standalone LSP binary (`tigr lsp`, or
+a sibling crate) speaking the Language Server Protocol.
+
+- Tier 1: diagnostics — lex/parse/compile errors as you type,
+  reusing the existing error machinery.
+- Tier 2: scope-aware completion and go-to-definition — the
+  vim-tigr "tier 2" that v0.11 explicitly blocked on this.
+- Hover showing inferred binding kind / stdlib signatures.
+- **Design detail:** the compiler runs front-to-back and bails on the
+  first error. An LSP wants error-recovery parsing and a reusable
+  symbol table — scope this honestly; it may be the largest single
+  item on the extended roadmap.
+
+### 25. Test coverage reporting  *(tooling)*
+
+`tigr test` reports pass/fail counts but not what the suite exercised.
+
+- Instrument the VM (line hits via the source map); have
+  `tigr test --coverage` report per-file line coverage.
+- Optional: a coverage-threshold flag for CI.
+
 ### 31. Distribution & install  *(release tooling)*
 
 Installing Tigr today means cloning the repo and `cargo build
@@ -691,10 +698,11 @@ install.
   a signed `.deb` archive or a PPA — meaningfully more infrastructure
   than the above. Ship the curl script + Homebrew first; add APT only
   if Linux users ask.
-- **Version string.** `Cargo.toml` still reads `0.2.0` while the
-  roadmap is at v0.15+. Distribution forces the fix: release tags must
-  be real, `tigr --version` must report one, and the crate version
-  must track the `v0.N` line. Fold this drift fix into the item.
+- **Version string.** The crate version now tracks the `v0.N` line —
+  `Cargo.toml`, `Cargo.lock`, `LANGUAGE.md`, and the web playground all
+  read `0.17` as of the v0.17 version bump. What remains for
+  distribution: real release tags, and a `tigr --version` flag that
+  reports the version.
 - **Design detail — where the site lives.** The install script and the
   optional item-30 docs site both need a URL; GitHub Pages off the repo
   is free and sufficient, and the two can share it.
@@ -702,16 +710,14 @@ install.
   is a stable release to install — but the binaries and curl script do
   not depend on 1.0 and can ship as soon as releases are tagged.
 
----
-
-## Toward 1.0
+### Toward 1.0
 
 After v0.14 the language is feature-complete in every dimension this
 roadmap treats as required: core semantics, diagnostics, stdlib,
-memory model, and concurrency. (The v0.16 editor-tooling release is
-optional — it may land before or after 1.0; v0.17 is not a feature
+memory model, and concurrency. (The editor-tooling items 23–25 are
+optional — they may land before or after 1.0; v0.17 was not a feature
 release either, save its one additive surface-syntax item 29, which
-must land before the spec freeze below.) 1.0 is then a *stabilization*
+landed before the spec freeze below.) 1.0 is then a *stabilization*
 release, not a feature release:
 
 - **Spec freeze.** `LANGUAGE.md` becomes a compatibility contract;
@@ -728,9 +734,7 @@ release, not a feature release:
 
 No new numbered items — 1.0 is the line under the existing ones.
 
----
-
-## Deferred
+### Deferred
 
 - **Named function expressions** (item 3) — self-recursion of a bound
   function already works (`:=` declares a `fn` initialiser before
@@ -765,4 +769,4 @@ No new numbered items — 1.0 is the line under the existing ones.
   crate vs. a hand-written engine) reopens at that point.
 
 The formerly-deferred **Language server** and **Formatter** are now
-scheduled (v0.16, items 24 and 23).
+scheduled as Future Work items 24 and 23 above.

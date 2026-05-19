@@ -1,6 +1,6 @@
 # Tigr Language Specification
 
-Version 0.2 (draft) — written as the target for a bytecode VM implementation.
+Version 0.17 (draft) — written as the target for a bytecode VM implementation.
 
 This spec describes Tigr after the eight design changes agreed in the design
 discussion. Where the existing 0.1 implementation differs, this document is

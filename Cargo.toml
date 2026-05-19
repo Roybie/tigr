@@ -1,6 +1,6 @@
 [package]
 name = "tigr"
-version = "0.2.0"
+version = "0.17.0"
 authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 edition = "2021"
 exclude = ["examples/*"]

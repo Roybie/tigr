@@ -117,24 +117,53 @@ impl Chunk {
         ((self.code[offset] as u16) << 8) | (self.code[offset + 1] as u16)
     }
 
-    /// Add a constant and return its index (or error if the pool is
-    /// already full).
-    pub fn add_constant(&mut self, value: Const) -> Result<u8, ()> {
-        if self.constants.len() >= 256 {
+    /// Write a 32-bit big-endian operand. Pushes four `lines` entries so
+    /// the per-byte line table stays the same length as `code`.
+    pub fn write_u32(&mut self, value: u32, line: u32) {
+        self.code.push((value >> 24) as u8);
+        self.code.push((value >> 16) as u8);
+        self.code.push((value >> 8) as u8);
+        self.code.push((value & 0xff) as u8);
+        self.lines.push(line);
+        self.lines.push(line);
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
+    /// Patch a 32-bit big-endian value at `offset..offset+4`. Used for
+    /// forward-jump back-patching.
+    pub fn patch_u32(&mut self, offset: usize, value: u32) {
+        self.code[offset] = (value >> 24) as u8;
+        self.code[offset + 1] = (value >> 16) as u8;
+        self.code[offset + 2] = (value >> 8) as u8;
+        self.code[offset + 3] = (value & 0xff) as u8;
+    }
+
+    pub fn read_u32(&self, offset: usize) -> u32 {
+        ((self.code[offset] as u32) << 24)
+            | ((self.code[offset + 1] as u32) << 16)
+            | ((self.code[offset + 2] as u32) << 8)
+            | (self.code[offset + 3] as u32)
+    }
+
+    /// Add a constant and return its `u16` pool index (or error if the
+    /// pool is already full). `LoadConst` carries a 2-byte index.
+    pub fn add_constant(&mut self, value: Const) -> Result<u16, ()> {
+        if self.constants.len() > u16::MAX as usize {
             return Err(());
         }
-        let idx = self.constants.len() as u8;
+        let idx = self.constants.len() as u16;
         self.constants.push(value);
         Ok(idx)
     }
 
-    /// Add a function template and return its index in this chunk's
-    /// function table.
-    pub fn add_function(&mut self, function: Arc<Function>) -> Result<u8, ()> {
-        if self.functions.len() >= 256 {
+    /// Add a function template and return its `u16` index in this
+    /// chunk's function table. `Closure` carries a 2-byte fn-index.
+    pub fn add_function(&mut self, function: Arc<Function>) -> Result<u16, ()> {
+        if self.functions.len() > u16::MAX as usize {
             return Err(());
         }
-        let idx = self.functions.len() as u8;
+        let idx = self.functions.len() as u16;
         self.functions.push(function);
         Ok(idx)
     }
@@ -188,7 +217,7 @@ impl Chunk {
         let next = offset + 1 + operands;
         match op {
             OpCode::LoadConst => {
-                let idx = self.code[offset + 1];
+                let idx = self.read_u16(offset + 1);
                 let val = &self.constants[idx as usize];
                 out.push_str(&format!("LOAD_CONST  {idx:3} ; {val:?}\n"));
             }
@@ -200,11 +229,11 @@ impl Chunk {
                 let slot = self.code[offset + 1];
                 out.push_str(&format!("STORE_LOCAL {slot:3}\n"));
             }
-            // `Closure` has variable-length operands: a u8 fn-index
+            // `Closure` has variable-length operands: a u16 fn-index
             // followed by 2 bytes per captured upvalue. Compute the
             // real instruction width from the referenced template.
             OpCode::Closure => {
-                let idx = self.code[offset + 1];
+                let idx = self.read_u16(offset + 1);
                 let func = self.functions.get(idx as usize);
                 let nup = func.map(|f| f.upvalues.len()).unwrap_or(0);
                 let fname = func
@@ -213,7 +242,7 @@ impl Chunk {
                 out.push_str(&format!(
                     "CLOSURE     {idx:3} ; {fname} ({nup} upvalue(s))\n"
                 ));
-                return offset + 2 + nup * 2;
+                return offset + 3 + nup * 2;
             }
             // Forward jumps: annotate the absolute target offset.
             OpCode::Jump
@@ -223,11 +252,11 @@ impl Chunk {
             | OpCode::PushTry
             | OpCode::IterNext
             | OpCode::IterNext2 => {
-                let arg = self.read_u16(offset + 1);
+                let arg = self.read_u32(offset + 1);
                 out.push_str(&format!("{op:?} -> {:04}\n", next + arg as usize));
             }
             OpCode::Loop => {
-                let arg = self.read_u16(offset + 1);
+                let arg = self.read_u32(offset + 1);
                 out.push_str(&format!("Loop -> {:04}\n", next - arg as usize));
             }
             other => {
@@ -242,14 +271,14 @@ impl Chunk {
     }
 
     /// Byte length of the instruction at `offset`, accounting for
-    /// `Closure`'s variable-length upvalue operands (1 byte fn-index
+    /// `Closure`'s variable-length upvalue operands (2-byte fn-index
     /// plus 2 bytes per captured upvalue).
     fn instr_len(&self, offset: usize) -> usize {
         match OpCode::from_u8(self.code[offset]) {
             Some(OpCode::Closure) => {
-                let idx = self.code[offset + 1] as usize;
+                let idx = self.read_u16(offset + 1) as usize;
                 let nup = self.functions.get(idx).map(|f| f.upvalues.len()).unwrap_or(0);
-                2 + nup * 2
+                3 + nup * 2
             }
             Some(op) => 1 + op.operand_bytes(),
             None => 1,
@@ -272,19 +301,20 @@ impl Chunk {
             };
             if matches!(op, Jump | JumpIfFalse | JumpIfTrue | JumpIfNotNull) {
                 // The operand is a forward distance from `next`, the
-                // byte after this 3-byte jump instruction.
-                let next = offset + 3;
-                let mut target = next + self.read_u16(offset + 1) as usize;
+                // byte after this 5-byte jump instruction (1 opcode +
+                // 4-byte operand).
+                let next = offset + 5;
+                let mut target = next + self.read_u32(offset + 1) as usize;
                 let mut hops = 0;
-                while target + 3 <= self.code.len()
+                while target + 5 <= self.code.len()
                     && self.code[target] == Jump as u8
                     && hops < self.code.len()
                 {
-                    target = target + 3 + self.read_u16(target + 1) as usize;
+                    target = target + 5 + self.read_u32(target + 1) as usize;
                     hops += 1;
                 }
-                if let Ok(dist) = u16::try_from(target.saturating_sub(next)) {
-                    self.patch_u16(offset + 1, dist);
+                if let Ok(dist) = u32::try_from(target.saturating_sub(next)) {
+                    self.patch_u32(offset + 1, dist);
                 }
             }
             offset += self.instr_len(offset);
@@ -299,27 +329,39 @@ mod tests {
 
     #[test]
     fn thread_jumps_collapses_a_jump_chain() {
-        // 0: Jump  -> 3   (operand 0)
-        // 3: Jump  -> 9   (operand 3)
-        // 6: PushNull / PushNull / PushNull
-        // 9: Return
+        // Built via the chunk API so it survives operand-width changes.
+        // A jump is 5 bytes (1 opcode + 4-byte operand).
+        //  0: Jump A  -> 5  (the second jump)
+        //  5: Jump B  -> 13 (Return)
+        // 10: PushNull / PushNull / PushNull
+        // 13: Return
         let mut chunk = Chunk::new();
-        let j = OpCode::Jump as u8;
-        chunk.code = vec![
-            j, 0, 0, // 0: Jump -> 3
-            j, 0, 3, // 3: Jump -> 9
-            OpCode::PushNull as u8,
-            OpCode::PushNull as u8,
-            OpCode::PushNull as u8,
-            OpCode::Return as u8, // 9
-        ];
-        chunk.lines = vec![1; chunk.code.len()];
+
+        chunk.write_op(OpCode::Jump, 1);
+        let a = chunk.code.len(); // operand offset of jump A
+        chunk.write_u32(0xffff_ffff, 1);
+
+        let b_start = chunk.code.len(); // = 5
+        chunk.write_op(OpCode::Jump, 1);
+        let b = chunk.code.len(); // operand offset of jump B
+        chunk.write_u32(0xffff_ffff, 1);
+
+        chunk.write_op(OpCode::PushNull, 1);
+        chunk.write_op(OpCode::PushNull, 1);
+        chunk.write_op(OpCode::PushNull, 1);
+        let ret = chunk.code.len(); // = 13
+        chunk.write_op(OpCode::Return, 1);
+
+        // A targets jump B; B targets Return. Distance is measured from
+        // the byte after the 5-byte jump instruction (operand + 4).
+        chunk.patch_u32(a, (b_start - (a + 4)) as u32);
+        chunk.patch_u32(b, (ret - (b + 4)) as u32);
 
         chunk.thread_jumps();
 
-        // The jump at 0 should now point straight at 9: 9 - (0 + 3) = 6.
-        assert_eq!(chunk.read_u16(1), 6);
-        // The second jump is unchanged: 9 - (3 + 3) = 3.
-        assert_eq!(chunk.read_u16(4), 3);
+        // A is retargeted straight at Return: 13 - (a + 4) = 8.
+        assert_eq!(chunk.read_u32(a), (ret - (a + 4)) as u32);
+        // B is unchanged: 13 - (b + 4) = 3.
+        assert_eq!(chunk.read_u32(b), (ret - (b + 4)) as u32);
     }
 }

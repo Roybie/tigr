@@ -80,7 +80,7 @@ enum FrameKind {
     /// nested `run_until` — which is what lets execution be suspended.
     IterPull {
         iter: GcRef<IterKind>,
-        dist: u16,
+        dist: u32,
         two_var: bool,
         /// Call-site line of the `IterNext`, for faithful error
         /// reporting from `parse_iter_result`.
@@ -658,8 +658,8 @@ impl Vm {
 
             match op {
                 OpCode::LoadConst => {
-                    let idx = chunk.code[ip] as usize;
-                    ip += 1;
+                    let idx = chunk.read_u16(ip) as usize;
+                    ip += 2;
                     self.stack.push(chunk.constants[idx].to_value());
                 }
                 OpCode::LoadLocal => {
@@ -927,31 +927,31 @@ impl Vm {
                     self.stack.push(Value::Bool(!v.is_truthy()));
                 }
                 OpCode::Jump => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2 + dist as usize;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4 + dist as usize;
                 }
                 OpCode::Loop => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     ip -= dist as usize;
                 }
                 OpCode::JumpIfFalse => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     if !self.stack.last().ok_or_else(|| underflow(line))?.is_truthy() {
                         ip += dist as usize;
                     }
                 }
                 OpCode::JumpIfTrue => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     if self.stack.last().ok_or_else(|| underflow(line))?.is_truthy() {
                         ip += dist as usize;
                     }
                 }
                 OpCode::JumpIfNotNull => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     let top = self.stack.last().ok_or_else(|| underflow(line))?;
                     if !matches!(top, Value::Null) {
                         ip += dist as usize;
@@ -1232,8 +1232,8 @@ impl Vm {
 
                 // -- Phase 4 --
                 OpCode::Closure => {
-                    let func_idx = chunk.code[ip] as usize;
-                    ip += 1;
+                    let func_idx = chunk.read_u16(ip) as usize;
+                    ip += 2;
                     let function = chunk.functions[func_idx].clone();
                     let mut upvalues = Vec::with_capacity(function.upvalues.len());
                     for _ in 0..function.upvalues.len() {
@@ -1337,8 +1337,8 @@ impl Vm {
                     self.stack.push(Value::Iter(gc::alloc_iter(iter)));
                 }
                 OpCode::IterNext => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     let iter_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
                     let Value::Iter(it) = &iter_val else {
                         return Err(RuntimeError::new(
@@ -1419,8 +1419,8 @@ impl Vm {
                     }
                 }
                 OpCode::IterNext2 => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     let iter_val = self.stack.last().ok_or_else(|| underflow(line))?.clone();
                     let Value::Iter(it) = &iter_val else {
                         return Err(RuntimeError::new(
@@ -1971,8 +1971,8 @@ impl Vm {
 
                 // -- v0.3 try/catch/raise --
                 OpCode::PushTry => {
-                    let dist = chunk.read_u16(ip);
-                    ip += 2;
+                    let dist = chunk.read_u32(ip);
+                    ip += 4;
                     let catch_pc = ip + dist as usize;
                     let stack_len = self.stack.len();
                     self.frames.last_mut().unwrap().try_frames.push(TryFrame {

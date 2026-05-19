@@ -49,6 +49,33 @@ use crate::vm::stdlib;
 use crate::vm::token::Span;
 use crate::vm::value::{Function, UpvalueInfo, Value};
 
+/// Hashable key for constant-pool deduplication. Mirrors [`Const`] but
+/// stores `Float` as raw bits, so it can derive `Hash + Eq` (`f64` is
+/// neither). Bit-pattern keying is the correct pooling semantics: it
+/// keeps `0.0` and `-0.0` distinct (a program that wrote one
+/// specifically should get that one — `1.0 / -0.0 ≠ 1.0 / 0.0`) and
+/// treats bit-identical `NaN`s as equal.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ConstKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(u64),
+    Str(Arc<str>),
+}
+
+impl ConstKey {
+    fn of(c: &Const) -> ConstKey {
+        match c {
+            Const::Null => ConstKey::Null,
+            Const::Bool(b) => ConstKey::Bool(*b),
+            Const::Int(n) => ConstKey::Int(*n),
+            Const::Float(x) => ConstKey::Float(x.to_bits()),
+            Const::Str(s) => ConstKey::Str(s.clone()),
+        }
+    }
+}
+
 struct Local {
     name: String,
     depth: u32,
@@ -114,6 +141,11 @@ struct FuncCompiler {
     /// at scope entry; the nested `:=` becomes a `StoreLocal` to that
     /// stable slot.
     hoisted_scopes: Vec<HashMap<String, u8>>,
+    /// Deduplication index for this function's constant pool. Maps a
+    /// constant value to the pool slot it already occupies, so a
+    /// repeated literal reuses one slot instead of spending a fresh
+    /// entry (the pool is per-chunk and capped — see `add_constant`).
+    const_dedup: HashMap<ConstKey, u16>,
 }
 
 impl FuncCompiler {
@@ -136,6 +168,7 @@ impl FuncCompiler {
             loop_stack: Vec::new(),
             stack_height: 0,
             hoisted_scopes: vec![HashMap::new()],
+            const_dedup: HashMap::new(),
         }
     }
 }
@@ -686,12 +719,23 @@ impl Compiler {
         line: u32,
         span: Span,
     ) -> Result<(), CompileError> {
-        let idx = self
-            .current_chunk_mut()
-            .add_constant(Const::from_value(&value))
-            .map_err(|_| CompileError::new(CompileErrorKind::TooManyConstants, span))?;
+        let konst = Const::from_value(&value);
+        let key = ConstKey::of(&konst);
+        let idx: u16 = match self.current().const_dedup.get(&key) {
+            Some(&i) => i,
+            None => {
+                let i = self
+                    .current_chunk_mut()
+                    .add_constant(konst)
+                    .map_err(|_| {
+                        CompileError::new(CompileErrorKind::TooManyConstants, span)
+                    })?;
+                self.current_mut().const_dedup.insert(key, i);
+                i
+            }
+        };
         self.emit_op(OpCode::LoadConst, line);
-        self.emit_byte(idx, line);
+        self.current_chunk_mut().write_u16(idx, line);
         Ok(())
     }
 
@@ -1089,14 +1133,8 @@ impl Compiler {
             Expr::Array(items) => {
                 let has_spread = items.iter()
                     .any(|i| matches!(i.expr, Expr::Spread(_)));
-                if !has_spread {
+                if !has_spread && items.len() <= 255 {
                     // Fast path: contiguous element pushes + MakeArray.
-                    if items.len() > 255 {
-                        return Err(CompileError::new(
-                            CompileErrorKind::TooManyConstants,
-                            e.span,
-                        ));
-                    }
                     for item in items {
                         self.compile_expr(item)?;
                     }
@@ -1105,8 +1143,9 @@ impl Compiler {
                     // MakeArray n: pops n, pushes 1.
                     self.adjust_stack(-(items.len() as i32) + 1);
                 } else {
-                    // Build incrementally so the spread elements can
-                    // be runtime-counted.
+                    // Build incrementally: spread elements are
+                    // runtime-counted, and a literal with more than 255
+                    // elements exceeds MakeArray's u8 count operand.
                     self.emit_op(OpCode::MakeArray, line);
                     self.emit_byte(0, line);
                     self.adjust_stack(1); // MakeArray 0 pushes empty array
@@ -1128,13 +1167,7 @@ impl Compiler {
             Expr::Object(members) => {
                 let has_spread = members.iter()
                     .any(|m| matches!(m, ObjectMember::Spread(_)));
-                if !has_spread {
-                    if members.len() > 255 {
-                        return Err(CompileError::new(
-                            CompileErrorKind::TooManyConstants,
-                            e.span,
-                        ));
-                    }
+                if !has_spread && members.len() <= 255 {
                     for m in members {
                         let ObjectMember::Pair(key, value) = m else { unreachable!() };
                         self.emit_constant(
@@ -1150,6 +1183,8 @@ impl Compiler {
                     // Incremental build via Dup + IndexSet/Pop for
                     // pairs and ObjectMerge for spreads. Later keys
                     // win because IndexSet on an existing key replaces.
+                    // Also taken when a literal has more than 255 pairs
+                    // (exceeding MakeObject's u8 count operand).
                     self.emit_op(OpCode::MakeObject, line);
                     self.emit_byte(0, line);
                     self.adjust_stack(1); // MakeObject 0 pushes empty obj
@@ -2322,7 +2357,7 @@ impl Compiler {
             .add_function(Arc::new(function))
             .map_err(|_| CompileError::new(CompileErrorKind::TooManyConstants, span))?;
         self.emit_op(OpCode::Closure, line);
-        self.emit_byte(idx, line);
+        self.current_chunk_mut().write_u16(idx, line);
         for up in &upvalues_info {
             self.emit_byte(if up.is_local { 1 } else { 0 }, line);
             self.emit_byte(up.index, line);
@@ -2557,32 +2592,32 @@ impl Compiler {
     fn emit_jump(&mut self, op: OpCode, line: u32) -> usize {
         self.emit_op(op, line);
         let offset = self.current_chunk().code.len();
-        self.current_chunk_mut().write_u16(0xffff, line);
+        self.current_chunk_mut().write_u32(0xffff_ffff, line);
         offset
     }
 
     fn patch_jump(&mut self, offset: usize) -> Result<(), CompileError> {
         let here = self.current_chunk().code.len();
-        let dist = here.checked_sub(offset + 2).ok_or_else(|| {
+        let dist = here.checked_sub(offset + 4).ok_or_else(|| {
             CompileError::new(CompileErrorKind::JumpTooFar, Span::new(0, 0, 0))
         })?;
-        if dist > u16::MAX as usize {
+        if dist > u32::MAX as usize {
             return Err(CompileError::new(CompileErrorKind::JumpTooFar, Span::new(0, 0, 0)));
         }
-        self.current_chunk_mut().patch_u16(offset, dist as u16);
+        self.current_chunk_mut().patch_u32(offset, dist as u32);
         Ok(())
     }
 
     fn emit_loop(&mut self, target: usize, line: u32) -> Result<(), CompileError> {
         self.emit_op(OpCode::Loop, line);
         let here = self.current_chunk().code.len();
-        let dist = (here + 2).checked_sub(target).ok_or_else(|| {
+        let dist = (here + 4).checked_sub(target).ok_or_else(|| {
             CompileError::new(CompileErrorKind::JumpTooFar, Span::new(0, 0, line))
         })?;
-        if dist > u16::MAX as usize {
+        if dist > u32::MAX as usize {
             return Err(CompileError::new(CompileErrorKind::JumpTooFar, Span::new(0, 0, line)));
         }
-        self.current_chunk_mut().write_u16(dist as u16, line);
+        self.current_chunk_mut().write_u32(dist as u32, line);
         Ok(())
     }
 }

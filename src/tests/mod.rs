@@ -5724,3 +5724,85 @@ fn v14_actor_error_propagates_to_join() {
     ";
     assert_eq!(format!("{:?}", run(src)), "'div_by_zero'");
 }
+
+// ---- Bytecode format limits: pool dedup, wide operands, big literals ----
+
+/// The constant pool deduplicates: a literal that appears many times —
+/// and distinct literals that compare equal — share one pool slot.
+#[test]
+fn limit_constant_pool_dedups_identical_literals() {
+    use crate::vm::compile_source_with_id;
+    use crate::vm::source_map::SourceId;
+    let src = "a := 'x'; b := 'x'; c := 'x'; d := 7; e := 7; a";
+    let main = compile_source_with_id(src, None, SourceId::UNKNOWN).unwrap();
+    // 'x' (x3) and 7 (x2) collapse to two pooled constants.
+    assert_eq!(main.chunk.constants.len(), 2);
+}
+
+/// A literal repeated far past the old 256-entry pool cap now compiles:
+/// dedup collapses every occurrence to one slot.
+#[test]
+fn limit_repeated_literal_does_not_overflow_pool() {
+    let body: String = std::iter::repeat("print('x');").take(600).collect();
+    let src = format!("f := fn() {{ {body} 0 }}; f()");
+    assert_eq!(run(&src), Value::Int(0));
+}
+
+/// >256 *distinct* constants in one chunk — formerly TooManyConstants,
+/// now fine because the LoadConst index is a u16. The 400-element array
+/// literal also exercises the oversized-literal desugaring.
+#[test]
+fn limit_many_distinct_constants() {
+    let elems: String = (0..400).map(|i| format!("{i},")).collect();
+    let src = format!("xs := [{elems}]; #xs * 1000 + xs[399]");
+    assert_eq!(run(&src), Value::Int(400_399));
+}
+
+/// >256 distinct nested function templates in one chunk — formerly
+/// capped at 256, now fine because the Closure fn-index is a u16.
+#[test]
+fn limit_many_function_templates() {
+    let elems: String = (0..400).map(|i| format!("fn() {{ {i} }},")).collect();
+    let src = format!("fns := [{elems}]; fns[399]()");
+    assert_eq!(run(&src), Value::Int(399));
+}
+
+/// A function chunk larger than 64 KiB, forcing a jump distance past
+/// the old u16 limit — formerly JumpTooFar, now fine with u32 jumps.
+/// `flag` is a variable so the `if` is not constant-folded away.
+#[test]
+fn limit_chunk_exceeds_64kib() {
+    let filler: String = std::iter::repeat("n = n + 1;").take(12000).collect();
+    let src = format!(
+        "n := 0; flag := n < 1; if flag {{ {filler} }} else {{ 0 }}; n"
+    );
+    assert_eq!(run(&src), Value::Int(12000));
+}
+
+/// An object literal with more than 255 pairs — formerly
+/// TooManyConstants — now desugars to the incremental builder.
+#[test]
+fn limit_oversized_object_literal() {
+    let pairs: String = (0..400).map(|i| format!("k{i}: {i},")).collect();
+    let src = format!("o := ${{{pairs}}}; o.k399");
+    assert_eq!(run(&src), Value::Int(399));
+}
+
+/// Regression: an oversized literal that also contains a spread still
+/// builds correctly through the incremental path.
+#[test]
+fn limit_oversized_array_literal_with_spread() {
+    let elems: String = (0..300).map(|i| format!("{i},")).collect();
+    let src = format!("rest := [1, 2, 3]; xs := [{elems} ...rest]; #xs");
+    assert_eq!(run(&src), Value::Int(303));
+}
+
+/// String interpolation stays deliberately capped at 255 segments —
+/// `ConcatN` has a u8 count and no incremental form.
+#[test]
+fn limit_interpolation_still_capped() {
+    let parts = "{1}".repeat(300);
+    let src = format!("x := '{parts}'; x");
+    let err = run_err(&src);
+    assert!(err.contains("too many constants"), "got: {err}");
+}

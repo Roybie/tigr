@@ -4,11 +4,14 @@
 //! Phase 2: control flow, comparison, logical, scope close.
 //!
 //! Each opcode is a single byte. Inline operand encoding:
-//! - 1-byte operand: LoadConst / LoadLocal / StoreLocal / CloseScope
-//! - 2-byte operand (big-endian): Jump / Loop / JumpIfFalse / JumpIfTrue
+//! - 1-byte operand: LoadLocal / StoreLocal / CloseScope / Call / ...
+//! - 2-byte operand (big-endian): LoadConst (constant index), Closure
+//!   (fn-index, then 2 bytes per captured upvalue).
+//! - 4-byte operand (big-endian): Jump / Loop / JumpIfFalse / JumpIfTrue
+//!   / JumpIfNotNull / IterNext / IterNext2 / PushTry.
 //!
-//! 2-byte jumps give a 64KiB max chunk size — fine for a hobby VM. If a
-//! chunk grows past that the compiler errors out.
+//! 4-byte jumps make chunk size memory-bound rather than format-bound;
+//! the 2-byte constant/fn indices cap each pool at 65536 entries.
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,17 +357,17 @@ impl OpCode {
     pub fn operand_bytes(self) -> usize {
         use OpCode::*;
         match self {
-            LoadConst | LoadLocal | StoreLocal | CloseScope
+            LoadLocal | StoreLocal | CloseScope
             | MakeArray | MakeObject | Call | TailCall
             | GetUpvalue | SetUpvalue | LoadGlobal
             | MakeRange | IterAppend | Unwind | ConcatN | TypeTest => 1,
-            // Closure has variable-length operands (1 byte fn_idx
-            // followed by 2 bytes per captured upvalue) — the
-            // disassembler handles it specially, so we report only the
-            // fn_idx here. This method is informational only.
-            Closure => 1,
+            // LoadConst carries a 2-byte constant index. Closure has
+            // variable-length operands (2-byte fn_idx followed by 2
+            // bytes per captured upvalue) — the disassembler handles it
+            // specially, so we report only the fn_idx width here.
+            LoadConst | Closure => 2,
             Jump | Loop | JumpIfFalse | JumpIfTrue | JumpIfNotNull
-            | IterNext | IterNext2 | PushTry => 2,
+            | IterNext | IterNext2 | PushTry => 4,
             _ => 0,
         }
     }

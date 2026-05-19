@@ -24,6 +24,7 @@ use crate::vm::vm::CallFrame;
 /// offloaded blocking call that *failed* resumes by raising — the error
 /// has to surface against the coroutine's own frames and `try` blocks,
 /// not the one that happened to be running when the worker finished.
+#[derive(Clone)]
 pub enum ResumeOutcome {
     Value(Value),
     Raise(RuntimeError),
@@ -58,9 +59,11 @@ pub struct GreenHandle {
     /// The green thread's coroutine id — what a `join` waits on and
     /// what a finishing coroutine wakes its joiners by.
     pub(crate) id: u32,
-    /// `None` while the coroutine is still running; `Some(v)` once it
-    /// has returned, holding `v` — the value its body evaluated to.
-    pub(crate) result: Option<Value>,
+    /// `None` while the coroutine is still running. Once it finishes,
+    /// `Some(ResumeOutcome::Value(v))` holds the value its body
+    /// evaluated to, or `Some(ResumeOutcome::Raise(e))` records an
+    /// uncaught error so a later `join` re-raises it.
+    pub(crate) result: Option<ResumeOutcome>,
 }
 
 /// A coroutine parked in a cooperative `join`, waiting for another
@@ -188,16 +191,17 @@ impl Scheduler {
         self.blocked.push(BlockedThread { awaiting, thread });
     }
 
-    /// Green thread `finished` returned with `result`: move every
+    /// Green thread `finished` ended with `outcome`: move every
     /// coroutine that was `join`-blocked on it back onto the run-queue,
-    /// delivering `result` as the value its `join` expression yields.
-    pub fn wake_joiners(&mut self, finished: u32, result: &Value) {
+    /// delivering `outcome` — a `Value` its `join` expression yields,
+    /// or a `Raise` that re-surfaces the green thread's uncaught error
+    /// at the join site.
+    pub fn wake_joiners(&mut self, finished: u32, outcome: &ResumeOutcome) {
         let mut i = 0;
         while i < self.blocked.len() {
             if self.blocked[i].awaiting == finished {
                 let mut bt = self.blocked.swap_remove(i);
-                bt.thread.parked_resume =
-                    Some(ResumeOutcome::Value(result.clone()));
+                bt.thread.parked_resume = Some(outcome.clone());
                 self.queue.push_back(bt.thread);
             } else {
                 i += 1;

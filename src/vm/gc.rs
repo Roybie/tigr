@@ -590,8 +590,16 @@ impl Trace for Vec<Value> {
 /// reading it.
 impl Trace for GreenHandle {
     fn trace(&self, m: &mut Marker) {
-        if let Some(v) = &self.result {
-            v.trace(m);
+        // The recorded outcome holds live values: a returned `Value`,
+        // or the payload of a `raise`d error a later `join` re-raises.
+        match &self.result {
+            Some(crate::vm::scheduler::ResumeOutcome::Value(v)) => v.trace(m),
+            Some(crate::vm::scheduler::ResumeOutcome::Raise(e)) => {
+                if let crate::vm::error::RuntimeErrorKind::Raised(v) = &e.kind {
+                    v.trace(m);
+                }
+            }
+            None => {}
         }
     }
 }

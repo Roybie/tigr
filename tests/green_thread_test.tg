@@ -182,14 +182,50 @@ Test := import 'Test';
             Test.assert_eq(results, [10, 20, 30, 40, 50, 60])
         }),
 
-        Test.case('join surfaces a raise from the coroutine body', fn() {
-            // an uncaught raise in a `go` body aborts the actor, so a
-            // body that might fail should catch internally and return
-            // a tagged result for the joiner to inspect.
+        Test.case('a coroutine can catch its own raise internally', fn() {
+            // a body that catches internally returns a tagged result
+            // for the joiner to inspect like any other value.
             h := go fn() {
                 try { raise 'oops' } catch (e) { ${ error: e } }
             };
             Test.assert_eq(join(h), ${ error: 'oops' })
+        }),
+    ]),
+
+    Test.suite('join — uncaught coroutine errors', [
+        Test.case('join re-raises a coroutine\'s uncaught raise', fn() {
+            // an uncaught `raise` in a `go` body does not abort the
+            // actor — it surfaces at the join site, where the joiner
+            // can catch it. The raised value reaches `catch` verbatim.
+            h := go fn() { raise 'boom' };
+            caught := try { join(h); null } catch (e) { e };
+            Test.assert_eq(caught, 'boom')
+        }),
+
+        Test.case('join re-raises a coroutine\'s uncaught runtime error', fn() {
+            // a built-in error (here a type mismatch) reifies into the
+            // ${kind, message, line} object `catch` binds.
+            h := go fn() { null * null };
+            kind := try { join(h); null } catch (e) { e.kind };
+            Test.assert_eq(kind, 'type_mismatch')
+        }),
+
+        Test.case('re-joining a failed coroutine re-raises again', fn() {
+            h := go fn() { raise 'again' };
+            first := try { join(h); null } catch (e) { e };
+            second := try { join(h); null } catch (e) { e };
+            Test.assert_eq([first, second], ['again', 'again'])
+        }),
+
+        Test.case('an uncaught coroutine error unwinds to the joiner', fn() {
+            // the coroutine raises past its own frames; the error
+            // lands on the coroutine that joined it.
+            h := go fn() {
+                helper := fn() { raise 'deep' };
+                helper()
+            };
+            caught := try { join(h); null } catch (e) { e };
+            Test.assert_eq(caught, 'deep')
         }),
     ]),
 ]

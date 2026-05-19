@@ -99,6 +99,18 @@ enum FrameKind {
     },
 }
 
+/// Outcome of [`Vm::fail_current_green`] — how the actor proceeds
+/// after a non-main green thread dies with an uncaught error.
+enum GreenFail {
+    /// Switched to a coroutine that resumed normally; it is running.
+    Switched,
+    /// Switched to a coroutine that resumed by raising — the error to
+    /// re-process against that coroutine's frames.
+    Reraised(RuntimeError),
+    /// No coroutine left to run; the actor cannot continue.
+    Stranded,
+}
+
 /// Snapshot of state captured at `PushTry`. On a Raise (or runtime
 /// error) the VM walks call frames from innermost outward; the first
 /// non-empty `try_frames` stack indicates where to land.
@@ -263,15 +275,60 @@ impl Vm {
             if self.try_catch(0, err) {
                 return true;
             }
-            match self.current_gen {
-                Some(handle) => {
-                    // The generator's frames were already unwound by the
-                    // failed `try_catch`; `park_generator` marks it
-                    // `Done` and reinstates the resumer to retry there.
-                    self.park_generator(handle, GenStatus::Done);
-                }
-                None => return false,
+            if let Some(handle) = self.current_gen {
+                // The generator's frames were already unwound by the
+                // failed `try_catch`; `park_generator` marks it
+                // `Done` and reinstates the resumer to retry there.
+                self.park_generator(handle, GenStatus::Done);
+                continue;
             }
+            // No `try` handler and not inside a generator. If the
+            // running coroutine is a non-main green thread, it has
+            // finished with an uncaught error: `try_catch` unwound
+            // every one of its frames, so hand the error to whatever
+            // `join`s it and switch to the next ready coroutine
+            // rather than tearing the whole actor down.
+            if !self.scheduler.current_is_main() {
+                match self.fail_current_green(err) {
+                    // Switched to a coroutine that resumed normally —
+                    // it is now running; re-enter the dispatch loop.
+                    GreenFail::Switched => return true,
+                    // Switched to a coroutine that resumed by raising
+                    // (a joiner receiving this very failure). Retry
+                    // the catch against its frames.
+                    GreenFail::Reraised(e) => {
+                        *err = e;
+                        continue;
+                    }
+                    // Nothing left to run — the actor cannot continue.
+                    GreenFail::Stranded => return false,
+                }
+            }
+            return false;
+        }
+    }
+
+    /// The running coroutine is a non-main green thread whose uncaught
+    /// error `err` escaped every `try`. Record the failure on its `go`
+    /// handle so a later `join` re-raises it, wake any coroutine
+    /// already `join`-blocked on it, and switch to the next ready
+    /// coroutine.
+    fn fail_current_green(&mut self, err: &RuntimeError) -> GreenFail {
+        if let Some(handle) = self.current_handle.take() {
+            let outcome = ResumeOutcome::Raise(err.clone());
+            let id = {
+                let mut h = handle.borrow_mut();
+                h.result = Some(outcome.clone());
+                h.id
+            };
+            self.scheduler.wake_joiners(id, &outcome);
+        }
+        match self.pick_next() {
+            Some(next) => match self.load_green(next) {
+                Ok(()) => GreenFail::Switched,
+                Err(e) => GreenFail::Reraised(e),
+            },
+            None => GreenFail::Stranded,
         }
     }
 
@@ -531,6 +588,19 @@ impl Vm {
                         // Wall hit — restore stack to pre-line state.
                         self.close_upvalues(snapshot_len);
                         self.stack.truncate(snapshot_len);
+                        // Normally the persistent REPL frame is a wall
+                        // `try_catch` stops at, so it survives intact.
+                        // A green thread that died while main was
+                        // unreachable can leave the frame stack empty;
+                        // rebuild the REPL frame so the session (and
+                        // the wasm instance) survives rather than
+                        // panicking on `frames[0]`.
+                        if !matches!(
+                            self.frames.first().map(|f| &f.kind),
+                            Some(FrameKind::Repl)
+                        ) {
+                            self.start_repl();
+                        }
                         self.frames[0].try_frames.clear();
                         self.frames[0].ip = 0;
                         return Err(err);
@@ -795,12 +865,14 @@ impl Vm {
                         // the next ready coroutine — main is always
                         // queued (or blocked) while not running.
                         if let Some(handle) = self.current_handle.take() {
+                            let outcome =
+                                ResumeOutcome::Value(result.clone());
                             let id = {
                                 let mut h = handle.borrow_mut();
-                                h.result = Some(result.clone());
+                                h.result = Some(outcome.clone());
                                 h.id
                             };
-                            self.scheduler.wake_joiners(id, &result);
+                            self.scheduler.wake_joiners(id, &outcome);
                         }
                         // Pick the next coroutine, blocking for an
                         // outstanding offload completion if the queue
@@ -2357,9 +2429,15 @@ impl Vm {
             let h = handle.borrow();
             (h.id, h.result.clone())
         };
-        if let Some(v) = finished {
-            self.stack.push(v);
-            return Ok(());
+        // Already finished: hand back its value, or re-raise the
+        // uncaught error it died with so `join` surfaces the failure.
+        match finished {
+            Some(ResumeOutcome::Value(v)) => {
+                self.stack.push(v);
+                return Ok(());
+            }
+            Some(ResumeOutcome::Raise(e)) => return Err(e),
+            None => {}
         }
         // The coroutine is still running. A generator body cannot be
         // round-robin-parked, and blocking with nothing else ready is

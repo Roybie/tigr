@@ -153,7 +153,7 @@ impl fmt::Display for CompileError {
 /// One entry in an uncaught error's stack trace: the function that was
 /// executing and the source line it was at. Built innermost-first as
 /// `try_catch` unwinds frames (see `vm.rs`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraceFrame {
     /// Function name (inferred from the binding), `None` for an unbound
     /// `fn` — rendered as `<anonymous>`.
@@ -162,7 +162,7 @@ pub struct TraceFrame {
     pub line: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RuntimeError {
     pub kind: RuntimeErrorKind,
     pub line: u32,
@@ -179,7 +179,7 @@ impl RuntimeError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RuntimeErrorKind {
     TypeMismatch(String),
     DivisionByZero,

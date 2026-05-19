@@ -44,14 +44,14 @@ entirely client-side, so `Net`, `Os`, and filesystem IO are unavailable
 there (importing them raises a clean error); everything else, green
 threads included, works.
 
+[Try it out here](https://roybie.guithub.io/tigr)
+
+Or run it locally:
 ```bash
 rustup target add wasm32-unknown-unknown   # one-time
 ./web/build.sh                             # compiles to web/pkg/
 python3 -m http.server -d web 8080         # then open localhost:8080
 ```
-
-The visual design is authored separately; [`web/DESIGN_CONTRACT.md`](web/DESIGN_CONTRACT.md)
-is the spec the markup must satisfy.
 
 ---
 

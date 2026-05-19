@@ -76,8 +76,23 @@ const tigrStream = StreamLanguage.define({
       return 'string';
     }
 
+    // `.` — a range/spread operator (`..`, `..=`, `...`), a leading-dot
+    // float (`.5`), or member-access punctuation. The dot run must be
+    // resolved here: tokenizing `1..101` one dot at a time strands the
+    // stream on the second `.`, where the digit-anchored number regex
+    // matches nothing — and a non-advancing token() crashes CodeMirror.
+    if (ch === '.') {
+      if (stream.match(/^\.\.\.|^\.\.=?/)) return 'operator';
+      if (/\d/.test(stream.string[stream.pos + 1] || '')) {
+        stream.match(/^\.[\d_]+([eE][+-]?\d+)?/);
+        return 'number';
+      }
+      stream.next();
+      return 'punctuation';
+    }
+
     // Numbers: radix or decimal, with `_` group separators.
-    if (/\d/.test(ch) || (ch === '.' && /\d/.test(stream.string[stream.pos + 1] || ''))) {
+    if (/\d/.test(ch)) {
       if (stream.match(/^0[xXoObB][0-9a-fA-F_]+/)) return 'number';
       stream.match(/^\d[\d_]*(\.[\d_]+)?([eE][+-]?\d+)?/);
       return 'number';

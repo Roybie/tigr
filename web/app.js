@@ -60,7 +60,7 @@ const ui = {};
 const HOOKS = [
   'tab-repl', 'tab-editor', 'panel-repl', 'panel-editor',
   'repl-scrollback', 'repl-prompt', 'repl-input', 'repl-reset',
-  'editor', 'editor-run', 'editor-stop', 'editor-output', 'editor-examples',
+  'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-examples',
   'status',
 ];
 
@@ -296,6 +296,12 @@ function main() {
     editor = createEditor(ui.editor, seed, () => runProgram(vm));
   }
   ui.editor_run?.addEventListener('click', () => runProgram(vm));
+  // CodeMirror's Mod-Enter binding is ⌘ on macOS, Ctrl elsewhere — make
+  // the Run button's key hint match the platform rather than assume Mac.
+  if (ui.editor_run_kbd) {
+    const isMac = /Mac|iP(hone|od|ad)/.test(navigator.platform);
+    ui.editor_run_kbd.textContent = isMac ? '⌘↵' : 'Ctrl↵';
+  }
   ui.editor_stop?.addEventListener('click', () => stopProgram(vm));
   clearDemoEntries(ui.editor_output);
   loadExamples();

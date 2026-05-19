@@ -1939,7 +1939,7 @@ Additions (non-breaking):
 
 33. **`Iter` source-stdlib module** (§13.3) — lazy, pull-based
     iterators. Adapters `from`/`count`/`repeat`, lazy combinators
-    `map`/`filter`/`take`/`drop`/`enumerate`/`zip`/`chain`, consumers
+    `map`/`filter`/`take`/`take_while`/`drop`/`drop_while`/`enumerate`/`zip`/`chain`, consumers
     `collect`/`reduce`/`for_each`/`count_of`/`find`/`nth`. A pipeline
     carries one element through the whole chain at a time, never
     materializing an intermediate array; `count` / `repeat` are

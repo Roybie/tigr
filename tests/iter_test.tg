@@ -1,0 +1,101 @@
+// tests/iter_test.tg — predicate-bounded Iter combinators.
+//
+// `take_while` and `drop_while` complement the count-based `take` /
+// `drop`: they bound a stream by a *condition* rather than a length.
+// The load-bearing property of `take_while` is that, like `take`, it
+// stops without pulling the source again — so it can safely terminate
+// an infinite iterator.
+
+Test := import 'Test';
+Iter := import 'Iter';
+
+// An infinite Fibonacci generator, the motivating use case.
+fib := gen fn() {
+    a := 0;
+    b := 1;
+    while true {
+        yield a;
+        next := a + b;
+        a = b;
+        b = next;
+    };
+};
+
+take_while := Test.suite('Iter.take_while', [
+    Test.case('yields the leading run for which pred holds', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.take_while(Iter.from([1, 2, 3, 4, 5]), fn(n) { n < 4 })),
+            [1, 2, 3])
+    }),
+
+    Test.case('stops at the first failure, ignoring later passing elements', fn() {
+        // 5 fails the predicate; the trailing 1, 2 must not appear.
+        Test.assert_eq(
+            Iter.collect(Iter.take_while(Iter.from([1, 2, 5, 1, 2]), fn(n) { n < 4 })),
+            [1, 2])
+    }),
+
+    Test.case('yields nothing when the first element fails', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.take_while(Iter.from([9, 1, 2]), fn(n) { n < 4 })),
+            [])
+    }),
+
+    Test.case('yields everything when the predicate never fails', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.take_while(Iter.from([1, 2, 3]), fn(n) { n < 100 })),
+            [1, 2, 3])
+    }),
+
+    Test.case('safely bounds an infinite source', fn() {
+        // Iter.count is infinite; take_while must terminate it.
+        Test.assert_eq(
+            Iter.collect(Iter.take_while(Iter.count(0), fn(n) { n < 5 })),
+            [0, 1, 2, 3, 4])
+    }),
+
+    Test.case('the motivating puzzle: even Fibonacci numbers <= 4_000_000', fn() {
+        even_fibs := fib()
+            |> Iter.take_while(fn(n) { n <= 4000000 })
+            |> Iter.filter(fn(n) { n % 2 == 0 })
+            |> Iter.collect();
+        Test.assert_eq(even_fibs, [0, 2, 8, 34, 144, 610, 2584, 10946, 46368, 196418, 832040, 3524578])
+    }),
+]);
+
+drop_while := Test.suite('Iter.drop_while', [
+    Test.case('skips the leading run, keeps the rest', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.drop_while(Iter.from([2, 4, 5, 6, 7]), fn(n) { n % 2 == 0 })),
+            [5, 6, 7])
+    }),
+
+    Test.case('keeps later elements that match pred once dropping has stopped', fn() {
+        // The leading 1, 2 are dropped; the 2 after the 9 is kept.
+        Test.assert_eq(
+            Iter.collect(Iter.drop_while(Iter.from([1, 2, 9, 2, 1]), fn(n) { n < 5 })),
+            [9, 2, 1])
+    }),
+
+    Test.case('drops nothing when the first element fails the predicate', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.drop_while(Iter.from([9, 1, 2]), fn(n) { n < 5 })),
+            [9, 1, 2])
+    }),
+
+    Test.case('drops everything when the predicate always holds', fn() {
+        Test.assert_eq(
+            Iter.collect(Iter.drop_while(Iter.from([1, 2, 3]), fn(n) { n < 100 })),
+            [])
+    }),
+
+    Test.case('composes with take to slice a middle window', fn() {
+        window := Iter.count(0)
+            |> Iter.drop_while(fn(n) { n < 10 })
+            |> Iter.take(3)
+            |> Iter.collect();
+        Test.assert_eq(window, [10, 11, 12])
+    }),
+]);
+
+[take_while, drop_while]

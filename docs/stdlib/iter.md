@@ -111,6 +111,21 @@ Iter := import 'Iter';
 print(Iter.collect(Iter.take(Iter.from([1, 2, 3, 4, 5]), 3)));   // => [1, 2, 3]
 ```
 
+### `take_while(it, pred) -> Iterator`
+
+Wraps `it` to yield elements while `pred` is truthy. The first time `pred` fails, it reports done without pulling `it` again, so it is safe to bound an infinite source.
+
+- `it` *(Iterator)*: the source iterator.
+- `pred` *(Fn)*: called as `pred(value)`.
+
+**Returns:** an `Iterator` of the leading run for which `pred` holds.
+
+```tigr
+Iter := import 'Iter';
+
+print(Iter.collect(Iter.take_while(Iter.count(1), fn(n) { n < 5 })));   // => [1, 2, 3, 4]
+```
+
 ### `drop(it, n) -> Iterator`
 
 Wraps `it` to skip its first `n` elements and yield the rest.
@@ -124,6 +139,21 @@ Wraps `it` to skip its first `n` elements and yield the rest.
 Iter := import 'Iter';
 
 print(Iter.collect(Iter.drop(Iter.from([1, 2, 3, 4, 5]), 2)));   // => [3, 4, 5]
+```
+
+### `drop_while(it, pred) -> Iterator`
+
+Wraps `it` to skip the leading run of elements for which `pred` is truthy, then yield every remaining element — the first failing element included.
+
+- `it` *(Iterator)*: the source iterator.
+- `pred` *(Fn)*: called as `pred(value)`.
+
+**Returns:** an `Iterator` of the elements from the first `pred` failure onward.
+
+```tigr
+Iter := import 'Iter';
+
+print(Iter.collect(Iter.drop_while(Iter.from([2, 4, 5, 6, 7]), fn(n) { n % 2 == 0 })));   // => [5, 6, 7]
 ```
 
 ### `enumerate(it) -> Iterator`

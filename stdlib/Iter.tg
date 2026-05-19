@@ -69,6 +69,16 @@ ${
         };
     },
 
+    // Yield elements while `pred` is truthy. The first time `pred`
+    // fails, stop without pulling `src` again — like `take`, this is
+    // what makes it safe on an infinite source.
+    take_while: gen fn(src, pred) {
+        for (x, src) {
+            if !pred(x) { return; };
+            yield x;
+        };
+    },
+
     // Skip the first `n` elements, then yield the rest.
     drop: gen fn(src, n) {
         skipped := 0;
@@ -78,6 +88,18 @@ ${
             } else {
                 yield x;
             };
+        };
+    },
+
+    // Skip the leading run of elements for which `pred` is truthy,
+    // then yield every remaining element (the first failing element
+    // included).
+    drop_while: gen fn(src, pred) {
+        dropping := true;
+        for (x, src) {
+            if dropping && pred(x) { continue; };
+            dropping = false;
+            yield x;
         };
     },
 

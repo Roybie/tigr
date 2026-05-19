@@ -36,6 +36,25 @@ Working examples live in [`examples/`](examples/), one `.tg` file per language f
 
 ---
 
+## Playground
+
+The [`web/`](web/) directory holds a browser playground: the VM compiled
+to WebAssembly, with a REPL console and a full-program editor. It runs
+entirely client-side, so `Net`, `Os`, and filesystem IO are unavailable
+there (importing them raises a clean error); everything else, green
+threads included, works.
+
+```bash
+rustup target add wasm32-unknown-unknown   # one-time
+./web/build.sh                             # compiles to web/pkg/
+python3 -m http.server -d web 8080         # then open localhost:8080
+```
+
+The visual design is authored separately; [`web/DESIGN_CONTRACT.md`](web/DESIGN_CONTRACT.md)
+is the spec the markup must satisfy.
+
+---
+
 ## A short tour
 
 **Everything is an expression.** A block evaluates to its last expression, `if` to its chosen branch, a loop to its last iteration. The `for[]` form collects every iteration into an array instead.

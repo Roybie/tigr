@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tigr · playground</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="editor.css" />
+</head>
+<body>
+<template id="__bundler_thumbnail">
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100" height="100" fill="#f5efe4"></rect>
+  <g transform="translate(28 42)">
+    <rect x="0" y="10" width="4" height="6" fill="#d39148"></rect>
+    <rect x="8" y="4" width="4" height="12" fill="#d39148"></rect>
+    <rect x="16" y="0" width="4" height="16" fill="#d39148"></rect>
+    <text x="26" y="14" font-family="JetBrains Mono,monospace" font-size="14" font-weight="600" fill="#2a201a">tigr</text>
+  </g>
+</svg>
+</template>
+
+<!--
+  Design contract (with one approved deviation):
+  - Hook ids: tab-editor, tab-repl, panel-editor, panel-repl, editor, editor-run,
+              editor-stop, editor-output, editor-examples, repl-scrollback,
+              repl-prompt, repl-input, repl-reset, status.
+  - Entry classes (inserted by glue): .entry, .entry-input, .entry-output,
+              .entry-value, .entry-error.
+  - The runtime glue toggles .is-active on the selected tab AND panel; the
+    design owns .is-active styling and panel display.
+  - DEVIATION: #editor-examples is a <nav> with a list of .example-item
+    buttons (each carrying data-value="…") instead of a native <select>.
+    The glue should delegate clicks on #editor-examples → read the target
+    .example-item's data-value, then mirror selection by toggling
+    .is-active on the chosen item (and removing it from siblings).
+  - The demo .entry blocks below are placeholders to show how the glue's
+    output will look. They will be replaced/cleared at runtime.
+-->
+
+<div class="app">
+
+  <!-- ─── Top bar ─────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="logomark" aria-label="tigr">
+      <span class="bars" aria-hidden="true">
+        <span class="bar b1"></span>
+        <span class="bar b2"></span>
+        <span class="bar b3"></span>
+      </span>
+      <span class="wordmark">tigr</span>
+      <span class="version">v0.14</span>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="View">
+      <button type="button" id="tab-editor" class="tab is-active" role="tab" aria-selected="true">
+        <span class="tab-glyph" aria-hidden="true">⌗</span>
+        Playground
+      </button>
+      <button type="button" id="tab-repl" class="tab" role="tab" aria-selected="false">
+        <span class="tab-glyph" aria-hidden="true">›_</span>
+        REPL
+      </button>
+    </nav>
+
+    <div class="topbar-right">
+      <a class="topbar-link" href="https://github.com/Roybie/tigr/tree/master/docs" target="_blank" rel="noopener noreferrer">
+        Docs
+        <svg class="link-arrow" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M3.5 8.5 L8.5 3.5 M4.5 3.5 H8.5 V7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </a>
+      <a class="topbar-link" href="https://github.com/Roybie/tigr" target="_blank" rel="noopener noreferrer">
+        <svg class="gh-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+        </svg>
+        GitHub
+        <svg class="link-arrow" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M3.5 8.5 L8.5 3.5 M4.5 3.5 H8.5 V7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </a>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <span class="topbar-status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="status" class="status">ready</span>
+      </span>
+    </div>
+  </header>
+
+  <!-- ─── Stage ───────────────────────────────────────────────────────── -->
+  <main class="stage">
+
+    <!-- ─── Editor panel ──────────────────────────────────────────────── -->
+    <section id="panel-editor" class="panel panel-editor is-active" role="tabpanel" aria-labelledby="tab-editor">
+
+      <!-- CSS-only collapse toggle: a hidden checkbox watched by the
+           panel's :has() rule. Two labels flip it — the chevron in the
+           sidebar header collapses; the chevron in the editor pane bar
+           (shown only while collapsed) expands. -->
+      <input type="checkbox" id="sidebar-toggle" class="sidebar-toggle-input" />
+
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-header-label">Examples</span>
+          <label for="sidebar-toggle" class="sidebar-toggle" title="Collapse examples" aria-label="Collapse examples">
+            <svg class="sidebar-toggle-icon" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M7.5 3 L4 6 L7.5 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </label>
+        </div>
+
+        <!--
+          #editor-examples — list of bundled programs. Glue can delegate
+          clicks here and read data-value from .example-item. The selected
+          item carries .is-active (toggled by glue, same convention used
+          for tabs and panels).
+        -->
+        <nav id="editor-examples" class="examples-list" aria-label="Examples">
+          <div class="examples-group">
+            <div class="examples-group-label">Basics</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item is-active" data-value="expressions"><span class="example-icon" aria-hidden="true">.tg</span>expressions.tg</button></li>
+              <li><button type="button" class="example-item" data-value="pipelines"><span class="example-icon" aria-hidden="true">.tg</span>pipelines.tg</button></li>
+            </ul>
+          </div>
+          <div class="examples-group">
+            <div class="examples-group-label">Patterns</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item" data-value="match"><span class="example-icon" aria-hidden="true">.tg</span>match.tg</button></li>
+              <li><button type="button" class="example-item" data-value="destructuring"><span class="example-icon" aria-hidden="true">.tg</span>destructuring.tg</button></li>
+            </ul>
+          </div>
+          <div class="examples-group">
+            <div class="examples-group-label">Functions</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item" data-value="closures"><span class="example-icon" aria-hidden="true">.tg</span>closures.tg</button></li>
+              <li><button type="button" class="example-item" data-value="generators"><span class="example-icon" aria-hidden="true">.tg</span>generators.tg</button></li>
+            </ul>
+          </div>
+          <div class="examples-group">
+            <div class="examples-group-label">Concurrency</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item" data-value="green"><span class="example-icon" aria-hidden="true">.tg</span>green.tg</button></li>
+              <li><button type="button" class="example-item" data-value="channels"><span class="example-icon" aria-hidden="true">.tg</span>channels.tg</button></li>
+            </ul>
+          </div>
+          <div class="examples-group">
+            <div class="examples-group-label">Errors</div>
+            <ul class="examples-group-list">
+              <li><button type="button" class="example-item" data-value="errors"><span class="example-icon" aria-hidden="true">.tg</span>errors.tg</button></li>
+            </ul>
+          </div>
+        </nav>
+      </aside>
+
+      <div class="editor-column">
+        <div class="pane pane-editor">
+          <div class="pane-bar">
+            <div class="pane-bar-left">
+              <label for="sidebar-toggle" class="sidebar-toggle editor-expand" title="Show examples" aria-label="Show examples">
+                <svg class="sidebar-toggle-icon" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M4.5 3 L8 6 L4.5 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              </label>
+              <span class="pane-title pane-title-mono">
+                <span class="tab-dot" aria-hidden="true"></span>
+                editor
+              </span>
+            </div>
+            <div class="pane-bar-right">
+              <button type="button" id="editor-stop" class="btn btn-ghost">
+                <span class="btn-icon" aria-hidden="true">■</span>
+                Stop
+              </button>
+              <button type="button" id="editor-run" class="btn btn-primary">
+                <span class="btn-icon" aria-hidden="true">▶</span>
+                Run
+                <kbd class="btn-kbd">⌘↵</kbd>
+              </button>
+            </div>
+          </div>
+
+          <!-- CodeMirror mounts here (see editor.js); app.js seeds the
+               initial program from the bundled "hello" example. -->
+          <div class="editor-wrap">
+            <div id="editor" aria-label="tigr source"></div>
+          </div>
+        </div>
+
+        <div class="pane-splitter" id="pane-splitter" role="separator" aria-orientation="horizontal" title="Drag to resize"></div>
+
+        <div class="pane pane-output">
+          <div class="pane-bar pane-bar-sub">
+            <div class="pane-bar-left">
+              <span class="pane-title">Output</span>
+              <span class="pane-meta">finished in 12 ms</span>
+            </div>
+            <div class="pane-bar-right">
+              <span class="exit-pill" aria-label="exit code 0">
+                <span class="exit-pill-dot" aria-hidden="true"></span>
+                exit 0
+              </span>
+            </div>
+          </div>
+          <div id="editor-output" class="output-scroll">
+            <!-- Demo entry — glue will replace at runtime -->
+            <div class="entry">
+              <pre class="entry-output">hello, tigr!
+big
+[4, 16, 36]</pre>
+              <div class="entry-value">[4, 16, 36]</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ─── REPL panel ────────────────────────────────────────────────── -->
+    <section id="panel-repl" class="panel panel-repl" role="tabpanel" aria-labelledby="tab-repl">
+
+      <div class="repl">
+        <div id="repl-scrollback" class="repl-scrollback">
+          <div class="repl-banner">
+            <div class="repl-banner-title">tigr v0.14 — interactive REPL</div>
+            <div class="repl-banner-sub">type an expression, then <kbd>Enter</kbd> to evaluate. <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline. <kbd>↑</kbd> to recall.</div>
+          </div>
+
+          <!-- Demo entries — glue will replace at runtime -->
+          <div class="entry">
+            <div class="entry-input">tigr&gt; 1 + 1</div>
+            <div class="entry-value">2</div>
+          </div>
+          <div class="entry">
+            <div class="entry-input">tigr&gt; double := fn(x) { x * 2 }</div>
+            <div class="entry-value">&lt;fn double/1&gt;</div>
+          </div>
+          <div class="entry">
+            <div class="entry-input">tigr&gt; double(21)</div>
+            <div class="entry-value">42</div>
+          </div>
+          <div class="entry">
+            <div class="entry-input">tigr&gt; print('hello, {name}!')</div>
+            <pre class="entry-output">hello, tigr!</pre>
+            <div class="entry-value">null</div>
+          </div>
+          <div class="entry">
+            <div class="entry-input">tigr&gt; 1 / 0</div>
+            <pre class="entry-error">error: division by zero
+  at &lt;repl&gt;:1
+    1 / 0
+      ^</pre>
+          </div>
+        </div>
+
+        <div class="repl-active">
+          <span id="repl-prompt" class="repl-prompt">tigr&gt;</span>
+          <textarea
+            id="repl-input"
+            class="repl-input"
+            rows="1"
+            spellcheck="false"
+            autocapitalize="off"
+            autocorrect="off"
+            autocomplete="off"
+            aria-label="REPL input"
+          ></textarea>
+        </div>
+
+        <div class="repl-hint">
+          <div class="repl-hint-left">
+            <span><kbd>Enter</kbd> evaluate</span>
+            <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
+            <span><kbd>↑</kbd> recall</span>
+          </div>
+          <button type="button" id="repl-reset" class="btn btn-ghost btn-small">
+            Reset session
+          </button>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+</div>
+
+<!-- Runtime glue: drives the wasm VM and binds every hook above. -->
+<script type="module" src="./app.js"></script>
+
+</body>
+</html>

@@ -17,8 +17,13 @@ pub mod json;
 pub mod local_channel;
 pub mod map;
 pub mod math;
+// `Net` (sockets/TLS) and `Os` (processes/env) have no browser
+// equivalent — excluded from the `wasm32` playground build. `net` also
+// depends on the native-only `socket` API, so it cannot compile there.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 pub mod object;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod os;
 pub mod path;
 pub mod random;
@@ -43,7 +48,6 @@ use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 pub fn resolve(name: &str) -> Option<Value> {
     match name {
         "IO" => Some(io::module()),
-        "Os" => Some(os::module()),
         "Path" => Some(path::module()),
         "Time" => Some(time::module()),
         "DateTime" => Some(datetime::module()),
@@ -51,11 +55,20 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Random" => Some(random::module()),
         "Bytes" => Some(bytes::module()),
         "BigInt" => Some(bigint::module()),
+        // `Os` (processes/env), `Net` (sockets/TLS), and the
+        // cross-actor `_NativeChannel` need OS threads or sockets that
+        // the browser playground build does not have — unregistered on
+        // `wasm32` so `import` of them fails with a clean, catchable
+        // "no module of that name" error rather than panicking.
+        #[cfg(not(target_arch = "wasm32"))]
+        "Os" => Some(os::module()),
+        #[cfg(not(target_arch = "wasm32"))]
         "Net" => Some(net::module()),
+        #[cfg(not(target_arch = "wasm32"))]
+        "_NativeChannel" => Some(channel::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
-        "_NativeChannel" => Some(channel::module()),
         "_NativeLocalChannel" => Some(local_channel::module()),
         "_NativeArray" => Some(array::module()),
         "_NativeMap" => Some(map::module()),
@@ -103,6 +116,10 @@ pub(crate) fn native_blocking(
 /// instead of a worker thread (see [`crate::vm::reactor`]). `func` runs
 /// on the actor thread to validate arguments and build a
 /// [`ReactorOp`]; the reactor's poll thread carries it out.
+///
+/// Only the native-only `Net` module builds socket entries, so on
+/// `wasm32` this helper is unreferenced — kept for a uniform API.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn native_socket(
     name: &'static str,
     arity: Arity,

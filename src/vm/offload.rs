@@ -15,8 +15,12 @@
 //! ([`OffloadResult`]), and [`decode`] rebuilds a `Value` back on the
 //! actor thread once the result returns.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
@@ -205,6 +209,7 @@ impl CompletionMailbox {
 
 /// One unit of blocking work plus the mailbox to post its completion
 /// to. The `mailbox` `Arc` routes the result back to the right actor.
+#[cfg(not(target_arch = "wasm32"))]
 struct OffloadJob {
     id: u64,
     mailbox: Arc<CompletionMailbox>,
@@ -216,17 +221,20 @@ struct OffloadJob {
 /// spawning unbounded blocking calls. A blocking-call dependency cycle
 /// could in principle exhaust the pool, but at this size that is a
 /// pathological program, not a realistic one.
+#[cfg(not(target_arch = "wasm32"))]
 const WORKER_SOFT_CAP: usize = 512;
 
 /// Process-wide worker pool. Grows on demand: a submit reuses an idle
 /// parked worker or spawns a new one; idle workers are kept, never
 /// killed.
+#[cfg(not(target_arch = "wasm32"))]
 struct Pool {
     inner: Mutex<PoolInner>,
     /// Signalled when a job is pushed, waking a parked worker.
     work_ready: Condvar,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct PoolInner {
     queue: VecDeque<OffloadJob>,
     /// Workers currently parked waiting for a job.
@@ -235,6 +243,7 @@ struct PoolInner {
     total: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Pool {
     fn new() -> Pool {
         Pool {
@@ -289,6 +298,7 @@ impl Pool {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn pool() -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(Pool::new)
@@ -298,6 +308,19 @@ fn pool() -> &'static Pool {
 /// `mailbox` tagged with `id`; the caller parks the running coroutine
 /// in the scheduler under the same `id` and resumes it when the
 /// completion arrives.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn submit(id: u64, mailbox: Arc<CompletionMailbox>, work: BlockingJob) {
     pool().submit(OffloadJob { id, mailbox, work });
+}
+
+/// `wasm32` has no worker threads. The blocking calls that survive into
+/// the browser build (file IO against an absent filesystem, `read_line`
+/// against an absent terminal) return immediately rather than truly
+/// blocking, so the job is run inline on the calling thread and its
+/// completion posted straight to the mailbox. The parked coroutine then
+/// resumes on the very next mailbox drain.
+#[cfg(target_arch = "wasm32")]
+pub fn submit(id: u64, mailbox: Arc<CompletionMailbox>, work: BlockingJob) {
+    let result = work();
+    mailbox.post(id, result);
 }

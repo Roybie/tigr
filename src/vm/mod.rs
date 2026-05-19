@@ -10,15 +10,29 @@ pub mod compiler;
 pub mod error;
 pub mod fold;
 pub mod gc;
+pub mod io_capture;
 pub mod lexer;
 pub mod local_channel;
 pub mod native_modules;
 pub mod offload;
 pub mod opcode;
 pub mod parser;
+/// The async-IO reactor. The real `epoll`/`kqueue`-backed implementation
+/// is native-only; the `wasm32` build swaps in an inert stub since the
+/// browser has no sockets (see `reactor_stub.rs`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod reactor;
+#[cfg(target_arch = "wasm32")]
+#[path = "reactor_stub.rs"]
 pub mod reactor;
 pub mod rng;
 pub mod scheduler;
+/// Network sockets. Native-only; the `wasm32` build swaps in a
+/// type-only stub (the `Net` module is unregistered there).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod socket;
+#[cfg(target_arch = "wasm32")]
+#[path = "socket_stub.rs"]
 pub mod socket;
 pub mod source_map;
 pub mod source_stdlib;

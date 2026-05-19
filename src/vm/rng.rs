@@ -10,10 +10,36 @@
 //! included — yields a usable non-zero state.
 
 use std::cell::Cell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
     static STATE: Cell<u64> = Cell::new(0);
+}
+
+/// One word of seed entropy for the lazy first draw. Native builds read
+/// the wall clock; the `wasm32` playground has no clock without a JS
+/// call, so it draws from `Math.random()` instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn entropy() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0xdeadbeef)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn entropy() -> u64 {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = Math)]
+        fn random() -> f64;
+    }
+    // Two 53-bit `Math.random()` draws, interleaved to fill 64 bits.
+    let hi = (random() * (1u64 << 53) as f64) as u64;
+    let lo = (random() * (1u64 << 53) as f64) as u64;
+    (hi << 11) ^ lo
 }
 
 /// Mix a raw seed into a non-zero xorshift state. The constant is the
@@ -35,11 +61,7 @@ pub fn next_u64() -> u64 {
     STATE.with(|s| {
         let mut x = s.get();
         if x == 0 {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0xdeadbeef);
-            x = mix(nanos);
+            x = mix(entropy());
         }
         x ^= x << 13;
         x ^= x >> 7;

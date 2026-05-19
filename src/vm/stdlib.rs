@@ -86,13 +86,27 @@ const BUILTIN_NAMES: [&str; 13] = [
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
-    for (i, arg) in args.iter().enumerate() {
-        if i > 0 {
-            print!(" ");
+    // When an embedder (the browser playground) has installed a capture
+    // buffer, the line goes there; otherwise straight to stdout.
+    if crate::vm::io_capture::is_capturing() {
+        let mut line = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                line.push(' ');
+            }
+            line.push_str(&arg.to_string());
         }
-        print!("{arg}");
+        line.push('\n');
+        crate::vm::io_capture::push(&line);
+    } else {
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                print!(" ");
+            }
+            print!("{arg}");
+        }
+        println!();
     }
-    println!();
     // Returns the last arg (or null), mirroring block-tail semantics.
     // Lets `compute(print('val:', x))` log and pass `x` through.
     Ok(args.last().cloned().unwrap_or(Value::Null))

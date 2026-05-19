@@ -17,11 +17,14 @@
 //! re-try the whole accumulated buffer.
 
 use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use rustyline::error::ReadlineError;
+#[cfg(not(target_arch = "wasm32"))]
 use rustyline::DefaultEditor;
 
 use crate::vm::compiler::Compiler;
@@ -104,6 +107,7 @@ impl Repl {
     /// Top-level loop. Reads via rustyline (arrow keys, history,
     /// line editing), prints values to stdout, errors to stderr.
     /// Returns on `:quit`/`:q`, Ctrl+D, or a rustyline failure.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn run(&mut self) -> Result<(), ReadlineError> {
         let mut rl = DefaultEditor::new()?;
         let history_path = history_file();
@@ -177,6 +181,7 @@ impl Repl {
 /// Path to the persistent history file (`~/.tigr_history` on Unix-like
 /// platforms; `%USERPROFILE%\.tigr_history` on Windows). `None` if no
 /// home directory can be resolved — history just won't persist.
+#[cfg(not(target_arch = "wasm32"))]
 fn history_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))?;
@@ -188,7 +193,9 @@ fn history_file() -> Option<PathBuf> {
 /// True iff the error suggests the user just needs to type more.
 /// Conservative — we only continue on the two unambiguous signals:
 /// unterminated string literals and parsers expecting more after EOF.
-fn is_incomplete(err: &Error) -> bool {
+/// Public so the browser playground's REPL console can keep a
+/// continuation prompt open on the same signal.
+pub fn is_incomplete(err: &Error) -> bool {
     match err {
         Error::Lex(e) => matches!(e.kind, LexErrorKind::UnterminatedString),
         Error::Parse(e) => match &e.kind {

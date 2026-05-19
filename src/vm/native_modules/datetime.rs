@@ -101,11 +101,28 @@ fn parts_object(p: &Parts) -> Value {
     ])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn now(_args: &[Value]) -> Result<Value, RuntimeError> {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| raise(format!("DateTime.now: {e}")))?;
     Ok(parts_object(&parts_from_ms(d.as_millis() as i64)))
+}
+
+/// `Date.now()` — the browser playground has no OS clock.
+#[cfg(target_arch = "wasm32")]
+mod js {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = Date)]
+        pub fn now() -> f64;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(parts_object(&parts_from_ms(js::now() as i64)))
 }
 
 fn from_ms(args: &[Value]) -> Result<Value, RuntimeError> {

@@ -319,11 +319,26 @@ impl Vm {
     /// for its eventual result. Raises `not_callable` if `callee` is
     /// not a function, or `not_sendable`/`cycle` if it (or a captured
     /// value) cannot cross the boundary.
+    #[cfg_attr(target_arch = "wasm32", allow(unreachable_code, unused_variables))]
     fn spawn_actor(
         &mut self,
         callee: Value,
         line: u32,
     ) -> Result<crate::vm::task::TaskHandle, RuntimeError> {
+        // Actors run on dedicated OS threads, which the browser
+        // playground build cannot spawn. Green threads (`go` / `yield`)
+        // cover concurrency there; cross-thread `spawn` raises a
+        // catchable error rather than aborting the wasm instance.
+        #[cfg(target_arch = "wasm32")]
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::Raised(Value::Str(
+                "actor `spawn` is unavailable in the browser playground — \
+                 use green threads (`go` / `yield`) instead"
+                    .into(),
+            )),
+            line,
+        ));
+
         let closure = match callee {
             Value::Function(c) => c,
             other => {

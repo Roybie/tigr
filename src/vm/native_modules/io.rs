@@ -261,15 +261,29 @@ fn read_line(_args: &[Value]) -> Result<BlockingJob, RuntimeError> {
 }
 
 fn eprint(args: &[Value]) -> Result<Value, RuntimeError> {
-    let stderr = std::io::stderr();
-    let mut h = stderr.lock();
-    for (i, arg) in args.iter().enumerate() {
-        if i > 0 {
-            let _ = write!(h, " ");
+    // When an embedder (the browser playground) has installed a capture
+    // buffer, the line goes there; otherwise straight to stderr.
+    if crate::vm::io_capture::is_capturing() {
+        let mut line = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                line.push(' ');
+            }
+            line.push_str(&arg.to_string());
         }
-        let _ = write!(h, "{arg}");
+        line.push('\n');
+        crate::vm::io_capture::push(&line);
+    } else {
+        let stderr = std::io::stderr();
+        let mut h = stderr.lock();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                let _ = write!(h, " ");
+            }
+            let _ = write!(h, "{arg}");
+        }
+        let _ = writeln!(h);
     }
-    let _ = writeln!(h);
     // Mirror `print`: return the last arg (or null) so eprint composes.
     Ok(args.last().cloned().unwrap_or(Value::Null))
 }

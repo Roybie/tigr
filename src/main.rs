@@ -11,17 +11,13 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use vm::source_map::SourceMap;
+use tigr::{repl, vm};
+use tigr::vm::source_map::SourceMap;
 
 mod bench_runner;
 mod disasm_runner;
-mod repl;
 mod test_runner;
 mod v01;
-mod vm;
-
-#[cfg(test)]
-mod tests;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();

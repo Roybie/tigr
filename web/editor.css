@@ -1,0 +1,26 @@
+/*
+ * Glue styling for the CodeMirror editor (see editor.js).
+ *
+ * The design's editor was a plain <textarea>; CodeMirror replaces it
+ * with its own DOM, so these few rules size it into the design's
+ * `.editor-wrap` and retire the textarea-era painted gutter line (the
+ * editor now has a real line-number gutter). Component colors live in
+ * editor.js as a CodeMirror theme; this file only does layout.
+ */
+
+/* The painted vertical rule faked a gutter for the textarea — the real
+   gutter supersedes it. */
+.editor-wrap {
+  background-image: none;
+}
+
+/* CodeMirror needs an explicit height to fill the pane. */
+#editor,
+#editor .cm-editor {
+  height: 100%;
+}
+
+#editor .cm-scroller {
+  /* Match the design's editor padding (textarea used 14px 16px). */
+  padding: 4px 4px 4px 0;
+}

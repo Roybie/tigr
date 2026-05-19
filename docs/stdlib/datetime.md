@@ -7,6 +7,15 @@
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`now() -> Object`](#now---object) | Reads the current UTC time and breaks it into calendar components. |
+| [`from_ms(ms) -> Object`](#from_msms---object) | Converts an epoch-milliseconds value into a components object. |
+| [`to_ms(obj) -> Int`](#to_msobj---int) | Converts a components object back into epoch milliseconds. |
+| [`format(ms, fmt) -> String`](#formatms-fmt---string) | Renders an epoch-milliseconds value as text. |
+| [`parse(str) -> Int`](#parsestr---int) | Parses an ISO-8601 datetime string into epoch milliseconds. |
+
+
 ### `now() -> Object`
 
 Reads the current UTC time and breaks it into calendar components.

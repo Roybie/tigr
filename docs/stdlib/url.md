@@ -9,6 +9,16 @@
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`parse(url) -> Object`](#parseurl---object) | Splits an absolute URL into its parts. |
+| [`build(parts) -> String`](#buildparts---string) | Reassembles a parts object into a URL string. |
+| [`encode(s) -> String`](#encodes---string) | Percent-encodes `s`. |
+| [`decode(s) -> String`](#decodes---string) | Percent-decodes `s`. |
+| [`parse_query(s) -> Object`](#parse_querys---object) | Parses an `a=1&b=x%20y` query string into an object. |
+| [`encode_query(obj) -> String`](#encode_queryobj---string) | Encodes an object into an `a=1&b=x%20y` query string. |
+
+
 ### `parse(url) -> Object`
 
 Splits an absolute URL into its parts. `port` is an `Int` or `null`, `path` defaults to `'/'` when the URL has none, and `query` and `fragment` are the raw (still-encoded) substrings or `null`.

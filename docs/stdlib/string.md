@@ -15,6 +15,40 @@ print(String.join(String.split('a,b,c', ','), '-'));   // => a-b-c
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`split(s, sep) -> Array`](#splits-sep---array) | Splits `s` into pieces on every occurrence of `sep`. |
+| [`join(parts, sep) -> String`](#joinparts-sep---string) | Joins an array of values into one string, calling `str` on each one, placing `sep` between them. |
+| [`replace(s, from, to) -> String`](#replaces-from-to---string) | Replaces every occurrence of `from` with `to`. |
+| [`replace_first(s, from, to) -> String`](#replace_firsts-from-to---string) | Replaces only the first occurrence of `from` with `to`. |
+| [`contains(s, needle) -> Bool`](#containss-needle---bool) | Tests whether `s` contains `needle`. |
+| [`index_of(s, needle) -> Int`](#index_ofs-needle---int) | Finds the byte index of the first `needle`. |
+| [`lower(s) -> String`](#lowers---string) | Converts `s` to lowercase. |
+| [`upper(s) -> String`](#uppers---string) | Converts `s` to uppercase. |
+| [`starts_with(s, prefix) -> Bool`](#starts_withs-prefix---bool) | Tests whether `s` begins with `prefix`. |
+| [`ends_with(s, suffix) -> Bool`](#ends_withs-suffix---bool) | Tests whether `s` ends with `suffix`. |
+| [`trim(s) -> String`](#trims---string) | Removes whitespace from both ends of `s`. |
+| [`trim_start(s) -> String`](#trim_starts---string) | Removes leading whitespace from `s`. |
+| [`trim_end(s) -> String`](#trim_ends---string) | Removes trailing whitespace from `s`. |
+| [`repeat(s, n) -> String`](#repeats-n---string) | Concatenates `n` copies of `s`. |
+| [`chars(s) -> Array`](#charss---array) | Splits `s` into one-character strings, one per Unicode character. |
+| [`reverse(s) -> String`](#reverses---string) | Reverses the characters of `s`. |
+| [`capitalize(s) -> String`](#capitalizes---string) | Uppercases the first character of `s` and leaves the rest unchanged. |
+| [`pad_start(s, len, ch) -> String`](#pad_starts-len-ch---string) | Pads `s` on the left with `ch` until it is at least `len` characters wide. |
+| [`pad_end(s, len, ch) -> String`](#pad_ends-len-ch---string) | Pads `s` on the right with `ch` until it is at least `len` characters wide. |
+| [`is_blank(s) -> Bool`](#is_blanks---bool) | Tests whether `s` is empty or contains only whitespace. |
+| [`words(s) -> Array`](#wordss---array) | Splits `s` on runs of whitespace, dropping empty fields. |
+| [`lines(s) -> Array`](#liness---array) | Splits `s` into lines on `\n` or `\r\n`. |
+| [`split_any(s, delims) -> Array`](#split_anys-delims---array) | Splits `s` on any character that appears in `delims`. |
+| [`find_all(s, needle) -> Array`](#find_alls-needle---array) | Finds the byte offset of every non-overlapping occurrence of `needle`. |
+| [`count(s, needle) -> Int`](#counts-needle---int) | Counts the non-overlapping occurrences of `needle` in `s`. |
+| [`strip_prefix(s, prefix) -> String`](#strip_prefixs-prefix---string) | Removes `prefix` from the start of `s` if it is there, otherwise returns `s` unchanged. |
+| [`strip_suffix(s, suffix) -> String`](#strip_suffixs-suffix---string) | Removes `suffix` from the end of `s` if it is there, otherwise returns `s` unchanged. |
+| [`matches_glob(s, pattern) -> Bool`](#matches_globs-pattern---bool) | Tests `s` against a shell-style glob pattern. |
+| [`format(value, spec) -> String`](#formatvalue-spec---string) | Renders `value` through the format spec mini-language. |
+| [`printf(template, args?) -> String`](#printftemplate-args---string) | Renders `template`, replacing each `%(SPEC)` placeholder with `format(next arg, SPEC)`. |
+
+
 ### `split(s, sep) -> Array`
 
 Splits `s` into pieces on every occurrence of `sep`. An empty `sep` splits `s` into its characters.

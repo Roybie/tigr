@@ -9,6 +9,25 @@ The waiting calls (`read_file`, `write_file`, `append_file`, the `_bytes` varian
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`read_file(path) -> String`](#read_filepath---string) | Reads the entire file at `path` and returns its contents decoded as UTF-8. |
+| [`write_file(path, text) -> null`](#write_filepath-text---null) | Writes `text` to `path`, overwriting any existing file and creating it if absent. |
+| [`append_file(path, text) -> null`](#append_filepath-text---null) | Appends `text` to the end of the file at `path`, creating the file if it does not exist. |
+| [`read_bytes(path) -> Bytes`](#read_bytespath---bytes) | Reads the entire file at `path` as raw bytes, with no UTF-8 decoding. |
+| [`write_bytes(path, bytes) -> null`](#write_bytespath-bytes---null) | Writes a `Bytes` buffer to `path`, overwriting any existing file and creating it if absent. |
+| [`append_bytes(path, bytes) -> null`](#append_bytespath-bytes---null) | Appends a `Bytes` buffer to the end of the file at `path`, creating the file if it does not exist. |
+| [`exists(path) -> Bool`](#existspath---bool) | Tests whether anything exists at `path`, file or directory. |
+| [`list_dir(path) -> Array`](#list_dirpath---array) | Lists the entries of the directory at `path`. |
+| [`mkdir(path) -> null`](#mkdirpath---null) | Creates the directory at `path`, along with any missing parent directories. |
+| [`remove(path) -> null`](#removepath---null) | Deletes the file at `path`, or, if `path` is a directory, removes it and all its contents recursively. |
+| [`is_dir(path) -> Bool`](#is_dirpath---bool) | Tests whether `path` is a directory. |
+| [`is_file(path) -> Bool`](#is_filepath---bool) | Tests whether `path` is a regular file. |
+| [`stat(path) -> Object`](#statpath---object) | Reads filesystem metadata for `path`. |
+| [`read_line() -> String \| null`](#read_line---string--null) | Reads one line from standard input, with the trailing newline stripped. |
+| [`eprint(value1, value2?) -> value`](#eprintvalue1-value2---value) | Writes its arguments to standard error, matching `print`'s formatting: each argument in `str` form, space-separated, with a trailing newline. |
+
+
 ### `read_file(path) -> String`
 
 Reads the entire file at `path` and returns its contents decoded as UTF-8.

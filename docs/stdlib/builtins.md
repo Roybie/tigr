@@ -7,6 +7,22 @@ The built-ins are ordinary bindings in the root environment, so they need no `im
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`print(value1, value2?) -> value`](#printvalue1-value2---value) | Writes each argument to stdout in its `str` form, separated by single spaces, followed by a newline. |
+| [`str(value, radix?, prefix?) -> String`](#strvalue-radix-prefix---string) | Produces the canonical string form of a value. |
+| [`num(value) -> Number \| null`](#numvalue---number--null) | Parses a `String` into a number, or passes a number straight through. |
+| [`int(value) -> Int`](#intvalue---int) | Converts a value to an `Int`, truncating toward zero. |
+| [`float(value) -> Float`](#floatvalue---float) | Converts a value to a `Float`. |
+| [`bool(value) -> Bool`](#boolvalue---bool) | Applies the language's truthiness rule. |
+| [`type(value) -> String`](#typevalue---string) | Names the value's type. |
+| [`floor(value) -> Int`](#floorvalue---int) | Rounds a number down to the nearest integer (toward negative infinity). |
+| [`ceil(value) -> Int`](#ceilvalue---int) | Rounds a number up to the nearest integer (toward positive infinity). |
+| [`rand() -> Float`](#rand---float) | Returns a uniformly distributed random `Float` in the half-open range `[0, 1)`. |
+| [`gc() -> Object`](#gc---object) | Returns a read-only snapshot of the tracing garbage collector's state. |
+| [`join(handle) -> value`](#joinhandle---value) | Waits for a concurrent computation to finish and returns its result. |
+
+
 ### `print(value1, value2?) -> value`
 
 Writes each argument to stdout in its `str` form, separated by single spaces, followed by a newline. With no arguments it writes just the newline. A `String` is printed without surrounding quotes.

@@ -21,6 +21,20 @@ print(#m);          // => 2
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new(source?) -> Map`](#newsource---map) | Creates a map. |
+| [`get(m, key) -> value`](#getm-key---value) | Reads the value stored under `key`. |
+| [`set(m, key, value) -> Map`](#setm-key-value---map) | Inserts or overwrites the entry for `key` in place. |
+| [`has(m, key) -> Bool`](#hasm-key---bool) | Tests whether `key` is present. |
+| [`delete(m, key) -> Bool`](#deletem-key---bool) | Removes the entry for `key` in place. |
+| [`keys(m) -> Array`](#keysm---array) | Collects the map's keys. |
+| [`values(m) -> Array`](#valuesm---array) | Collects the map's values. |
+| [`entries(m) -> Array`](#entriesm---array) | Collects the map's entries as `[key, value]` pairs. |
+| [`size(m) -> Int`](#sizem---int) | Counts the entries. |
+| [`clear(m) -> Map`](#clearm---map) | Removes every entry from `m` in place. |
+
+
 ### `new(source?) -> Map`
 
 Creates a map. With no argument it is empty. With an `Object`, the new map copies that object's entries. With an array of `[key, value]` pairs, it builds an entry per pair.

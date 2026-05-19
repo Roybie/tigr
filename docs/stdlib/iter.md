@@ -23,6 +23,28 @@ print([1, 2, 3, 4, 5]
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`from(iterable) -> Iterator`](#fromiterable---iterator) | Wraps any iterable (Array, Range, String, Object, Map, Set, or another iterator object) as an iterator, lazily: elements are pulled from the source one at a time as `next()` is called, never materialized up front. |
+| [`count(start) -> Iterator`](#countstart---iterator) | Creates an infinite iterator yielding `start`, `start + 1`, `start + 2`, and so on. |
+| [`repeat(value) -> Iterator`](#repeatvalue---iterator) | Creates an infinite iterator yielding `value` forever. |
+| [`map(it, func) -> Iterator`](#mapit-func---iterator) | Wraps `it` so each element is passed through `func` as it is pulled. |
+| [`filter(it, pred) -> Iterator`](#filterit-pred---iterator) | Wraps `it` to keep only the elements for which `pred` is truthy. |
+| [`take(it, n) -> Iterator`](#takeit-n---iterator) | Wraps `it` to yield at most its first `n` elements, then report done without pulling `it` again. |
+| [`take_while(it, pred) -> Iterator`](#take_whileit-pred---iterator) | Wraps `it` to yield elements while `pred` is truthy. |
+| [`drop(it, n) -> Iterator`](#dropit-n---iterator) | Wraps `it` to skip its first `n` elements and yield the rest. |
+| [`drop_while(it, pred) -> Iterator`](#drop_whileit-pred---iterator) | Wraps `it` to skip the leading run of elements for which `pred` is truthy, then yield every remaining element — the first failing element included. |
+| [`enumerate(it) -> Iterator`](#enumerateit---iterator) | Wraps `it` to yield `[index, value]` pairs, with the index starting at `0`. |
+| [`zip(a, b) -> Iterator`](#zipa-b---iterator) | Wraps two iterators to yield `[a_elem, b_elem]` pairs. |
+| [`chain(a, b) -> Iterator`](#chaina-b---iterator) | Wraps two iterators to yield every element of `a`, then every element of `b`. |
+| [`collect(it) -> Array`](#collectit---array) | Drains the iterator into a fresh array. |
+| [`reduce(it, func, seed) -> value`](#reduceit-func-seed---value) | Folds the iterator left to right into a single value. |
+| [`for_each(it, func) -> Null`](#for_eachit-func---null) | Calls `func` on every element for its side effects. |
+| [`count_of(it) -> Int`](#count_ofit---int) | Counts how many elements the iterator yields. |
+| [`find(it, pred) -> value`](#findit-pred---value) | Finds the first element for which `pred` is truthy. |
+| [`nth(it, n) -> value`](#nthit-n---value) | Gets the element at 0-based index `n`. |
+
+
 ### `from(iterable) -> Iterator`
 
 Wraps any iterable (Array, Range, String, Object, Map, Set, or another iterator object) as an iterator, lazily: elements are pulled from the source one at a time as `next()` is called, never materialized up front.

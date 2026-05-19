@@ -30,6 +30,22 @@ join(server);
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`request(opts) -> Object`](#requestopts---object) | Performs one HTTP request, following 3xx redirects automatically. |
+| [`get(url, opts?) -> Object`](#geturl-opts---object) | Performs a GET request. |
+| [`post(url, body?, opts?) -> Object`](#posturl-body-opts---object) | Performs a POST request with an optional body. |
+| [`put(url, body?, opts?) -> Object`](#puturl-body-opts---object) | Performs a PUT request with an optional body. |
+| [`delete(url, opts?) -> Object`](#deleteurl-opts---object) | Performs a DELETE request. |
+| [`head(url, opts?) -> Object`](#headurl-opts---object) | Performs a HEAD request. |
+| [`patch(url, body?, opts?) -> Object`](#patchurl-body-opts---object) | Performs a PATCH request with an optional body. |
+| [`text(resp) -> String`](#textresp---string) | Decodes a response or request body as UTF-8 text. |
+| [`json(resp) -> value`](#jsonresp---value) | Parses a response or request body as JSON. |
+| [`read_request(sock) -> Object`](#read_requestsock---object) | Reads one HTTP request from an accepted connection. |
+| [`write_response(sock, resp) -> Int`](#write_responsesock-resp---int) | Writes an HTTP response to a connection. |
+| [`serve(listener, handler) -> Null`](#servelistener-handler---null) | Runs an accept loop on `listener`, handing each connection to its own `spawn`ed actor. |
+
+
 ### `request(opts) -> Object`
 
 Performs one HTTP request, following 3xx redirects automatically.

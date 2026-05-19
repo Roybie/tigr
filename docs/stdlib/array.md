@@ -15,6 +15,49 @@ print(Array.sum(Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 })));   // => 6
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`push(arr, value) -> Array`](#pusharr-value---array) | Appends `value` to `arr` in place. |
+| [`extend(arr, other) -> Array`](#extendarr-other---array) | Appends every element of `other` to `arr` in place. |
+| [`pop(arr) -> value`](#poparr---value) | Removes and returns the last element of `arr` in place. |
+| [`shift(arr) -> value`](#shiftarr---value) | Removes and returns the first element of `arr` in place. |
+| [`unshift(arr, value) -> Array`](#unshiftarr-value---array) | Prepends `value` to the front of `arr` in place. |
+| [`insert(arr, index, value) -> Array`](#insertarr-index-value---array) | Inserts `value` at `index` in place. |
+| [`remove(arr, index, count?) -> value`](#removearr-index-count---value) | Removes elements from `arr` in place. |
+| [`clear(arr) -> Array`](#cleararr---array) | Removes every element from `arr` in place. |
+| [`create(len, func) -> Array`](#createlen-func---array) | Builds an array of length `len` where element `i` is `func(i)`. |
+| [`concat(a, b) -> Array`](#concata-b---array) | Joins two arrays into one. |
+| [`map(arr, func) -> Array`](#maparr-func---array) | Applies `func` to every element and collects the results. |
+| [`filter(arr, pred) -> Array`](#filterarr-pred---array) | Keeps the elements for which `pred` returns a truthy value. |
+| [`reduce(arr, func, seed) -> value`](#reducearr-func-seed---value) | Folds the array left to right into a single value. |
+| [`flatten(arr) -> Array`](#flattenarr---array) | Concatenates one level of nested arrays. |
+| [`reverse(arr) -> Array`](#reversearr---array) | Reverses the order of the elements. |
+| [`index(arr, elem) -> Int`](#indexarr-elem---int) | Finds the first index whose element is `==` to `elem`. |
+| [`find(arr, pred) -> value`](#findarr-pred---value) | Finds the first element for which `pred` is truthy. |
+| [`find_index(arr, pred) -> Int`](#find_indexarr-pred---int) | Finds the index of the first element for which `pred` is truthy. |
+| [`any(arr, pred) -> Bool`](#anyarr-pred---bool) | Tests whether `pred` holds for at least one element. |
+| [`all(arr, pred) -> Bool`](#allarr-pred---bool) | Tests whether `pred` holds for every element. |
+| [`head(arr, n) -> Array`](#headarr-n---array) | Takes the first `n` elements. |
+| [`tail(arr, n) -> Array`](#tailarr-n---array) | Takes the last `n` elements. |
+| [`take(arr, n) -> Array`](#takearr-n---array) | Takes the first `n` elements, clamping `n` to `[0, #arr]`. |
+| [`drop(arr, n) -> Array`](#droparr-n---array) | Drops the first `n` elements and keeps the rest, clamping `n` to `[0, #arr]`. |
+| [`slice(arr, start, end) -> Array`](#slicearr-start-end---array) | Takes the elements in the range `[start, end)`. |
+| [`sum(arr) -> Number`](#sumarr---number) | Adds up the elements. |
+| [`max_of(arr) -> value`](#max_ofarr---value) | Finds the largest element by `>` comparison. |
+| [`min_of(arr) -> value`](#min_ofarr---value) | Finds the smallest element by `<` comparison. |
+| [`uniq(arr) -> Array`](#uniqarr---array) | Keeps the first occurrence of each distinct element, preserving order. |
+| [`zip(a, b) -> Array`](#zipa-b---array) | Pairs elements of `a` and `b` by position. |
+| [`join(arr, sep) -> String`](#joinarr-sep---string) | Joins the elements into a string, calling `str` on each one. |
+| [`group_by(arr, key) -> Map`](#group_byarr-key---map) | Groups elements into a `Map` keyed by `key(element)`. |
+| [`chunk(arr, size) -> Array`](#chunkarr-size---array) | Splits `arr` into consecutive sub-arrays of length `size`. |
+| [`windows(arr, size) -> Array`](#windowsarr-size---array) | Builds every contiguous sub-array of length `size` (a sliding window). |
+| [`partition(arr, pred) -> Array`](#partitionarr-pred---array) | Splits `arr` into the elements that match `pred` and those that do not. |
+| [`flat_map(arr, func) -> Array`](#flat_maparr-func---array) | Maps each element through `func`, then flattens the result one level. |
+| [`count_of(arr, pred) -> Int`](#count_ofarr-pred---int) | Counts the elements for which `pred` is truthy. |
+| [`sort(arr) -> Array`](#sortarr---array) | Sorts the elements in ascending order, comparing them directly. |
+| [`sort_by(arr, key) -> Array`](#sort_byarr-key---array) | Sorts the elements in ascending order, comparing `key(element)` rather than the elements themselves. |
+
+
 ### `push(arr, value) -> Array`
 
 Appends `value` to `arr` in place. O(1) amortized, which makes building an array element by element O(n) overall, unlike repeated `arr += [x]`.

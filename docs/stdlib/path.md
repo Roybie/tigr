@@ -7,6 +7,15 @@
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`join(part1, part2?) -> String`](#joinpart1-part2---string) | Joins path segments into one path, inserting the platform separator between them. |
+| [`dirname(path) -> String`](#dirnamepath---string) | Returns the parent-directory portion of `path`. |
+| [`basename(path) -> String`](#basenamepath---string) | Returns the final component of `path`, the file or directory name without its parent. |
+| [`ext(path) -> String`](#extpath---string) | Returns the file extension of `path`, without the leading dot. |
+| [`is_absolute(path) -> Bool`](#is_absolutepath---bool) | Tests whether `path` is an absolute path under the host's rules. |
+
+
 ### `join(part1, part2?) -> String`
 
 Joins path segments into one path, inserting the platform separator between them.

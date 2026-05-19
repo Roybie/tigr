@@ -15,6 +15,18 @@ print(Object.entries(${a: 1, b: 2}));   // => [[a, 1], [b, 2]]
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`keys(obj) -> Array`](#keysobj---array) | Collects the keys of `obj` in insertion order. |
+| [`values(obj) -> Array`](#valuesobj---array) | Collects the values of `obj` in insertion order. |
+| [`entries(obj) -> Array`](#entriesobj---array) | Collects the `[key, value]` pairs of `obj` in insertion order. |
+| [`from_entries(pairs) -> Object`](#from_entriespairs---object) | Builds an object from an array of `[key, value]` pairs. |
+| [`has(obj, key) -> Bool`](#hasobj-key---bool) | Tests whether `obj` has `key`. |
+| [`merge(a, b) -> Object`](#mergea-b---object) | Shallow-merges two objects into a fresh one. |
+| [`map(obj, func) -> Object`](#mapobj-func---object) | Transforms every value through `func`, keeping the keys. |
+| [`filter(obj, pred) -> Object`](#filterobj-pred---object) | Keeps the entries for which `pred` returns a truthy value. |
+
+
 ### `keys(obj) -> Array`
 
 Collects the keys of `obj` in insertion order.

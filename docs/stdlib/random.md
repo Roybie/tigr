@@ -14,6 +14,17 @@ print(Random.int(1, 6));        // => 3
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`seed(n) -> null`](#seedn---null) | Pins the PRNG stream to `n`. |
+| [`float() -> Float`](#float---float) | Draws a uniform `Float` in the half-open range `[0, 1)`. |
+| [`int(lo, hi) -> Int`](#intlo-hi---int) | Draws a uniform `Int` from the inclusive range `[lo, hi]`. |
+| [`bool() -> Bool`](#bool---bool) | Draws `true` or `false`, each with probability one half. |
+| [`choice(arr) -> value`](#choicearr---value) | Picks one element of `arr` uniformly at random. |
+| [`range(r) -> Int`](#ranger---int) | Picks one value of a Range uniformly at random. |
+| [`shuffle(arr) -> Array`](#shufflearr---array) | Builds a new array holding `arr`'s elements in a random order, using a Fisher-Yates shuffle. |
+
+
 ### `seed(n) -> null`
 
 Pins the PRNG stream to `n`. Any `Int` works, `seed(0)` included. After seeding, the sequence of draws is fully determined.

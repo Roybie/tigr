@@ -120,23 +120,37 @@ Two forms, both producing the same `String` type (see §8):
 
 ## 3. Types
 
-| Type      | Examples                                 | Notes                              |
-|-----------|------------------------------------------|------------------------------------|
-| `Int`     | `0`, `42`, `-7`                          | 64-bit signed                      |
-| `Float`   | `3.14`, `0.0`                            | 64-bit IEEE-754                    |
-| `String`  | `'hello'`                                | Immutable; UTF-8                   |
-| `Bool`    | `true`, `false`                          |                                    |
-| `Null`    | `null`                                   |                                    |
-| `Array`   | `[1, 'two', true]`                       | Heterogeneous, **reference type**  |
-| `Object`  | `${ name: 'a', age: 1 }`                 | String keys, **reference type**    |
-| `Range`   | `0..10`, `0..=10`, `0..10:2`             | First-class iterable               |
-| `Function`| `fn(x) { x * 2 }`                        | Closures over lexical env          |
+| Type           | Examples                          | `type()`         | Notes                                            |
+|----------------|-----------------------------------|------------------|--------------------------------------------------|
+| `Int`          | `0`, `42`, `-7`                   | `'int'`          | 64-bit signed                                    |
+| `Float`        | `3.14`, `0.0`                     | `'float'`        | 64-bit IEEE-754                                  |
+| `String`       | `'hello'`                         | `'string'`       | Immutable; UTF-8                                 |
+| `Bool`         | `true`, `false`                   | `'bool'`         |                                                  |
+| `Null`         | `null`                            | `'null'`         |                                                  |
+| `Array`        | `[1, 'two', true]`                | `'array'`        | Heterogeneous, **reference type**                |
+| `Object`       | `${ name: 'a', age: 1 }`          | `'object'`       | String keys, **reference type**                  |
+| `Range`        | `0..10`, `0..=10`, `0..10:2`      | `'range'`        | First-class iterable                             |
+| `Function`     | `fn(x) { x * 2 }`                 | `'function'`     | Closures over lexical env; native built-ins too  |
+| `Map`          | `Map.new()`                       | `'map'`          | Arbitrary keys, **reference type** (v0.9)        |
+| `Set`          | `Set.new()`                       | `'set'`          | Unique values, **reference type** (v0.9)         |
+| `Bytes`        | `Bytes.new(4)`                    | `'bytes'`        | Mutable byte buffer, **reference type** (v0.13)  |
+| `BigInt`       | `BigInt.new(2)`                   | `'bigint'`       | Arbitrary-precision integer; immutable (v0.13)   |
+| `Channel`      | `Channel.new()`                   | `'channel'`      | Cross-actor message conduit (v0.14)              |
+| `Task`         | `spawn fn() { }`                  | `'task'`         | Handle to a spawned actor (v0.14)                |
+| `Socket`       | `Net.listen('0.0.0.0', 0)`        | `'socket'`       | Network socket (v0.15)                           |
+| `GreenThread`  | `go fn() { }`                     | `'green_thread'` | Green-thread (coroutine) handle (Appendix P)     |
+| `LocalChannel` | `LocalChannel.new()`              | `'local_channel'`| Intra-actor message conduit (Appendix P)         |
 
 `Int` and `Float` are jointly referred to as **Number**. Mixed-arithmetic
-between them follows §6.2.
+between them follows §6.2. The `type()` built-in (§13.1) reports the
+tag in the third column.
 
-`Array` and `Object` are **reference types**: passing them to a function or
-binding them to a new name does not copy. This is a change from 0.1.
+`Array`, `Object`, `Map`, `Set`, and `Bytes` are **reference types**:
+passing one to a function or binding it to a new name does not copy
+(a change from 0.1). `Channel`, `Task`, `Socket`, `GreenThread`, and
+`LocalChannel` are opaque handles, likewise shared rather than copied.
+Every other type — including `BigInt`, which is heap-backed but
+immutable — behaves as a plain value.
 
 ---
 
@@ -326,7 +340,7 @@ arr |> Array.map(double) |> Array.reverse()
 
 5 |> double                 // == double(5)
 5 |> double()               // == double(5)
-0..10 |> Array.from()       // == Array.from(0..10)
+0..10 |> Array.sum()        // == Array.sum(0..10)
 ```
 
 Pipe is left-associative. Evaluation order is strictly left-to-right.
@@ -483,7 +497,7 @@ counter. So an `Iter` pipeline can be consumed directly, without
 `Iter.collect()`:
 
 ```
-for (sq, 0..=4 |> Array.from() |> Iter.from() |> Iter.map(fn(n){n*n})) {
+for (sq, 0..=4 |> Iter.from() |> Iter.map(fn(n){n*n})) {
     print(sq)
 }
 ```
@@ -665,11 +679,13 @@ string, `raise ${...}` binds that object. A **built-in** runtime error
 is instead reified into an object `${kind, message, line}` so a handler
 can `match` on it (v0.7b):
 
-- `kind` — a stable snake-case tag: `type_mismatch`, `div_by_zero`,
-  `index_out_of_bounds`, `arity_mismatch`, `not_callable`,
-  `invalid_index_type`, `immutable_target`, `import_failed`,
-  `overflow`, `stack_overflow`, `stack_underflow`, `cycle`,
-  `no_match`.
+- `kind` — a stable snake-case tag, one of: `type_mismatch`,
+  `div_by_zero`, `index_out_of_bounds`, `arity_mismatch`,
+  `not_callable`, `invalid_index_type`, `invalid_key_type`,
+  `immutable_target`, `import_failed`, `overflow`, `stack_overflow`,
+  `stack_underflow`, `cycle`, `no_match`, `not_sendable`,
+  `channel_closed`. (`invalid_key_type` arrived with `Map`/`Set` in
+  v0.9; `not_sendable` and `channel_closed` with actors in v0.14.)
 - `message` — the human-readable text an uncaught error would show
   (what `RuntimeError::Display` produces, e.g. `"division by zero"`).
 - `line` — the source line the error occurred on.
@@ -1004,16 +1020,29 @@ shadowed, passed around, and stored.
 | `rand`    | `rand() -> Float`        | Uniform in [0, 1); seedable via `Random.seed` (§13.2) |
 | `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
 | `gc`      | `gc() -> Object`         | Garbage-collector counters (v0.10): `${live, collections, allocated, freed}` |
-| `join`    | `join(task) -> value`    | Block for a `spawn`ed actor's result (v0.14, §concurrency) |
+| `join`    | `join(task) -> value`    | Block for a `spawn`ed actor's result (v0.14, Appendix L) |
 
 `gc()` returns a read-only snapshot of the tracing collector's state
 (§15.1): `live` is the current managed-object count, `collections` the
 number of collections run so far, and `allocated` / `freed` the lifetime
 totals. Collection is automatic — `gc()` only observes it.
 
-`type(x)` returns one of `'int'`, `'float'`, `'string'`, `'bool'`,
-`'null'`, `'array'`, `'object'`, `'range'`, `'function'`. Both user
-closures and native built-ins report `'function'`.
+`type(x)` returns the value's type as a lowercase string. The complete
+set, with the version each was introduced:
+
+- core (v0.2): `'null'`, `'bool'`, `'int'`, `'float'`, `'string'`,
+  `'array'`, `'object'`, `'range'`, `'function'`
+- `'map'`, `'set'` (v0.9)
+- `'bytes'`, `'bigint'` (v0.13)
+- `'channel'`, `'task'` (v0.14)
+- `'socket'` (v0.15)
+- `'green_thread'`, `'local_channel'` (green threads, Appendix P)
+
+Both user closures and native built-ins report `'function'` — `type`
+deliberately collapses the two. A `gen fn` literal is itself an
+ordinary function value (`'function'`); *calling* it yields a plain
+`${next: fn()}` object, so a generator instance and an `Iter`-module
+iterator both report `'object'`.
 
 `str` takes an optional **radix** and **prefix** (v0.5). `str(x)` is
 the canonical form. `str(n, radix)` renders an `Int` `n` in `radix`
@@ -1310,25 +1339,57 @@ user-defined module.
 
 > Navigable reference: [`docs/stdlib/array.md`](docs/stdlib/array.md).
 
-`push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`,
-`clear`, `create`, `concat`, `map`, `filter`, `reduce`, `flatten`,
-`reverse`, `index`, `find`, `find_index`, `any`, `all`, `head`, `tail`,
-`take`, `drop`, `slice`, `sum`, `max_of`, `min_of`, `uniq`, `zip`,
-`join`, `group_by`, `chunk`, `windows`, `partition`, `flat_map`,
-`count_of`, `sort`, `sort_by`. Callbacks receive
-`(elem, index, whole_array)`; unused trailing args are dropped per
-spec §10.3.
+Callbacks receive `(elem, index, whole_array)`; unused trailing args
+are dropped per spec §10.3.
 
-The eight in-place mutators are backed by the native `_NativeArray`
-module — pure tigr can grow an array (`+`/spread) but cannot shrink
-one. `push(arr, v)` / `extend(arr, other)` append (O(1) amortized /
-O(#other)); `pop` / `shift` remove and return the last / first element
-(`null` on an empty array); `unshift(arr, v)` prepends; `insert(arr,
-i, v)` inserts at `i`; `remove(arr, i)` removes and returns one element
-(`null` if out of range), while `remove(arr, start, count)` removes and
-returns a `count`-long sub-array; `clear` empties in place. All return
-`arr` except `pop`/`shift`/`remove`. Negative indices count from the
-end. Contrast `concat`, which builds a fresh array.
+| Entry        | Signature                             | Behavior                                                       |
+|--------------|---------------------------------------|----------------------------------------------------------------|
+| `push`       | `push(arr, value) -> Array`           | Append `value` in place (O(1) amortized); returns `arr`        |
+| `extend`     | `extend(arr, other) -> Array`         | Append every element of `other` in place; returns `arr`        |
+| `pop`        | `pop(arr) -> value`                   | Remove and return the last element; `null` if empty           |
+| `shift`      | `shift(arr) -> value`                 | Remove and return the first element; `null` if empty          |
+| `unshift`    | `unshift(arr, value) -> Array`        | Prepend `value` in place; returns `arr`                        |
+| `insert`     | `insert(arr, index, value) -> Array`  | Insert `value` at `index` in place; returns `arr`              |
+| `remove`     | `remove(arr, index, count?) -> value` | Remove and return one element (`null` if out of range), or a `count`-long sub-array |
+| `clear`      | `clear(arr) -> Array`                 | Empty the array in place; returns `arr`                        |
+| `create`     | `create(len, func) -> Array`          | A fresh `len`-element array of `func(i)`                       |
+| `concat`     | `concat(a, b) -> Array`               | A fresh array of `a` followed by `b`                           |
+| `map`        | `map(arr, func) -> Array`             | A fresh array of `func` applied to each element                |
+| `filter`     | `filter(arr, pred) -> Array`          | A fresh array of the elements for which `pred` is truthy       |
+| `reduce`     | `reduce(arr, func, seed) -> value`    | Fold left-to-right from `seed`                                 |
+| `flatten`    | `flatten(arr) -> Array`               | A fresh array with one level of nesting removed                |
+| `reverse`    | `reverse(arr) -> Array`               | A fresh array in reverse order                                 |
+| `index`      | `index(arr, elem) -> Int`             | First index of `elem` (by `==`), or `-1`                       |
+| `find`       | `find(arr, pred) -> value`            | First element for which `pred` holds, or `null`                |
+| `find_index` | `find_index(arr, pred) -> Int`        | Index of the first such element, or `-1`                       |
+| `any`        | `any(arr, pred) -> Bool`              | True if `pred` holds for some element                          |
+| `all`        | `all(arr, pred) -> Bool`              | True if `pred` holds for every element                         |
+| `head`       | `head(arr, n) -> Array`               | First `n` elements; a negative `n` drops `n` from the end      |
+| `tail`       | `tail(arr, n) -> Array`               | Last `n` elements; a negative `n` drops `n` from the start     |
+| `take`       | `take(arr, n) -> Array`               | First `n` elements; a negative `n` clamps to 0                 |
+| `drop`       | `drop(arr, n) -> Array`               | All but the first `n`; a negative `n` clamps to 0              |
+| `slice`      | `slice(arr, start, end) -> Array`     | A fresh `arr[start..end]`; negative indices count from the end |
+| `sum`        | `sum(arr) -> Number`                  | Sum of the elements                                            |
+| `max_of`     | `max_of(arr) -> value`                | Largest element                                                |
+| `min_of`     | `min_of(arr) -> value`                | Smallest element                                               |
+| `uniq`       | `uniq(arr) -> Array`                  | A fresh array with duplicates dropped, first occurrence kept   |
+| `zip`        | `zip(a, b) -> Array`                  | A fresh array of `[a[i], b[i]]` pairs, length of the shorter   |
+| `join`       | `join(arr, sep) -> String`            | The elements (via `str`) joined by `sep`                       |
+| `group_by`   | `group_by(arr, key) -> Map`           | Group elements into a `Map` keyed by `key(elem)`               |
+| `chunk`      | `chunk(arr, size) -> Array`           | Split into consecutive `size`-long sub-arrays                  |
+| `windows`    | `windows(arr, size) -> Array`         | Every overlapping `size`-long sub-array                        |
+| `partition`  | `partition(arr, pred) -> Array`       | `[matching, non_matching]`                                     |
+| `flat_map`   | `flat_map(arr, func) -> Array`        | `map` then `flatten` one level                                 |
+| `count_of`   | `count_of(arr, pred) -> Int`          | How many elements satisfy `pred`                               |
+| `sort`       | `sort(arr) -> Array`                  | A fresh array sorted ascending                                 |
+| `sort_by`    | `sort_by(arr, key) -> Array`          | A fresh array sorted ascending by `key(elem)`                  |
+
+The eight in-place mutators (`push`, `extend`, `pop`, `shift`,
+`unshift`, `insert`, `remove`, `clear`) are backed by the native
+`_NativeArray` module — pure tigr can grow an array (`+`/spread) but
+cannot shrink one. `pop` / `shift` / `remove` return the removed
+element(s); the other five return `arr`. Negative indices count from
+the end. Contrast `concat`, which builds a fresh array.
 
 `head`/`tail` accept a negative `n` (Python-slice style):
 `head(arr, -1)` is all but the last element, `tail(arr, -1)` all but
@@ -1342,23 +1403,56 @@ fresh arrays.
 
 Lazy, pull-based iterators. An iterator is an object `${next: fn()}`
 whose `next()` yields `${done: true}` or `${done: false, value}`.
-Adapters `from`, `count`, `repeat`; lazy combinators `map`, `filter`,
-`take`, `drop`, `enumerate`, `zip`, `chain`; consumers `collect`,
-`reduce`, `for_each`, `count_of`, `find`, `nth`. A combinator does no
-work until a consumer pulls from it, so a pipeline never materializes
-an intermediate array. `count` / `repeat` are infinite and must be
-bounded by `take` (or a short-circuiting `find` / `nth`). Pure tigr —
-closures capture the source iterator; no VM support is required.
+
+| Entry        | Signature                          | Behavior                                                  |
+|--------------|------------------------------------|-----------------------------------------------------------|
+| `from`       | `from(iterable) -> Iterator`       | Wrap any iterable (Array, Range, String, …) as an iterator |
+| `count`      | `count(start) -> Iterator`         | The infinite sequence `start, start+1, start+2, …`        |
+| `repeat`     | `repeat(value) -> Iterator`        | The infinite sequence of `value`                          |
+| `map`        | `map(it, func) -> Iterator`        | Lazily apply `func` to each value                         |
+| `filter`     | `filter(it, pred) -> Iterator`     | Lazily keep the values for which `pred` holds             |
+| `take`       | `take(it, n) -> Iterator`          | The first `n` values, then stop                           |
+| `take_while` | `take_while(it, pred) -> Iterator` | Values up to the first for which `pred` fails             |
+| `drop`       | `drop(it, n) -> Iterator`          | Skip the first `n` values                                 |
+| `drop_while` | `drop_while(it, pred) -> Iterator` | Skip values up to the first for which `pred` fails        |
+| `enumerate`  | `enumerate(it) -> Iterator`        | Pair each value with its 0-based index                    |
+| `zip`        | `zip(a, b) -> Iterator`            | Pair values from `a` and `b`; ends with the shorter       |
+| `chain`      | `chain(a, b) -> Iterator`          | Every value of `a`, then every value of `b`               |
+| `collect`    | `collect(it) -> Array`             | Drain the iterator into a fresh array                     |
+| `reduce`     | `reduce(it, func, seed) -> value`  | Fold the iterator from `seed`                             |
+| `for_each`   | `for_each(it, func) -> Null`       | Run `func` on each value for effect                       |
+| `count_of`   | `count_of(it) -> Int`              | Drain the iterator; return how many values it yielded     |
+| `find`       | `find(it, pred) -> value`          | First value for which `pred` holds, or `null`             |
+| `nth`        | `nth(it, n) -> value`              | The `n`-th value (0-based), or `null`                     |
+
+A combinator does no work until a consumer pulls from it, so a pipeline
+never materializes an intermediate array. `count` / `repeat` are
+infinite and must be bounded by `take` (or a short-circuiting `find` /
+`nth`). Pure tigr — closures capture the source iterator; no VM support
+is required.
 
 #### `Object` (v0.6)
 
 > Navigable reference: [`docs/stdlib/object.md`](docs/stdlib/object.md).
 
-`keys`, `values`, `entries`, `from_entries`, `has`, `merge`, `map`,
-`filter`. `keys` / `values` / `entries` return arrays in insertion
-order (`entries` → `[key, value]` pairs; `from_entries` is its
-inverse). `merge` / `map` / `filter` return fresh objects — inputs are
-never mutated. Callbacks receive `(value, key, whole_object)`.
+Callbacks receive `(value, key, whole_object)`.
+
+| Entry          | Signature                       | Behavior                                                  |
+|----------------|---------------------------------|-----------------------------------------------------------|
+| `keys`         | `keys(obj) -> Array`            | The keys, in insertion order                              |
+| `values`       | `values(obj) -> Array`          | The values, in insertion order                            |
+| `entries`      | `entries(obj) -> Array`         | `[key, value]` pairs, in insertion order                  |
+| `from_entries` | `from_entries(pairs) -> Object` | Build an object from `[key, value]` pairs (inverse of `entries`) |
+| `has`          | `has(obj, key) -> Bool`         | True if `key` is present (O(1)); a present `null` counts  |
+| `merge`        | `merge(a, b) -> Object`         | A fresh object of `a`'s entries overlaid by `b`'s         |
+| `map`          | `map(obj, func) -> Object`      | A fresh object, each value replaced by `func(value, key, obj)` |
+| `filter`       | `filter(obj, pred) -> Object`   | A fresh object of the entries for which `pred` holds      |
+
+`merge` / `map` / `filter` return fresh objects — inputs are never
+mutated. As of v0.9, `has` is O(1) (backed by native `_NativeObject`)
+and tells a missing key from a present `null` value, which `obj[key]`
+cannot; `keys` / `values` / `entries` append in place (O(n) total)
+rather than copying the accumulator each step.
 
 As of v0.9, `has` is O(1) (backed by native `_NativeObject`) and tells
 a missing key from a present `null` value, which `obj[key]` cannot.
@@ -1377,12 +1471,22 @@ native `_NativeMap` module.
 
 `m[key]` reads an entry (`null` when absent) and `m[key] = value`
 writes one. `#m` is the entry count; `for (k, v, m) { ... }` iterates
-entries in insertion order. Functions: `new`, `get`, `set`, `has`,
-`delete`, `keys`, `values`, `entries`, `size`, `clear`. `new()` builds
-an empty map; `new(obj)` copies an Object's entries; `new(pairs)`
-builds from an array of `[key, value]` pairs. `has` is O(1) and tells
-a missing key from a present `null` value. A `Map` is not
-JSON-serializable (`JSON.stringify` raises).
+entries in insertion order.
+
+| Entry     | Signature                       | Behavior                                                       |
+|-----------|---------------------------------|----------------------------------------------------------------|
+| `new`     | `new(source?) -> Map`           | An empty map, or one copied from an Object or `[key, value]` pairs |
+| `get`     | `get(m, key) -> value`          | The value for `key`, or `null` if absent                       |
+| `set`     | `set(m, key, value) -> Map`     | Insert or update in place; returns `m`                         |
+| `has`     | `has(m, key) -> Bool`           | True if `key` is present (O(1)); a present `null` counts       |
+| `delete`  | `delete(m, key) -> Bool`        | Remove `key`; true if it was present                           |
+| `keys`    | `keys(m) -> Array`              | The keys, in insertion order                                   |
+| `values`  | `values(m) -> Array`            | The values, in insertion order                                 |
+| `entries` | `entries(m) -> Array`           | `[key, value]` pairs, in insertion order                       |
+| `size`    | `size(m) -> Int`                | The entry count (same as `#m`)                                 |
+| `clear`   | `clear(m) -> Map`               | Empty the map in place; returns `m`                            |
+
+A `Map` is not JSON-serializable (`JSON.stringify` raises).
 
 #### `Set` (v0.9)
 
@@ -1395,31 +1499,65 @@ An insertion-ordered collection of unique values. Elements share
 `s[x]` tests membership (`true` / `false`); `s[x] = ...` is an error
 (`immutable_target`) — mutate with `add` / `delete`. `#s` is the
 element count; `for (x, s) { ... }` iterates in insertion order.
-Functions: `new`, `add`, `has`, `delete`, `items`, `size`, `clear`,
-and the algebra `union`, `intersection`, `difference` (each returns a
-fresh set, inputs untouched). `new(array)` builds a set from an array,
-collapsing duplicates. Like `Map`, a `Set` is not JSON-serializable.
+
+| Entry          | Signature                    | Behavior                                                  |
+|----------------|------------------------------|-----------------------------------------------------------|
+| `new`          | `new(array?) -> Set`         | An empty set, or one built from an array (duplicates collapsed) |
+| `add`          | `add(s, x) -> Set`           | Insert `x` in place; returns `s`                          |
+| `has`          | `has(s, x) -> Bool`          | True if `x` is a member (same as `s[x]`)                  |
+| `delete`       | `delete(s, x) -> Bool`       | Remove `x`; true if it was present                        |
+| `items`        | `items(s) -> Array`          | The elements, in insertion order                          |
+| `size`         | `size(s) -> Int`             | The element count (same as `#s`)                          |
+| `clear`        | `clear(s) -> Set`            | Empty the set in place; returns `s`                       |
+| `union`        | `union(a, b) -> Set`         | A fresh set of the elements in either                     |
+| `intersection` | `intersection(a, b) -> Set`  | A fresh set of the elements in both                       |
+| `difference`   | `difference(a, b) -> Set`    | A fresh set of `a`'s elements not in `b`                  |
+
+`union` / `intersection` / `difference` leave their inputs untouched.
+Like `Map`, a `Set` is not JSON-serializable.
 
 #### `String`
 
 > Navigable reference: [`docs/stdlib/string.md`](docs/stdlib/string.md).
 
-`split`, `join`, `replace`, `contains`, `index_of`, `lower`, `upper`,
-`starts_with`, `ends_with`, `trim`, `trim_start`, `trim_end`,
-`repeat`, `chars`, `pad_start`, `pad_end`, `format`, `printf`.
+| Entry           | Signature                          | Behavior                                                  |
+|-----------------|------------------------------------|-----------------------------------------------------------|
+| `split`         | `split(s, sep) -> Array`           | Split on each literal `sep`                               |
+| `join`          | `join(parts, sep) -> String`       | Concatenate `parts` separated by `sep`                    |
+| `replace`       | `replace(s, from, to) -> String`   | Replace every `from` with `to`                            |
+| `replace_first` | `replace_first(s, from, to) -> String` | Replace only the first `from`                         |
+| `contains`      | `contains(s, needle) -> Bool`      | True if `needle` occurs in `s`                            |
+| `index_of`      | `index_of(s, needle) -> Int`       | Byte offset of the first `needle`, or `-1`                |
+| `lower`         | `lower(s) -> String`               | Lower-cased                                               |
+| `upper`         | `upper(s) -> String`               | Upper-cased                                               |
+| `starts_with`   | `starts_with(s, prefix) -> Bool`   | True if `s` begins with `prefix`                          |
+| `ends_with`     | `ends_with(s, suffix) -> Bool`     | True if `s` ends with `suffix`                            |
+| `trim`          | `trim(s) -> String`                | Whitespace removed from both ends                         |
+| `trim_start`    | `trim_start(s) -> String`          | Leading whitespace removed                                |
+| `trim_end`      | `trim_end(s) -> String`            | Trailing whitespace removed                               |
+| `repeat`        | `repeat(s, n) -> String`           | `s` concatenated `n` times                                |
+| `chars`         | `chars(s) -> Array`                | The characters as single-char strings                     |
+| `pad_start`     | `pad_start(s, len, ch) -> String`  | Left-pad with `ch` to width `len`                         |
+| `pad_end`       | `pad_end(s, len, ch) -> String`    | Right-pad with `ch` to width `len`                        |
+| `words`         | `words(s) -> Array`                | Split on whitespace runs, dropping empties (v0.13)        |
+| `lines`         | `lines(s) -> Array`                | Split on `\n` / `\r\n` (v0.13)                            |
+| `split_any`     | `split_any(s, delims) -> Array`    | Split on any character in `delims` (v0.13)                |
+| `find_all`      | `find_all(s, needle) -> Array`     | Byte offsets of every non-overlapping match (v0.13)       |
+| `count`         | `count(s, needle) -> Int`          | Number of non-overlapping matches (v0.13)                 |
+| `reverse`       | `reverse(s) -> String`             | Characters in reverse order (v0.13)                       |
+| `strip_prefix`  | `strip_prefix(s, prefix) -> String`| `s` with `prefix` removed if present (v0.13)              |
+| `strip_suffix`  | `strip_suffix(s, suffix) -> String`| `s` with `suffix` removed if present (v0.13)              |
+| `capitalize`    | `capitalize(s) -> String`          | First character upper-cased (v0.13)                       |
+| `is_blank`      | `is_blank(s) -> Bool`              | True if empty or all-whitespace (v0.13)                   |
+| `matches_glob`  | `matches_glob(s, pattern) -> Bool` | Whole-string shell-style glob match (v0.13)               |
+| `format`        | `format(value, spec) -> String`    | Render `value` through the spec mini-language (v0.9)      |
+| `printf`        | `printf(template, args?) -> String`| Fill `%(spec)` placeholders in `template` (v0.9)          |
 
-v0.13 adds targeted text helpers: `words` (split on whitespace runs,
-dropping empties), `lines` (split on `\n`/`\r\n`), `split_any` (split
-on any char in a delimiter set), `find_all` (byte offsets of every
-non-overlapping match), `count` (non-overlapping match count),
-`replace_first` (replace one match only), `reverse`, `strip_prefix`,
-`strip_suffix`, `capitalize` (uppercase the first char), `is_blank`
-(empty or all-whitespace), and `matches_glob`. Like `index_of`, the
-offsets `find_all` returns are byte offsets. `matches_glob(s, pattern)`
-is a whole-string shell-style match — `*` (any run), `?` (one char),
-`[abc]`/`[a-z]` classes, `[!...]` negation, `\` to escape a
-metacharacter — a small slice of pattern matching, not a full regular
-expression language; a malformed pattern raises.
+Like `index_of`, the offsets `find_all` returns are byte offsets.
+`matches_glob(s, pattern)` is a whole-string shell-style match — `*`
+(any run), `?` (one char), `[abc]`/`[a-z]` classes, `[!...]` negation,
+`\` to escape a metacharacter — a small slice of pattern matching, not
+a full regular expression language; a malformed pattern raises.
 
 `format(value, spec)` (v0.9) renders one value through a spec
 mini-language and `printf(template, args)` (v0.9) fills a template;
@@ -1452,8 +1590,24 @@ arguments both raise. (`%(...)`, not `{}`, because tigr interpolates
 
 > Navigable reference: [`docs/stdlib/math.md`](docs/stdlib/math.md).
 
-Constants `PI`, `E`. Functions `sqrt`, `log`, `log2`, `log10`, `exp`,
-`sin`, `cos`, `tan`, `pow`, `abs`, `sign`, `min`, `max`, `clamp`.
+| Entry   | Signature                  | Behavior                                       |
+|---------|----------------------------|------------------------------------------------|
+| `PI`    | `PI` *(Float)*             | The constant π                                 |
+| `E`     | `E` *(Float)*              | The constant e                                 |
+| `sqrt`  | `sqrt(x) -> Float`         | Square root                                    |
+| `log`   | `log(x) -> Float`          | Natural logarithm                              |
+| `log2`  | `log2(x) -> Float`         | Base-2 logarithm                               |
+| `log10` | `log10(x) -> Float`        | Base-10 logarithm                              |
+| `exp`   | `exp(x) -> Float`          | `e` raised to `x`                              |
+| `sin`   | `sin(x) -> Float`          | Sine of `x` (radians)                          |
+| `cos`   | `cos(x) -> Float`          | Cosine of `x` (radians)                        |
+| `tan`   | `tan(x) -> Float`          | Tangent of `x` (radians)                       |
+| `pow`   | `pow(x, y) -> Float`       | `x` raised to `y` (same result as `^^`)        |
+| `abs`   | `abs(x) -> Number`         | Absolute value                                 |
+| `sign`  | `sign(x) -> Int`           | `-1`, `0`, or `1`                              |
+| `min`   | `min(a, b) -> value`       | The smaller of `a` and `b`                     |
+| `max`   | `max(a, b) -> value`       | The larger of `a` and `b`                      |
+| `clamp` | `clamp(x, lo, hi) -> value`| `x` confined to `[lo, hi]`                     |
 
 The trig/log/exp functions are backed by the native `_NativeMath`
 module (also importable directly). Source `Math.tg` re-exports them
@@ -1464,19 +1618,24 @@ shadow / extend without touching the interpreter.
 
 > Navigable reference: [`docs/stdlib/test.md`](docs/stdlib/test.md).
 
-A small test framework, itself written in tigr. Assertions —
-`assert(cond, msg?)`, `assert_eq(actual, expected, msg?)`,
-`assert_ne(a, b, msg?)`, `assert_raises(thunk, kind?)`,
-`fail(msg?)` — `raise` on failure, so they work standalone. `assert_eq`
+A small test framework, itself written in tigr.
+
+| Entry           | Signature                                     | Behavior                                                  |
+|-----------------|-----------------------------------------------|-----------------------------------------------------------|
+| `assert`        | `assert(cond, msg?) -> Bool`                  | Raise unless `cond` is truthy                             |
+| `assert_eq`     | `assert_eq(actual, expected, msg?) -> Bool`   | Raise unless `actual == expected`                         |
+| `assert_ne`     | `assert_ne(a, b, msg?) -> Bool`               | Raise unless `a != b`                                     |
+| `assert_raises` | `assert_raises(thunk, kind?) -> value`        | Raise unless `thunk` raised; returns the caught error     |
+| `fail`          | `fail(msg?) -> value`                         | Raise unconditionally                                     |
+| `case`          | `case(name, func) -> Object`                  | Package an unrun test as plain data                       |
+| `suite`         | `suite(name, cases) -> Object`                | Run an array of cases; print results; return the tally   |
+
+The assertions `raise` on failure, so they work standalone. `assert_eq`
 uses `==`, which is structural for arrays and objects (§6.3).
 `assert_raises` runs `thunk` and fails unless it raised; with a `kind`
 argument the raised value must match — a reified built-in error's
-`kind` field, or the raised value itself otherwise — and the caught
-error is returned.
-
-Tests are plain data: `case(name, fn)` packages an unrun test, and
-`suite(name, cases)` runs an array of them, printing a `PASS`/`FAIL`
-line per case and a tally, then returning a result object
+`kind` field, or the raised value itself otherwise. `suite` prints a
+`PASS`/`FAIL` line per case and a tally, then returns a result object
 `${name, passed, failed, total, failures}` (`failures` being an array
 of `${name, error}`).
 
@@ -1492,30 +1651,46 @@ counts as a failure. The process exits non-zero if any test failed.
 > Navigable reference: [`docs/stdlib/url.md`](docs/stdlib/url.md).
 
 URL parsing and the percent-codec, layered on `String`/`Bytes`.
-`parse(url)` splits an absolute URL into
-`${scheme, host, port, path, query, fragment}` — `port` an `Int` or
-`null`, `path` defaulting to `'/'`, `query`/`fragment` the raw
-substrings or `null`; a missing scheme raises. `build(parts)` is the
-inverse, so `build(parse(u))` round-trips. `encode`/`decode` are
-RFC-3986 percent-coding, byte-wise over UTF-8, so non-ASCII text
-round-trips; a malformed `%`-escape raises a structured `decode`
-error. `encode_query(obj)` / `parse_query(str)` convert between an
-Object and an `a=1&b=x%20y` query string (`+` decodes to a space; a
-duplicate key keeps its last value). See Appendix N.
+
+| Entry          | Signature                       | Behavior                                                       |
+|----------------|---------------------------------|----------------------------------------------------------------|
+| `parse`        | `parse(url) -> Object`          | Split an absolute URL into `${scheme, host, port, path, query, fragment}`; a missing scheme raises |
+| `build`        | `build(parts) -> String`        | The inverse of `parse`, so `build(parse(u))` round-trips       |
+| `encode`       | `encode(s) -> String`           | RFC-3986 percent-encode, byte-wise over UTF-8                  |
+| `decode`       | `decode(s) -> String`           | Percent-decode; a malformed `%`-escape raises a `decode` error |
+| `parse_query`  | `parse_query(s) -> Object`      | Parse an `a=1&b=x%20y` query string into an Object             |
+| `encode_query` | `encode_query(obj) -> String`   | Render an Object as a query string                             |
+
+In `parse`'s result `port` is an `Int` or `null`, `path` defaults to
+`'/'`, and `query`/`fragment` are the raw substrings or `null`.
+`parse_query` decodes `+` to a space and keeps a duplicate key's last
+value. See Appendix N.
 
 #### `Http` (v0.15)
 
 > Navigable reference: [`docs/stdlib/http.md`](docs/stdlib/http.md).
 
-An HTTP/1.1 client and server helper over `Net`. The client —
-`request(opts)` plus the `get`/`post`/`put`/`delete`/`head`/`patch`
-wrappers — returns `${status, status_text, headers, body}`, where
-`body` is always `Bytes` (`text(resp)` / `json(resp)` decode it) and
+An HTTP/1.1 client and server helper over `Net`.
+
+| Entry            | Signature                              | Behavior                                                  |
+|------------------|----------------------------------------|-----------------------------------------------------------|
+| `request`        | `request(opts) -> Object`              | Perform a request; returns `${status, status_text, headers, body}` |
+| `get`            | `get(url, opts?) -> Object`            | `GET` request                                             |
+| `post`           | `post(url, body?, opts?) -> Object`    | `POST` request                                            |
+| `put`            | `put(url, body?, opts?) -> Object`     | `PUT` request                                             |
+| `delete`         | `delete(url, opts?) -> Object`         | `DELETE` request                                          |
+| `head`           | `head(url, opts?) -> Object`           | `HEAD` request                                            |
+| `patch`          | `patch(url, body?, opts?) -> Object`   | `PATCH` request                                           |
+| `text`           | `text(resp) -> String`                 | Decode a response body as UTF-8 text                      |
+| `json`           | `json(resp) -> value`                  | Parse a response body as JSON                             |
+| `read_request`   | `read_request(sock) -> Object`         | Server: read a request as `${method, path, query, headers, body}` |
+| `write_response` | `write_response(sock, resp) -> Int`    | Server: write a response                                  |
+| `serve`          | `serve(listener, handler) -> Null`     | Server: accept loop dispatching to per-connection actors  |
+
+A response `body` is always `Bytes` (`text` / `json` decode it) and
 `headers` keys are lowercased (a duplicate header collapses, last
-wins). 3xx redirects are followed automatically. The server helpers —
-`read_request(sock)` / `write_response(sock, resp)` / `serve(listener,
-handler)` — drive an accept loop. v1 has no keep-alive. See
-Appendix N.
+wins). 3xx redirects are followed automatically. v1 has no keep-alive.
+See Appendix N.
 
 ### 13.4 `JSON` (v0.4)
 
@@ -1536,7 +1711,7 @@ Type mapping:
 | `null`            | `null`                                     |
 | `true` / `false`  | `Bool`                                     |
 | number            | `Float` (always — see below)               |
-| string            | `Str`                                      |
+| string            | `String`                                   |
 | array             | `Array`                                    |
 | object            | `Object` (insertion order preserved)       |
 
@@ -1898,9 +2073,10 @@ Additions (non-breaking):
     raises. Precedence is Rust-style (see §6.1).
 24. **`match` expression** (§9.7) — refutable pattern matching with
     literal, binding, wildcard, range, array, object, and or-patterns,
-    optional `if` guards, comma-separated arms. Non-exhaustive: a
-    `match` with no matching arm evaluates to `null`. Or-pattern
-    alternatives may not bind variables.
+    optional `if` guards, comma-separated arms. In v0.5 a `match` with
+    no matching arm evaluated to `null`; v0.11's null-conflation
+    cleanup changed this to raise a catchable `no_match` error (§9.7).
+    Or-pattern alternatives may not bind variables.
 
 ## Appendix E — Changes in v0.6
 
@@ -2179,7 +2355,7 @@ Additive changes:
 
 ## Appendix L — Changes in v0.14
 
-52. **Actors: `spawn` and `join`** (§concurrency). `spawn fn` runs a
+52. **Actors: `spawn` and `join`.** `spawn fn` runs a
     function as an *actor* — an OS thread with its own heap — and
     evaluates immediately to a `Task` handle. `join(t)`, a global
     built-in, blocks until the actor finishes and yields its result.
@@ -2200,7 +2376,7 @@ Additive changes:
     coroutines — it works with the per-thread v0.10 GC and needs no
     changes to it.
 
-53. **Channels** (§concurrency). `import 'Channel'` is the conduit
+53. **Channels.** `import 'Channel'` is the conduit
     between actors — the one reference type that crosses threads.
     `Channel.new()` is unbounded; `Channel.new(n)` bounds the buffer at
     `n`, so `send` blocks (backpressure) while full. `send(ch, v)`
@@ -2211,7 +2387,7 @@ Additive changes:
     on a closed channel raises the catchable `channel_closed`. Channels
     are bidirectional — any holder may both send and receive.
 
-54. **`select`** (§concurrency). `select { name := ch => body, ... }`
+54. **`select`.** `select { name := ch => body, ... }`
     waits on several channels at once and runs the arm of the first to
     have a message, binding `name` to that value. A trailing
     `else => body` arm makes `select` non-blocking — it runs when no
@@ -2219,7 +2395,7 @@ Additive changes:
     closed `select` raises `channel_closed`. It is not a new core
     construct — `select` desugars to a `match`.
 
-55. **`parallel[]`** (§concurrency). `parallel[] (v, iter) { body }`
+55. **`parallel[]`.** `parallel[] (v, iter) { body }`
     mirrors `for[]` but runs each iteration's body as its own actor,
     all concurrently, and collects the results into an array **in
     input order**. The body is deep-copied per actor (same sendability
@@ -2340,7 +2516,7 @@ cooperatively, together with generator functions and a runtime that
 keeps a blocking call from freezing an actor's coroutines. (Landed after
 v0.17; not separately version-numbered in the roadmap.)
 
-59. **Green threads: `go` and `yield`** (§concurrency). `go fn` runs a
+59. **Green threads: `go` and `yield`.** `go fn` runs a
     function as a *coroutine* inside the current actor and evaluates
     immediately to a **green-thread handle**. Unlike `spawn`, which
     gives each actor one OS thread and one heap with deep-copied
@@ -2362,7 +2538,7 @@ v0.17; not separately version-numbered in the roadmap.)
     across cores with separate heaps and copied messages; `go` is cheap
     concurrency on one core with a shared heap and cooperative hand-off.
 
-60. **Intra-actor channels: `LocalChannel`** (§concurrency).
+60. **Intra-actor channels: `LocalChannel`.**
     `import 'LocalChannel'` is a channel *between green threads* of one
     actor. Because every coroutine shares the actor's heap a message
     moves directly, with no deep copy and no transfer-encoding (contrast the
@@ -2375,7 +2551,7 @@ v0.17; not separately version-numbered in the roadmap.)
     `channel_closed`. `type` is `'local_channel'`; a `LocalChannel` is
     neither sendable across actors nor JSON-serializable.
 
-61. **Generators: `gen fn`** (§concurrency). `gen fn (params) { body }`
+61. **Generators: `gen fn`.** `gen fn (params) { body }`
     is a generator-function literal. *Calling* it does not run the body;
     it builds a paused coroutine and returns an iterator object
     `${next: fn()}`. Each `next()` runs the body to the next `yield`,
@@ -2392,8 +2568,8 @@ v0.17; not separately version-numbered in the roadmap.)
     thus serves both coroutine forms: in a `go` body it hands control to
     the scheduler; in a `gen fn` body it produces the next value.
 
-62. **Blocking-call offload: worker pool and async-I/O reactor**
-    (§concurrency). A blocking call (a child process, or file or socket
+62. **Blocking-call offload: worker pool and async-I/O reactor.**
+    A blocking call (a child process, or file or socket
     I/O) made while other coroutines are live no longer freezes the
     actor. The call is moved off the actor thread, the calling coroutine
     cooperatively parks, and its siblings keep running until the result

@@ -7,6 +7,13 @@
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`now_ms() -> Int`](#now_ms---int) | Reads the current wall-clock time as milliseconds since the UNIX epoch (1970-01-01 UTC). |
+| [`now_ns() -> Int`](#now_ns---int) | Reads the current wall-clock time as nanoseconds since the UNIX epoch. |
+| [`sleep_ms(n) -> null`](#sleep_msn---null) | Blocks the current thread for `n` milliseconds. |
+
+
 ### `now_ms() -> Int`
 
 Reads the current wall-clock time as milliseconds since the UNIX epoch (1970-01-01 UTC).

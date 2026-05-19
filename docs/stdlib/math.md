@@ -37,6 +37,24 @@ print(Math.E);   // => 2.718281828459045
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`sqrt(x) -> Float`](#sqrtx---float) | Computes the square root of `x`. |
+| [`log(x) -> Float`](#logx---float) | Computes the natural logarithm (base `E`) of `x`. |
+| [`log2(x) -> Float`](#log2x---float) | Computes the base-2 logarithm of `x`. |
+| [`log10(x) -> Float`](#log10x---float) | Computes the base-10 logarithm of `x`. |
+| [`exp(x) -> Float`](#expx---float) | Computes `E` raised to the power `x`. |
+| [`sin(x) -> Float`](#sinx---float) | Computes the sine of `x`, where `x` is in radians. |
+| [`cos(x) -> Float`](#cosx---float) | Computes the cosine of `x`, where `x` is in radians. |
+| [`tan(x) -> Float`](#tanx---float) | Computes the tangent of `x`, where `x` is in radians. |
+| [`pow(x, y) -> Float`](#powx-y---float) | Raises `x` to the power `y`. |
+| [`abs(x) -> Number`](#absx---number) | Computes the absolute value of `x`. |
+| [`sign(x) -> Int`](#signx---int) | Reports the sign of `x`. |
+| [`min(a, b) -> value`](#mina-b---value) | Returns the smaller of `a` and `b`, using `<` to compare. |
+| [`max(a, b) -> value`](#maxa-b---value) | Returns the larger of `a` and `b`, using `>` to compare. |
+| [`clamp(x, lo, hi) -> value`](#clampx-lo-hi---value) | Constrains `x` to the range `[lo, hi]`. |
+
+
 ### `sqrt(x) -> Float`
 
 Computes the square root of `x`.

@@ -31,6 +31,15 @@ A `recv` with no coroutine that could ever send spins forever, exactly as a cros
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new() -> LocalChannel`](#new---localchannel) | Creates an empty, unbounded intra-actor channel. |
+| [`send(ch, msg) -> Null`](#sendch-msg---null) | Enqueues `msg` by value, with no copy, since coroutines share the heap. |
+| [`recv(ch) -> Object`](#recvch---object) | Returns the next message, cooperatively waiting for one. |
+| [`try_recv(ch) -> Object`](#try_recvch---object) | Checks for a message without ever blocking or yielding. |
+| [`close(ch) -> Null`](#closech---null) | Closes the channel. |
+
+
 ### `new() -> LocalChannel`
 
 Creates an empty, unbounded intra-actor channel.

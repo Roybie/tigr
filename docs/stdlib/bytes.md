@@ -15,6 +15,23 @@ print(b[0]);            // => 104
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new(n, fill?) -> Bytes`](#newn-fill---bytes) | Creates a buffer of `n` bytes. |
+| [`from_array(arr) -> Bytes`](#from_arrayarr---bytes) | Packs an array of integers, each in `0..=255`, into a buffer. |
+| [`from_string(s) -> Bytes`](#from_strings---bytes) | Encodes a string as its UTF-8 bytes. |
+| [`from_hex(s) -> Bytes`](#from_hexs---bytes) | Decodes a hex string. |
+| [`from_base64(s) -> Bytes`](#from_base64s---bytes) | Decodes a standard-alphabet base64 string. |
+| [`to_array(b) -> Array`](#to_arrayb---array) | Copies the buffer into an array, one `Int` per byte. |
+| [`to_string(b) -> String`](#to_stringb---string) | Decodes the buffer as UTF-8 text. |
+| [`to_hex(b) -> String`](#to_hexb---string) | Encodes the buffer as lower-case hex, two digits per byte, with no separators. |
+| [`to_base64(b) -> String`](#to_base64b---string) | Encodes the buffer as standard-alphabet base64 with `=` padding. |
+| [`push(b, byte) -> Bytes`](#pushb-byte---bytes) | Appends one byte to the end of `b`, in place. |
+| [`extend(b, other) -> Bytes`](#extendb-other---bytes) | Appends every byte of `other` to `b`, in place. |
+| [`slice(b, start, end) -> Bytes`](#sliceb-start-end---bytes) | Copies `b[start..end]` into a new buffer. |
+| [`concat(a, b) -> Bytes`](#concata-b---bytes) | Builds a new buffer holding `a` followed by `b`. |
+
+
 ### `new(n, fill?) -> Bytes`
 
 Creates a buffer of `n` bytes. Without `fill` the bytes are all zero.

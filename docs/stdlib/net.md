@@ -16,6 +16,28 @@ print(Net.local_addr(listener).host);       // => 127.0.0.1
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`listen(host, port) -> Socket`](#listenhost-port---socket) | Creates a TCP listener bound to `host:port`. |
+| [`accept(listener) -> Socket`](#acceptlistener---socket) | Blocks until the next inbound connection arrives, then returns it. |
+| [`connect(host, port) -> Socket`](#connecthost-port---socket) | Opens a TCP stream to `host:port`. |
+| [`connect_tls(host, port, [ca_pem]) -> Socket`](#connect_tlshost-port-ca_pem---socket) | Opens a TLS-encrypted stream. |
+| [`listen_tls(host, port, cert_pem, key_pem) -> Socket`](#listen_tlshost-port-cert_pem-key_pem---socket) | Creates a TLS server listener bound to `host:port`. |
+| [`bind(host, port) -> Socket`](#bindhost-port---socket) | Creates a UDP datagram socket bound to `host:port`. |
+| [`send_to(sock, bytes, host, port) -> Int`](#send_tosock-bytes-host-port---int) | Sends one UDP datagram to `host:port`. |
+| [`recv_from(sock, n) -> Object`](#recv_fromsock-n---object) | Receives one UDP datagram, up to `n` bytes. |
+| [`read(sock, n) -> Bytes`](#readsock-n---bytes) | Reads up to `n` bytes from a stream. |
+| [`write(sock, bytes) -> Int`](#writesock-bytes---int) | Writes every byte of `bytes` to a stream. |
+| [`read_exact(sock, n) -> Bytes`](#read_exactsock-n---bytes) | Reads exactly `n` bytes, blocking until all of them have arrived. |
+| [`read_line(sock) -> String`](#read_linesock---string) | Reads one line, terminated by `\n`. |
+| [`read_until(sock, byte) -> Bytes`](#read_untilsock-byte---bytes) | Reads up to and including the next occurrence of `byte`. |
+| [`read_all(sock) -> Bytes`](#read_allsock---bytes) | Reads every remaining byte until end-of-stream. |
+| [`local_addr(sock) -> Object`](#local_addrsock---object) | Returns the socket's own bound address. |
+| [`peer_addr(sock) -> Object`](#peer_addrsock---object) | Returns the address of the connected peer. |
+| [`set_timeout(sock, ms) -> null`](#set_timeoutsock-ms---null) | Bounds subsequent reads and writes on `sock` to `ms` milliseconds. |
+| [`close(sock) -> null`](#closesock---null) | Closes the socket. |
+
+
 ### `listen(host, port) -> Socket`
 
 Creates a TCP listener bound to `host:port`. Pass port `0` to let the OS pick a free port, then read it back with `local_addr`.

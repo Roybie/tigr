@@ -26,6 +26,17 @@ Test.suite('arithmetic', [
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`assert(cond, msg?) -> Bool`](#assertcond-msg---bool) | Raises `msg` unless `cond` is truthy. |
+| [`assert_eq(actual, expected, msg?) -> Bool`](#assert_eqactual-expected-msg---bool) | Raises unless `actual == expected`. |
+| [`assert_ne(a, b, msg?) -> Bool`](#assert_nea-b-msg---bool) | Raises unless `a != b`. |
+| [`assert_raises(thunk, kind?) -> value`](#assert_raisesthunk-kind---value) | Runs `thunk` and raises unless `thunk` itself raised. |
+| [`fail(msg?) -> value`](#failmsg---value) | Raises unconditionally. |
+| [`case(name, func) -> Object`](#casename-func---object) | Packages a named, unrun test. |
+| [`suite(name, cases) -> Object`](#suitename-cases---object) | Runs an array of `case` descriptors. |
+
+
 ### `assert(cond, msg?) -> Bool`
 
 Raises `msg` unless `cond` is truthy.

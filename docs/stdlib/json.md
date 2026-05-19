@@ -15,6 +15,12 @@ print(JSON.parse('\{"n": 1, "ok": true\}'));    // => ${n: 1.0, ok: true}
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`parse(text) -> value`](#parsetext---value) | Parses one JSON value out of a string. |
+| [`stringify(value, indent?) -> String`](#stringifyvalue-indent---string) | Serializes a tigr value to JSON text. |
+
+
 ### `parse(text) -> value`
 
 Parses one JSON value out of a string. Whitespace before and after the value is allowed; any other trailing content is an error.

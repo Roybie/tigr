@@ -19,6 +19,20 @@ print(#s);     // => 3
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new(array?) -> Set`](#newarray---set) | Creates a set. |
+| [`add(s, x) -> Set`](#adds-x---set) | Inserts `x` into `s` in place. |
+| [`has(s, x) -> Bool`](#hass-x---bool) | Tests whether `x` is a member of `s`. |
+| [`delete(s, x) -> Bool`](#deletes-x---bool) | Removes `x` from `s` in place. |
+| [`items(s) -> Array`](#itemss---array) | Collects the set's elements into an array. |
+| [`size(s) -> Int`](#sizes---int) | Counts the elements. |
+| [`clear(s) -> Set`](#clears---set) | Removes every element from `s` in place. |
+| [`union(a, b) -> Set`](#uniona-b---set) | Builds the set of every element in either `a` or `b`. |
+| [`intersection(a, b) -> Set`](#intersectiona-b---set) | Builds the set of elements found in both `a` and `b`. |
+| [`difference(a, b) -> Set`](#differencea-b---set) | Builds the set of `a`'s elements that are not in `b`. |
+
+
 ### `new(array?) -> Set`
 
 Creates a set. With no argument it is empty; with an array, the set is built from the array's elements and duplicates collapse.

@@ -14,6 +14,22 @@ print(n);               // => 1267650600228229401496703205376
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new(x) -> BigInt`](#newx---bigint) | Builds a `BigInt` from an `Int`, a decimal `String`, or another `BigInt`. |
+| [`to_int(b) -> Int`](#to_intb---int) | Narrows a `BigInt` back to an ordinary `Int`. |
+| [`to_float(b) -> Float`](#to_floatb---float) | Converts a `BigInt` to a `Float`. |
+| [`to_str_radix(b, radix) -> String`](#to_str_radixb-radix---string) | Renders a `BigInt` as a string in a given base. |
+| [`divmod(a, b) -> Array`](#divmoda-b---array) | Divides `a` by `b`, truncating toward zero, and returns the quotient and remainder together. |
+| [`div(a, b) -> BigInt`](#diva-b---bigint) | Divides `a` by `b`, truncating toward zero, and returns just the quotient. |
+| [`abs(b) -> BigInt`](#absb---bigint) | Returns the absolute value. |
+| [`pow(base, exp) -> BigInt`](#powbase-exp---bigint) | Raises `base` to a non-negative integer power, exactly. |
+| [`sign(b) -> Int`](#signb---int) | Returns the sign of the value. |
+| [`is_negative(b) -> Bool`](#is_negativeb---bool) | Tests whether the value is below zero. |
+| [`gcd(a, b) -> BigInt`](#gcda-b---bigint) | Returns the greatest common divisor, always non-negative. |
+| [`lcm(a, b) -> BigInt`](#lcma-b---bigint) | Returns the least common multiple. |
+
+
 ### `new(x) -> BigInt`
 
 Builds a `BigInt` from an `Int`, a decimal `String`, or another `BigInt`.

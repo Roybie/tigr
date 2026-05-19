@@ -7,6 +7,15 @@
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`args -> Array`](#args---array) | The command-line arguments. |
+| [`env(name) -> String \| null`](#envname---string--null) | Reads the value of an environment variable. |
+| [`cwd() -> String`](#cwd---string) | Returns the current working directory. |
+| [`run(cmd, arg1?) -> Object`](#runcmd-arg1---object) | Runs a subprocess, waits for it to finish, and captures its output. |
+| [`exit(code) -> never`](#exitcode---never) | Exits the process immediately with the given status code. |
+
+
 ### `args -> Array`
 
 The command-line arguments. This is a value, not a function: index it directly with `Os.args[1]`.

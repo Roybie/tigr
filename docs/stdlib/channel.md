@@ -27,6 +27,15 @@ join(producer);
 
 ## Functions
 
+| Function | Summary |
+|----------|---------|
+| [`new(capacity?) -> Channel`](#newcapacity---channel) | Creates a channel. |
+| [`send(ch, msg) -> Null`](#sendch-msg---null) | Enqueues `msg`, deep-copying it into the channel. |
+| [`recv(ch) -> Object`](#recvch---object) | Blocks for the next message. |
+| [`try_recv(ch) -> Object`](#try_recvch---object) | Checks for a message without ever blocking. |
+| [`close(ch) -> Null`](#closech---null) | Closes the channel, waking every blocked sender and receiver. |
+
+
 ### `new(capacity?) -> Channel`
 
 Creates a channel. With no argument the channel is unbounded. With a positive `Int` capacity, the buffer is bounded at that many messages, and `send` blocks once it is full.

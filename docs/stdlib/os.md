@@ -60,7 +60,7 @@ Runs a subprocess, waits for it to finish, and captures its output. A non-zero e
 **Returns:** an `Object` `${code, stdout, stderr}`. `code` is the exit status (`-1` if the process was killed by a signal), and `stdout` / `stderr` are the captured output streams as `String`s.
 **Raises:** a string error if the process cannot be spawned at all (for example, the command is not found), or if any argument is not a `String`.
 
-`run` is a blocking call. Inside a green thread it is offloaded to a background worker pool, so waiting on the subprocess does not freeze the actor's other coroutines — see [concurrency](../language/concurrency.md). With no other coroutine to run, it executes inline with no overhead.
+`run` is a blocking call. Inside a green thread it is offloaded to a background worker pool, so waiting on the subprocess does not freeze the actor's other coroutines; see [concurrency](../language/concurrency.md). With no other coroutine to run, it executes inline with no overhead.
 
 ```tigr
 Os := import 'Os';

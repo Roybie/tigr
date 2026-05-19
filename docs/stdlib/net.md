@@ -100,7 +100,7 @@ Opens a TLS-encrypted stream. The `host` is also the name checked against the se
 
 - `host` *(String)*: the remote host name, verified against the server certificate.
 - `port` *(Int)*: the remote port, from 0 to 65535.
-- `ca_pem` *(String, optional)*: extra trusted root certificates, as PEM content. They are trusted in addition to the operating system trust store — pass this to reach a private-CA or self-signed service (for example a tigr `listen_tls` server).
+- `ca_pem` *(String, optional)*: extra trusted root certificates, as PEM content. They are trusted in addition to the operating system trust store; pass this to reach a private-CA or self-signed service (for example a tigr `listen_tls` server).
 
 **Returns:** a connected, encrypted stream `Socket`.
 **Raises:** a structured error, for example `tls` if the certificate fails verification, or `dns` if the host name does not resolve.
@@ -118,7 +118,7 @@ Net.close(conn);
 
 ### `listen_tls(host, port, cert_pem, key_pem) -> Socket`
 
-Creates a TLS server listener bound to `host:port`. `accept` on the returned listener performs the TCP accept *and* the TLS handshake, so it yields an already-encrypted server `Socket` — the same kind `read` / `write` / `close` already handle. Because `accept` is transparent, `Http.serve(Net.listen_tls(...), handler)` is an HTTPS server with no other change.
+Creates a TLS server listener bound to `host:port`. `accept` on the returned listener performs the TCP accept *and* the TLS handshake, so it yields an already-encrypted server `Socket`, the same kind `read` / `write` / `close` already handle. Because `accept` is transparent, `Http.serve(Net.listen_tls(...), handler)` is an HTTPS server with no other change.
 
 - `host` *(String)*: the local address to bind. Pass port `0` to let the OS pick a free port, then read it back with `local_addr`.
 - `port` *(Int)*: the local port, from 0 to 65535.
@@ -131,7 +131,7 @@ Creates a TLS server listener bound to `host:port`. `accept` on the returned lis
 ```tigr
 Net := import 'Net';
 
-// `cert` and `key` are PEM strings — read them from a file or embed them.
+// `cert` and `key` are PEM strings: read them from a file or embed them.
 listener := Net.listen_tls('127.0.0.1', 8443, cert, key);
 conn := Net.accept(listener);           // a TLS server socket
 request := Net.read_line(conn);

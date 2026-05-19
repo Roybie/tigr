@@ -104,11 +104,11 @@ h := go fn() {
 print(join(h));   // => 5050
 ```
 
-A handle may be joined more than once — every `join` returns the recorded result. An uncaught `raise` in a `go` body aborts the whole actor, so a body that might fail should `catch` internally and return a tagged value for the joiner to inspect. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
+A handle may be joined more than once; every `join` returns the recorded result. An uncaught `raise` in a `go` body aborts the whole actor, so a body that might fail should `catch` internally and return a tagged value for the joiner to inspect. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
 
 ### Intra-actor channels: `LocalChannel`
 
-`import 'LocalChannel'` is a channel *between green threads* of one actor. Because every coroutine shares the actor's heap, a message moves directly — no deep copy, no transfer-encoding (contrast the cross-actor [`Channel`](../stdlib/channel.md), which copies). `send` is unbounded and never blocks; `recv` on an empty channel `yield`s the coroutine until a value or a close arrives.
+`import 'LocalChannel'` is a channel *between green threads* of one actor. Because every coroutine shares the actor's heap, a message moves directly, with no deep copy and no transfer-encoding (contrast the cross-actor [`Channel`](../stdlib/channel.md), which copies). `send` is unbounded and never blocks; `recv` on an empty channel `yield`s the coroutine until a value or a close arrives.
 
 ```tigr
 LC := import 'LocalChannel';
@@ -126,7 +126,7 @@ while (looping) {
 };
 ```
 
-`recv` and `try_recv` return `${value: v}`, `${closed: true}` once the channel is closed and drained, or — `try_recv` only — `${empty: true}`. `send` on a closed channel raises `channel_closed`.
+`recv` and `try_recv` return `${value: v}`, `${closed: true}` once the channel is closed and drained, or (`try_recv` only) `${empty: true}`. `send` on a closed channel raises `channel_closed`.
 
 ## Generators: `gen fn`
 

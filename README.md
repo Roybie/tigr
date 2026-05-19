@@ -80,7 +80,7 @@ result := Iter.from(1..=1000)
 print(result);                         // [4, 16, 36]
 ```
 
-**Concurrency has two axes.** `spawn` starts an OS-thread actor with its own heap that shares no mutable state; `go` starts a lightweight green thread — a coroutine — inside the current actor, sharing its heap. `join` waits on either.
+**Concurrency has two axes.** `spawn` starts an OS-thread actor with its own heap that shares no mutable state; `go` starts a lightweight green thread (a coroutine) inside the current actor, sharing its heap. `join` waits on either.
 
 ```tigr
 worker := spawn fn() { 6 * 7 };
@@ -118,7 +118,7 @@ tigr is feature-complete. 638 Rust tests and 369 tigr tests pass. It runs on a b
 - a `match` expression with refutable patterns, bitwise operators, and extended number literals (`0xFF`, `1e6`, `.5`, `_`);
 - lazy `Iter` iterators whose pipelines never materialize intermediate arrays, in-place array growth, and `for` and spread consuming iterator objects directly;
 - integer-overflow checks, tail-call optimization, and bounded recursion;
-- concurrency on two axes: OS-thread actors (`spawn` and `join`), message-passing `Channel`s, a `select` block, and the structured `parallel[]` fan-out — actors share no mutable state, so that model is race-free by construction — plus lightweight green threads (`go` and `yield`) that share one actor's heap, `gen fn` generator functions, intra-actor `LocalChannel`s, and a runtime that offloads a blocking call onto a worker pool or an async-I/O reactor so it never freezes an actor's other coroutines;
+- concurrency on two axes: OS-thread actors (`spawn` and `join`), message-passing `Channel`s, a `select` block, and the structured `parallel[]` fan-out (actors share no mutable state, so that model is race-free by construction), plus lightweight green threads (`go` and `yield`) that share one actor's heap, `gen fn` generator functions, intra-actor `LocalChannel`s, and a runtime that offloads a blocking call onto a worker pool or an async-I/O reactor so it never freezes an actor's other coroutines;
 - a tracing mark-sweep garbage collector. The mutable, potentially-cyclic value types (`Array`, `Object`, `Map`, `Set`, iterators, and closure upvalue cells) are managed by a collector over a per-thread heap, so reference cycles are reclaimed rather than leaked. Collection is automatic, running at VM safepoints once the heap crosses a size threshold, and the `gc()` builtin exposes the collector's counters;
 - a standard library of 22 modules spanning `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Channel`, `LocalChannel`, `Url`, `Http`, and a `Test` framework, all written in tigr itself, plus native `IO`, `Path`, `Os`, `Time`, `DateTime`, `JSON`, `Bytes`, `BigInt`, `Net` (TCP/UDP/TLS sockets), and seedable `Random` modules.
 

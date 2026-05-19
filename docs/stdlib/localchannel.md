@@ -2,9 +2,9 @@
 
 > Pure-tigr source module, `stdlib/LocalChannel.tg`
 
-A `LocalChannel` carries messages between **green threads** of one actor — the coroutines spawned with `go`. Unlike a [`Channel`](channel.md), which crosses actor (OS-thread) boundaries and deep-copies every message, a `LocalChannel` never leaves the actor's heap. Every coroutine that touches it shares that heap, so a message moves *directly*: no copy, no transfer-encoding. `type(ch)` is `'local_channel'`, and a `LocalChannel` is not JSON-serializable and cannot be sent across actors. Import it as `LC := import 'LocalChannel'`.
+A `LocalChannel` carries messages between **green threads** of one actor, the coroutines spawned with `go`. Unlike a [`Channel`](channel.md), which crosses actor (OS-thread) boundaries and deep-copies every message, a `LocalChannel` never leaves the actor's heap. Every coroutine that touches it shares that heap, so a message moves *directly*: no copy, no transfer-encoding. `type(ch)` is `'local_channel'`, and a `LocalChannel` is not JSON-serializable and cannot be sent across actors. Import it as `LC := import 'LocalChannel'`.
 
-`LocalChannel.new()` takes no capacity: the channel is unbounded, so `send` never blocks. `recv` on an empty channel `yield`s the coroutine — a *cooperative* block — and retries when the scheduler comes back to it, so a sender coroutine gets a turn in between. `recv` and `try_recv` return an object to inspect or `match`: `${value: v}` for a message, `${closed: true}` once the channel is closed and drained, and `${empty: true}` from `try_recv` when nothing is ready.
+`LocalChannel.new()` takes no capacity: the channel is unbounded, so `send` never blocks. `recv` on an empty channel `yield`s the coroutine (a *cooperative* block) and retries when the scheduler comes back to it, so a sender coroutine gets a turn in between. `recv` and `try_recv` return an object to inspect or `match`: `${value: v}` for a message, `${closed: true}` once the channel is closed and drained, and `${empty: true}` from `try_recv` when nothing is ready.
 
 ```tigr
 LC := import 'LocalChannel';
@@ -46,7 +46,7 @@ print(type(ch));                // => local_channel
 
 ### `send(ch, msg) -> Null`
 
-Enqueues `msg` by value — no copy, since coroutines share the heap. Never blocks.
+Enqueues `msg` by value, with no copy, since coroutines share the heap. Never blocks.
 
 - `ch` *(LocalChannel)*: the channel to send on.
 - `msg` *(value)*: the message to enqueue.
@@ -64,7 +64,7 @@ print(LC.try_recv(ch).value);   // => 7
 
 ### `recv(ch) -> Object`
 
-Returns the next message, cooperatively waiting for one. While the channel is empty and open, `recv` `yield`s the coroutine so other green threads — a sender — can run.
+Returns the next message, cooperatively waiting for one. While the channel is empty and open, `recv` `yield`s the coroutine so other green threads (a sender) can run.
 
 - `ch` *(LocalChannel)*: the channel to receive from.
 

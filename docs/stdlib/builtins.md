@@ -167,15 +167,15 @@ print(type(snap.collections)); // => int
 
 Waits for a concurrent computation to finish and returns its result. `join` accepts either kind of handle:
 
-- A **`Task`** from `spawn` — `join` blocks the OS thread until the actor finishes. The result is deep-copied into the calling actor's heap. If the actor ended in an error, `join` re-raises it so the caller can `try`/`catch` it. Joining the same task twice raises.
-- A **green-thread handle** from `go` — `join` *cooperatively* yields the caller until the coroutine returns, letting the scheduler run the other coroutines meanwhile, then evaluates to the coroutine's return value (no copy — coroutines share a heap). A green-thread handle may be joined any number of times. `join` from inside a generator body, or one that would block with no other coroutine able to run, raises rather than hanging.
+- A **`Task`** from `spawn`: `join` blocks the OS thread until the actor finishes. The result is deep-copied into the calling actor's heap. If the actor ended in an error, `join` re-raises it so the caller can `try`/`catch` it. Joining the same task twice raises.
+- A **green-thread handle** from `go`: `join` *cooperatively* yields the caller until the coroutine returns, letting the scheduler run the other coroutines meanwhile, then evaluates to the coroutine's return value (no copy, since coroutines share a heap). A green-thread handle may be joined any number of times. `join` from inside a generator body, or one that would block with no other coroutine able to run, raises rather than hanging.
 
 `spawn`/`go` and `join` are a pair: one starts a computation, `join` waits for it; neither needs an import.
 
 - `handle` *(Task or green thread)*: the handle of the computation to wait for.
 
 **Returns:** the value the actor's or coroutine's function evaluated to.
-**Raises:** for a `Task`, whatever the actor raised — a `raise`d value verbatim, or a built-in runtime error as `${kind, message, trace, worker}` with `worker` true; joining the same task twice raises a string error. (An uncaught `raise` in a `go` coroutine aborts the whole actor, so it never surfaces at the coroutine's `join`.)
+**Raises:** for a `Task`, whatever the actor raised: a `raise`d value verbatim, or a built-in runtime error as `${kind, message, trace, worker}` with `worker` true; joining the same task twice raises a string error. (An uncaught `raise` in a `go` coroutine aborts the whole actor, so it never surfaces at the coroutine's `join`.)
 
 ```tigr
 t := spawn fn() { 6 * 7 };

@@ -331,7 +331,7 @@ join(server);
 
 Runs an accept loop on `listener`, handing each connection to its own `spawn`ed actor. A `handler` returning a `String` becomes a `200 text/plain` response; an `Object` is sent as the response as-is. A handler that raises yields a best-effort `500`, so one bad request never stops the loop. `serve` runs until its `listener` is closed: `close(listener)` from any actor makes the next `accept` raise `closed`, which `serve` catches and returns from cleanly.
 
-- `listener` *(socket)*: a listening socket from `Net.listen` — or from `Net.listen_tls`, which makes `serve` an HTTPS server. A TLS listener's `accept` yields encrypted sockets transparently, so neither `serve` nor the `handler` changes.
+- `listener` *(socket)*: a listening socket from `Net.listen`, or from `Net.listen_tls`, which makes `serve` an HTTPS server. A TLS listener's `accept` yields encrypted sockets transparently, so neither `serve` nor the `handler` changes.
 - `handler` *(Function)*: a sendable function taking a request and returning a `String` or a response `Object`. It must `import` any modules it uses inside its own body.
 
 **Returns:** `null`, once the listener is closed.

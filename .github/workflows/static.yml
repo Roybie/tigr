@@ -47,6 +47,11 @@ jobs:
       - name: Build playground WASM into web/pkg/
         run: sh web/build.sh
 
+      # Serve the installer from Pages so the curl|sh URL is stable:
+      # https://roybie.github.io/tigr/install.sh
+      - name: Stage install script for Pages
+        run: cp install.sh web/install.sh
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

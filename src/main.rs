@@ -33,6 +33,14 @@ fn main() -> ExitCode {
     if args.get(1).map(String::as_str) == Some("bench") {
         return bench_runner::run(args.get(2).map(String::as_str));
     }
+    // `tigr --version` / `-V` — report the version and exit.
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some("--version" | "-V" | "version")
+    ) {
+        println!("tigr {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let mut filename: Option<&str> = None;
     let mut legacy = false;
     // First non-flag arg is the script. Anything after that is
@@ -45,6 +53,10 @@ fn main() -> ExitCode {
             "--legacy" => legacy = true,
             "-h" | "--help" => {
                 print_usage();
+                return ExitCode::SUCCESS;
+            }
+            "--version" | "-V" => {
+                println!("tigr {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
             other => filename = Some(other),
@@ -91,5 +103,6 @@ fn print_usage() {
     eprintln!("       tigr test [<path>]         (discover and run *_test.tg / tests/)");
     eprintln!("       tigr disasm <file.tg> [-r] (print compiled bytecode; -r for nested)");
     eprintln!("       tigr bench [<path>]        (discover and time bench/*.tg)");
+    eprintln!("       tigr --version             (print the tigr version)");
     eprintln!("       tigr --legacy <file.tg>    (v0.1 interpreter; not currently wired)");
 }

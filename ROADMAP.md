@@ -681,14 +681,15 @@ Installing Tigr today means cloning the repo and `cargo build
 For anyone to *use* Tigr on another machine there must be a one-step
 install.
 
-- **Prebuilt release binaries.** A GitHub Actions workflow that builds
-  `tigr` for the common targets — macOS arm64 + x86_64, Linux x86_64
-  (glibc), optionally Linux arm64 and Windows — and attaches them to a
-  tagged GitHub Release.
-- **`curl | sh` install script.** A hosted `install.sh` that detects
-  OS/arch, downloads the matching release binary, and places it on
-  `PATH`: `curl -fsSL https://<site>/install.sh | sh`. Lowest friction,
-  no package manager required.
+- **Prebuilt release binaries.** ✅ done — `.github/workflows/release.yml`
+  builds `tigr` for all five targets (macOS arm64 + x86_64, Linux x86_64
+  + arm64 glibc, Windows x86_64) on every `v*` tag and attaches the
+  archives to the GitHub Release.
+- **`curl | sh` install script.** ✅ done — `install.sh` (served from
+  Pages at `https://roybie.github.io/tigr/install.sh`) detects OS/arch,
+  downloads the matching release binary, and places it on `PATH`:
+  `curl -fsSL https://roybie.github.io/tigr/install.sh | sh`. Lowest
+  friction, no package manager required.
 - **Homebrew.** A tap (`Roybie/homebrew-tigr`) with a formula pinning
   the release tarball + sha256, so `brew install roybie/tigr/tigr`
   works on macOS and Linux. Bump on each release — automatable from the
@@ -700,9 +701,10 @@ install.
   if Linux users ask.
 - **Version string.** The crate version now tracks the `v0.N` line —
   `Cargo.toml`, `Cargo.lock`, `LANGUAGE.md`, and the web playground all
-  read `0.17` as of the v0.17 version bump. What remains for
-  distribution: real release tags, and a `tigr --version` flag that
-  reports the version.
+  read `0.17` as of the v0.17 version bump. `tigr --version` ✅ done
+  (reports `CARGO_PKG_VERSION`); the release workflow's version guard
+  fails the build if a tag does not match `Cargo.toml`. What remains:
+  cutting the first real release tag.
 - **Design detail — where the site lives.** The install script and the
   optional item-30 docs site both need a URL; GitHub Pages off the repo
   is free and sufficient, and the two can share it.

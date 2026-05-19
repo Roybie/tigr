@@ -1,0 +1,92 @@
+# Builds the `tigr` binary for every supported target whenever a `v*`
+# tag is pushed, and attaches the archives to a GitHub Release for that
+# tag. The install.sh script downloads these archives.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# The release job needs to create the release and upload assets.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One target failing should not cancel the others — a partial
+      # release is still useful and easier to diagnose.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          # macOS x86_64 cross-compiles cleanly from the arm64 runner —
+          # the Apple toolchain is universal, so no separate Intel runner.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Guard against shipping a release whose `tigr --version` would lie:
+      # `--version` reads CARGO_PKG_VERSION, so the tag must match Cargo.toml.
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          echo "tag=$tag  Cargo.toml=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml version $crate" >&2
+            exit 1
+          fi
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --bin tigr --target ${{ matrix.target }}
+
+      # Asset names are unversioned so install.sh can fetch them via the
+      # releases/latest/download/<asset> endpoint without resolving a version.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.zip" tigr.exe
+
+      # softprops/action-gh-release creates the release for the pushed tag
+      # on first upload and appends assets on subsequent matrix jobs.
+      # Non-matching `files` patterns are skipped, so listing both archive
+      # forms is harmless.
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            tigr-${{ matrix.target }}.tar.gz
+            tigr-${{ matrix.target }}.zip

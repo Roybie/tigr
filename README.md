@@ -12,6 +12,21 @@ This README is the overview: how to run Tigr and a short tour. For the full refe
 
 ---
 
+## Installing tigr
+
+On macOS and Linux, the install script downloads a prebuilt binary for your
+platform and puts it on your `PATH`:
+
+```bash
+curl -fsSL https://roybie.github.io/tigr/install.sh | sh
+```
+
+It installs to `~/.tigr/bin` by default. Set `TIGR_BIN_DIR` to install
+elsewhere, or `TIGR_VERSION` (e.g. `v0.18.0`) to pin a specific release. Once
+installed, `tigr --version` confirms it works.
+
+To build from source instead, you need a Rust toolchain — see below.
+
 ## Running tigr
 
 ```bash
@@ -24,6 +39,7 @@ cargo build --release
 ./target/release/tigr disasm program.tg                # print compiled bytecode
 ./target/release/tigr disasm program.tg -r             # also recurse into nested functions
 ./target/release/tigr bench                            # time the bench/ suite
+./target/release/tigr --version                        # print the tigr version
 ```
 
 When a script finishes, its final value is printed, so a one-line file containing `1 + 1` produces `2`. With no argument, tigr starts an interactive REPL.

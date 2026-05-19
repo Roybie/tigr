@@ -2,3 +2,6 @@ target
 
 src/v01/parser/mod.rs
 .tags
+
+# Copied into web/ at Pages build time; canonical source is ./install.sh
+web/install.sh

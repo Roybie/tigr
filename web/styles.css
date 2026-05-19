@@ -102,27 +102,13 @@ kbd {
   background: var(--bg-elev);
 }
 
-/* Logomark — three rising bars + lowercase wordmark + version pill */
+/* Logomark — lowercase wordmark + version pill */
 .logomark {
   display: flex;
   align-items: center;
   gap: 10px;
   user-select: none;
 }
-.logomark .bars {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 14px;
-}
-.logomark .bar {
-  width: 3px;
-  background: var(--accent);
-  border-radius: 1px;
-}
-.logomark .bar.b1 { height: 6px;  }
-.logomark .bar.b2 { height: 10px; }
-.logomark .bar.b3 { height: 14px; }
 .logomark .wordmark {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -646,6 +632,15 @@ kbd {
   border-radius: 999px;
   background: color-mix(in oklch, var(--ok) 14%, var(--bg));
   border: 1px solid color-mix(in oklch, var(--ok) 30%, var(--line));
+}
+/* `display: inline-flex` above outranks the UA [hidden] rule — restore
+   it so the pill stays hidden until the first run sets it. */
+.exit-pill[hidden] { display: none; }
+/* Error run — glue toggles .is-error; the dot inherits via currentColor. */
+.exit-pill.is-error {
+  color: var(--err);
+  background: color-mix(in oklch, var(--err) 14%, var(--bg));
+  border-color: color-mix(in oklch, var(--err) 30%, var(--line));
 }
 .exit-pill-dot {
   width: 5px;

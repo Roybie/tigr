@@ -46,11 +46,6 @@
   <!-- ─── Top bar ─────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="logomark" aria-label="tigr">
-      <span class="bars" aria-hidden="true">
-        <span class="bar b1"></span>
-        <span class="bar b2"></span>
-        <span class="bar b3"></span>
-      </span>
       <span class="wordmark">tigr</span>
       <span class="version">v0.17</span>
     </div>
@@ -196,12 +191,12 @@
           <div class="pane-bar pane-bar-sub">
             <div class="pane-bar-left">
               <span class="pane-title">Output</span>
-              <span class="pane-meta">finished in 12 ms</span>
+              <span class="pane-meta" id="editor-meta">finished in 12 ms</span>
             </div>
             <div class="pane-bar-right">
-              <span class="exit-pill" aria-label="exit code 0">
+              <span class="exit-pill" id="editor-exit" aria-label="exit code 0" hidden>
                 <span class="exit-pill-dot" aria-hidden="true"></span>
-                exit 0
+                <span class="exit-pill-label">exit 0</span>
               </span>
             </div>
           </div>

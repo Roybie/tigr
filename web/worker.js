@@ -10,7 +10,7 @@
 //   main -> worker : { id, kind: 'eval' | 'run', source }
 //                    { id, kind: 'reset' }
 //   worker -> main : { kind: 'ready' }
-//                    { id, ok, incomplete, value, output, error }
+//                    { id, ok, incomplete, value, output, error, ms }
 
 import init, { WasmRepl, run_program } from './pkg/tigr.js';
 
@@ -38,6 +38,9 @@ self.onmessage = (e) => {
   }
 
   let res;
+  // Time the VM call itself — compile + run — so `ms` is execution time,
+  // not the postMessage round-trip the main thread would otherwise see.
+  const t0 = performance.now();
   try {
     const r = msg.kind === 'run' ? run_program(msg.source) : repl.eval(msg.source);
     // Copy every field out before freeing the wasm-owned struct.
@@ -48,12 +51,13 @@ self.onmessage = (e) => {
       value: r.value,
       output: r.output,
       error: r.error,
+      ms: performance.now() - t0,
     };
     r.free();
   } catch (err) {
     // A panic in the VM traps the wasm instance; surface it rather
     // than leaving the request unanswered.
-    res = { id: msg.id, ok: false, incomplete: false, value: '', output: '', error: String(err) };
+    res = { id: msg.id, ok: false, incomplete: false, value: '', output: '', error: String(err), ms: performance.now() - t0 };
   }
   self.postMessage(res);
 };

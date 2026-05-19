@@ -60,7 +60,7 @@ const ui = {};
 const HOOKS = [
   'tab-repl', 'tab-editor', 'panel-repl', 'panel-editor',
   'repl-scrollback', 'repl-prompt', 'repl-input', 'repl-reset',
-  'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-examples',
+  'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-meta', 'editor-exit', 'editor-examples',
   'status',
 ];
 
@@ -187,12 +187,36 @@ function resetRepl(vm) {
 
 // --- Editor ----------------------------------------------------------
 
+// The runtime the worker measured around the VM call, as the output
+// pane's meta line. Sub-millisecond clock resolution is clamped on
+// non-isolated origins, so a too-fast run reads "<1 ms" rather than "0".
+function formatRuntime(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms)) return '';
+  if (ms < 1) return 'finished in <1 ms';
+  return `finished in ${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
+}
+
+// The output pane's exit pill. The VM has no real exit codes, so this
+// maps the run's success flag onto the conventional 0 / 1 — and turns
+// red (.is-error) on a raised error.
+function setExitPill(ok) {
+  const pill = ui.editor_exit;
+  if (!pill) return;
+  pill.hidden = false;
+  pill.classList.toggle('is-error', !ok);
+  pill.setAttribute('aria-label', ok ? 'exit code 0' : 'exit code 1');
+  const label = pill.querySelector('.exit-pill-label');
+  if (label) label.textContent = ok ? 'exit 0' : 'exit 1';
+}
+
 async function runProgram(vm) {
   clearDemoEntries(ui.editor_output);
   if (ui.editor_output) ui.editor_output.textContent = '';
   setStatus('running…');
   const result = await vm.send({ kind: 'run', source: editor.getValue() });
   setStatus('ready');
+  if (ui.editor_meta) ui.editor_meta.textContent = formatRuntime(result.ms);
+  setExitPill(result.ok);
   if (ui.editor_output) {
     const entry = el('div', 'entry');
     renderResult(entry, result);
@@ -304,6 +328,8 @@ function main() {
   }
   ui.editor_stop?.addEventListener('click', () => stopProgram(vm));
   clearDemoEntries(ui.editor_output);
+  // Drop the design's placeholder "finished in 12 ms" until a real run.
+  if (ui.editor_meta) ui.editor_meta.textContent = '';
   loadExamples();
   setupPaneSplitter();
 

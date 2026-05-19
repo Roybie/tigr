@@ -16,6 +16,8 @@ import { EditorView, basicSetup }
   from 'https://esm.sh/codemirror@6.0.2?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0,@codemirror/language@6.12.3,@lezer/highlight@1.2.3';
 import { keymap }
   from 'https://esm.sh/@codemirror/view@6.43.0?deps=@codemirror/state@6.6.0';
+import { Prec }
+  from 'https://esm.sh/@codemirror/state@6.6.0';
 import { indentWithTab }
   from 'https://esm.sh/@codemirror/commands@6.10.3?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0';
 import { StreamLanguage, LanguageSupport, HighlightStyle, syntaxHighlighting, indentUnit }
@@ -182,10 +184,13 @@ export function createEditor(parent, doc, onRun) {
       syntaxHighlighting(tigrHighlight),
       tigrTheme,
       indentUnit.of('  '),
-      keymap.of([
+      // Prec.highest so this Mod-Enter binding beats basicSetup's
+      // default keymap, which already maps Mod-Enter to `insertBlankLine`
+      // (without this it loses the precedence race and just adds a line).
+      Prec.highest(keymap.of([
         indentWithTab,
         { key: 'Mod-Enter', preventDefault: true, run: () => { onRun?.(); return true; } },
-      ]),
+      ])),
     ],
   });
 

@@ -116,7 +116,7 @@ function renderResult(target, result) {
 // localStorage, and the editor autosaves to it while it is selected.
 const SCRATCH_KEY = 'tigr.playground.scratch';
 const SCRATCH_PLACEHOLDER =
-  '// scratch — your sandbox.\n// nothing here yet. type away.\n';
+  '// scratch: your sandbox.\n// nothing here yet. type away.\n';
 
 // True while the scratch slot is the selected example — gates autosave
 // so loading a bundled example never overwrites the saved sandbox.

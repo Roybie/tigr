@@ -7,7 +7,7 @@
 // threads, which run client-side).
 
 export const EXAMPLES = {
-  expressions: `// Everything is an expression — blocks, if, and loops all yield a value.
+  expressions: `// Everything is an expression, blocks, if, and loops all yield a value.
 
 // A block evaluates to its last expression.
 size := { base := 10; base * base };
@@ -28,13 +28,13 @@ grades := for[] (score, [91, 50, 72]) {
 print('grades =', grades);                      // => [pass, fail, pass]
 `,
 
-  pipelines: `// Pipelines — the pipe '|>' threads a value left-to-right, and lazy
+  pipelines: `// Pipelines: the pipe '|>' threads a value left-to-right, and lazy
 // 'Iter' runs each element through the whole chain without ever
 // building the intermediate arrays.
 
 Iter := import 'Iter';
 
-// 'x |> f(args)' is simply 'f(x, args)' — read top to bottom.
+// 'x |> f(args)' is simply 'f(x, args)' read top to bottom.
 double := fn(x) { x * 2 };
 print('piped =', 5 |> double() |> double());     // => 20
 
@@ -52,7 +52,7 @@ sum := Iter.from(1..=100) |> Iter.reduce(fn(a, b) { a + b }, 0);
 print('sum 1..100 =', sum);                       // => 5050
 `,
 
-  match: `// 'match' is an expression — it yields the body of the first arm whose
+  match: `// 'match' is an expression, it yields the body of the first arm whose
 // pattern fits, so it slots in anywhere a value is expected.
 
 // Literal and range patterns, plus a bare name that binds the value.
@@ -67,7 +67,7 @@ classify := fn(n) {
 print(for[] (n, [0, 7, 42, 5000]) { classify(n) });
 // => [zero, one digit, two digits, large: 5000]
 
-// Patterns can match structure — here, objects as tagged variants.
+// Patterns can match structure, e.g. objects as tagged variants.
 area := fn(shape) {
   match shape {
     \${kind: 'circle', r}  => 3.14159 * r ^^ 2,
@@ -79,7 +79,7 @@ print('circle =', area(\${kind: 'circle', r: 2}));    // => 12.56636
 print('rect   =', area(\${kind: 'rect', w: 3, h: 4})); // => 12
 `,
 
-  destructuring: `// Destructuring — bind several names at once by shape, both in ':='
+  destructuring: `// Destructuring, bind several names at once by shape, both in ':='
 // and in function parameters.
 
 // Array patterns, with '...rest' to gather the tail.
@@ -104,7 +104,7 @@ distance_sq := fn([x1, y1], [x2, y2]) {
 print('distance^2 =', distance_sq([0, 0], [3, 4]));  // => 25
 `,
 
-  closures: `// Closures capture by reference — a returned function keeps a live
+  closures: `// Closures capture by reference, a returned function keeps a live
 // link to the variables it closed over, not a snapshot.
 
 make_counter := fn() {
@@ -143,7 +143,7 @@ print(g.next());                        // => \${done: false, value: 1}
 for (x, ramp(3)) { print('step', x) };   // => step 0 / step 1 / step 2
 print('spread =', [...ramp(5)]);          // => [0, 1, 2, 3, 4]
 
-// Generators can be infinite — they only compute what is pulled.
+// Generators can be infinite, they only compute what is pulled.
 naturals := gen fn() {
   i := 0;
   while true { yield i; i = i + 1; };
@@ -153,7 +153,7 @@ print('first 6 =', naturals() |> Iter.take(6) |> Iter.collect());
 // => [0, 1, 2, 3, 4, 5]
 `,
 
-  green: `// Green threads — 'go' starts a coroutine that runs cooperatively
+  green: `// Green threads, 'go' starts a coroutine that runs cooperatively
 // inside this actor; 'join' waits for one and returns its result.
 
 // 'go' evaluates to a handle you can 'join' later.
@@ -197,7 +197,7 @@ join(producer);
 print('received =', received);               // => [10, 20, 30, 40, 50]
 `,
 
-  errors: `// Errors are values — 'raise' throws any value, 'catch' binds exactly
+  errors: `// Errors are values, 'raise' throws any value, 'catch' binds exactly
 // what was thrown, and built-in errors arrive as a structured object.
 
 // A raised value comes back verbatim.

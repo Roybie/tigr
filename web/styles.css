@@ -55,7 +55,11 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 body {
   margin: 0;
   font-family: var(--font-sans);
@@ -86,7 +90,7 @@ kbd {
 /* ─── App shell ────────────────────────────────────────────────────────── */
 
 .app {
-  height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-rows: auto 1fr;
   background: var(--bg);
@@ -456,6 +460,7 @@ kbd {
 .pane-splitter {
   height: 6px;
   cursor: row-resize;
+  touch-action: none;
   background: var(--bg-elev);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -894,10 +899,39 @@ kbd {
 @media (max-width: 720px) {
   .topbar { grid-template-columns: auto 1fr auto; padding: 0 12px; gap: 8px; }
   .logomark .version { display: none; }
-  .panel-editor.is-active { grid-template-rows: 1.2fr 1fr; }
   .editor-textarea { padding-left: 56px; }
   .editor-wrap { background-size: 44px 100%; }
   .pane-bar { padding: 0 10px; height: 38px; }
   .repl-scrollback, .repl-active, .repl-hint { padding-left: 16px; padding-right: 16px; }
   .btn-kbd { display: none; }
+
+  /* Lock the page so iOS can't scroll the whole document off-screen
+     when an input is focused. */
+  body { position: fixed; inset: 0; width: 100%; }
+
+  /* Reclaim topbar width — the status reads "ready" the vast majority
+     of the time and is not worth the space on a phone. */
+  .topbar-status, .topbar-divider { display: none; }
+
+  /* REPL only: shrink to the visual viewport (kept current by app.js)
+     so the input row rides above the on-screen keyboard. The playground
+     stays full height — the keyboard simply overlays its output pane. */
+  body[data-tab="repl"] .app { height: var(--vvh, 100dvh); }
+
+  /* Editor column spans the full width; the sidebar overlays it rather
+     than stealing a grid column. */
+  .panel-editor.is-active { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    width: min(240px, 78vw);
+  }
+
+  /* A 6px splitter is too thin to grab with a finger. */
+  .editor-column { grid-template-rows: 1.45fr 16px 1fr; }
+  .pane-splitter { height: 16px; }
+
+  /* 16px input text stops iOS Safari auto-zooming on focus. */
+  .repl-input { font-size: 16px; }
 }

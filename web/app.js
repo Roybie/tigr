@@ -83,6 +83,16 @@ function setStatus(text) {
   if (ui.status) ui.status.textContent = text;
 }
 
+// Mirror the visual-viewport height into `--vvh`. On mobile this shrinks
+// when the on-screen keyboard opens; the REPL panel's CSS height reads
+// it so the input row stays above the keyboard. On desktop it just
+// tracks the window height, so the var is harmless there.
+function syncViewportHeight() {
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  document.documentElement.style.setProperty('--vvh', `${h}px`);
+}
+
 // The editor pane's filename meta — mirrors the selected example, the
 // same way the Output pane's meta line carries the run time.
 function setEditorFile(key) {
@@ -164,6 +174,8 @@ function activateTab(which) {
   ui.tab_editor?.setAttribute('aria-selected', String(!isRepl));
   ui.panel_repl?.classList.toggle('is-active', isRepl);
   ui.panel_editor?.classList.toggle('is-active', !isRepl);
+  // CSS keys the REPL-only keyboard-aware height off this attribute.
+  document.body.dataset.tab = which;
   if (isRepl) ui.repl_input?.focus();
 }
 
@@ -309,7 +321,19 @@ function loadExamples() {
     scratchActive = isScratch;
     editor.setValue(src);
     setEditorFile(key);
+    // On a phone the sidebar overlays the editor — collapse it once a
+    // selection is made so the editor is visible again.
+    if (isNarrowViewport()) collapseSidebar();
   });
+}
+
+// On phones the examples sidebar is an overlay rather than a column.
+function isNarrowViewport() {
+  return window.matchMedia('(max-width: 720px)').matches;
+}
+function collapseSidebar() {
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle) toggle.checked = true;
 }
 
 // --- Pane splitter ---------------------------------------------------
@@ -334,8 +358,11 @@ function setupPaneSplitter() {
   splitter.addEventListener('pointermove', (e) => {
     if (!dragging) return;
     const rect = column.getBoundingClientRect();
-    const top = Math.max(MIN, Math.min(e.clientY - rect.top, rect.height - MIN - 6));
-    column.style.gridTemplateRows = `${top}px 6px 1fr`;
+    // The splitter row is taller on touch layouts — measure it rather
+    // than assume the desktop 6px.
+    const bar = splitter.offsetHeight || 6;
+    const top = Math.max(MIN, Math.min(e.clientY - rect.top, rect.height - MIN - bar));
+    column.style.gridTemplateRows = `${top}px ${bar}px 1fr`;
   });
   const end = () => {
     if (!dragging) return;
@@ -352,6 +379,17 @@ function setupPaneSplitter() {
 function main() {
   bindUI();
   const vm = new VM();
+
+  // Keep `--vvh` current and mark the starting tab so the keyboard-aware
+  // REPL height has something to read from the first paint.
+  document.body.dataset.tab = 'editor';
+  syncViewportHeight();
+  window.visualViewport?.addEventListener('resize', syncViewportHeight);
+  window.visualViewport?.addEventListener('scroll', syncViewportHeight);
+
+  // On a phone the sidebar overlays the editor — start it collapsed so
+  // the playground opens onto the editor, not the examples list.
+  if (isNarrowViewport()) collapseSidebar();
 
   // Tabs.
   ui.tab_repl?.addEventListener('click', () => activateTab('repl'));

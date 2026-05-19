@@ -24,3 +24,10 @@
   /* Match the design's editor padding (textarea used 14px 16px). */
   padding: 4px 4px 4px 0;
 }
+
+/* On phones, bump the editor text to 16px: iOS Safari auto-zooms when a
+   focused contenteditable is under 16px, which then forces a horizontal
+   scrollbar. */
+@media (max-width: 720px) {
+  #editor .cm-scroller { font-size: 16px; }
+}

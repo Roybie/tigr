@@ -6,9 +6,12 @@ Tigr is a small, expression-oriented language run by a bytecode VM. This page co
 
 ## Everything is an expression
 
-Every construct in Tigr produces a value. There are no statements. A block evaluates to its last expression, an `if` evaluates to whichever branch ran, a function evaluates to whatever its body ends with. The common case needs no `return`.
+Every construct in Tigr produces a value. There are no statements. A block evaluates to its last expression (`null` if the expression is terminated with `;`), an `if` evaluates to whichever branch ran, a function evaluates to whatever its body ends with. The common case needs no `return`.
 
 ```tigr
+a := { 1; 2; 3 }; // => a == 3
+b := { 1; 2; 3; }; // => b == null
+
 x := if 5 > 3 { 'big' } else { 'small' };
 print(x);   // => big
 

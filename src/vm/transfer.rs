@@ -27,6 +27,7 @@ use num_bigint::BigInt;
 
 use crate::vm::channel::ChannelHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::file_handle::FileHandle;
 use crate::vm::socket::SocketHandle;
 use crate::vm::task::TaskHandle;
 use crate::vm::gc::{
@@ -70,6 +71,9 @@ pub enum Transfer {
     /// A socket handle — `Arc`-backed and `Send`; crosses by clone, so
     /// a `spawn`ed connection handler can capture the accepted socket.
     Socket(SocketHandle),
+    /// A file handle (`IO.open`) — `Arc`-backed and `Send`; crosses by
+    /// clone, so a `spawn`ed worker can read a file the parent opened.
+    File(FileHandle),
 }
 
 /// A worker actor's error, rendered to `Send`-able form so it can cross
@@ -108,6 +112,7 @@ impl std::fmt::Debug for Transfer {
             Transfer::Channel(_) => "Channel",
             Transfer::Task(_) => "Task",
             Transfer::Socket(_) => "Socket",
+            Transfer::File(_) => "File",
         };
         write!(f, "Transfer::{name}")
     }
@@ -244,6 +249,7 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
         Value::Channel(h) => Transfer::Channel(h.clone()),
         Value::Task(h) => Transfer::Task(h.clone()),
         Value::Socket(h) => Transfer::Socket(h.clone()),
+        Value::File(h) => Transfer::File(h.clone()),
         Value::Iter(_) => return Err(not_sendable("an iterator")),
         Value::Generator(_) => return Err(not_sendable("a generator")),
         Value::GreenHandle(_) => return Err(not_sendable("a green thread")),
@@ -312,6 +318,7 @@ pub fn decode(t: Transfer) -> Value {
         Transfer::Channel(h) => Value::Channel(h),
         Transfer::Task(h) => Value::Task(h),
         Transfer::Socket(h) => Value::Socket(h),
+        Transfer::File(h) => Value::File(h),
     }
 }
 

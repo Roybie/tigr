@@ -18,6 +18,7 @@ use num_bigint::BigInt as BigIntData;
 
 use crate::vm::channel::ChannelHandle;
 use crate::vm::chunk::Chunk;
+use crate::vm::file_handle::FileHandle;
 use crate::vm::socket::SocketHandle;
 use crate::vm::task::TaskHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
@@ -84,6 +85,11 @@ pub enum Value {
     // `Arc`-backed, `Send`, a GC leaf, identity equality — so it can
     // cross an actor boundary into a `spawn`ed connection handler.
     Socket(SocketHandle),
+
+    // Streaming file handle (`IO.open`). Like `Socket`: `Arc`-backed,
+    // `Send`, a GC leaf, identity equality. Crosses actor boundaries
+    // so a `spawn`ed worker can read/write a file the parent opened.
+    File(FileHandle),
 
     // green threads — a paused generator coroutine. Produced by calling
     // a `gen fn`; never directly visible to tigr code, which only sees
@@ -479,6 +485,7 @@ impl Value {
             Value::Channel(_) => "channel",
             Value::Task(_) => "task",
             Value::Socket(_) => "socket",
+            Value::File(_) => "file",
             Value::Generator(_) => "generator",
             Value::GreenHandle(_) => "green_thread",
             Value::LocalChannel(_) => "local_channel",
@@ -555,6 +562,7 @@ impl PartialEq for Value {
             (Channel(a), Channel(b)) => Arc::ptr_eq(a, b),
             (Task(a), Task(b)) => Arc::ptr_eq(a, b),
             (Socket(a), Socket(b)) => Arc::ptr_eq(a, b),
+            (File(a), File(b)) => Arc::ptr_eq(a, b),
             (Generator(a), Generator(b)) => a == b,
             (GreenHandle(a), GreenHandle(b)) => a == b,
             (LocalChannel(a), LocalChannel(b)) => a == b,
@@ -694,6 +702,7 @@ impl fmt::Display for Value {
             Value::Channel(_) => f.write_str("<channel>"),
             Value::Task(_) => f.write_str("<task>"),
             Value::Socket(s) => write!(f, "<socket #{}>", s.id()),
+            Value::File(fh) => write!(f, "<file #{}>", fh.id()),
             Value::Generator(_) => f.write_str("<generator>"),
             Value::GreenHandle(_) => f.write_str("<green thread>"),
             Value::LocalChannel(_) => f.write_str("<local channel>"),

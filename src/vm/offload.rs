@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 use std::thread;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::file_handle::FileHandle;
 use crate::vm::gc;
 use crate::vm::socket::SocketHandle;
 use crate::vm::value::Value;
@@ -64,6 +65,8 @@ pub enum OffloadOk {
     StrOrNull(Option<String>),
     /// A socket result (`Net.accept` / `connect` / `connect_tls`).
     Socket(SocketHandle),
+    /// A file handle result (`IO.open`).
+    File(FileHandle),
     /// `Net.recv_from` — one UDP datagram plus its sender's address.
     RecvFrom { data: Vec<u8>, host: String, port: u16 },
     /// `Os.run` — child-process exit code plus captured output.
@@ -134,6 +137,7 @@ fn decode_ok(ok: OffloadOk) -> Value {
             None => Value::Null,
         },
         OffloadOk::Socket(h) => Value::Socket(h),
+        OffloadOk::File(h) => Value::File(h),
         OffloadOk::RecvFrom { data, host, port } => {
             crate::vm::native_modules::object(&[
                 ("data", Value::Bytes(gc::alloc_bytes(data))),

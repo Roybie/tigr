@@ -1,21 +1,30 @@
 //! `import 'IO'` — file and stdio operations.
 //!
-//! Fallible IO (`read_file`, `write_file`, `append_file`, `read_line`,
-//! `list_dir`, `mkdir`, `remove`, `stat`) raises a string-valued error
-//! on failure — catchable via `try`. Predicate-style entries (`exists`,
-//! `is_dir`, `is_file`) never raise. Output entries (`eprint`) match
-//! `print` semantics: space-separated args + newline.
+//! Two flavours of file IO live in this module:
 //!
-//! The genuinely-waiting calls (file reads/writes, directory ops,
-//! `read_line`) are *blocking* natives: inside a green thread they are
-//! offloaded to a worker pool so IO does not stall the actor's other
-//! coroutines (see [`crate::vm::offload`]). The fast metadata-only ops
-//! (`exists`, `is_dir`, `is_file`, `stat`) stay inline — offloading a
-//! microsecond `stat` would cost more than it saves.
+//! * Whole-file path-based ops (`read_file`, `write_file`, `append_file`,
+//!   `read_bytes`, `write_bytes`, `append_bytes`) — convenient for small
+//!   files. Errors are plain string values.
+//! * Streaming handle-based ops (`open`, `read`, `read_line`, `read_until`,
+//!   `read_exact`, `read_all`, `write`, `seek`, `tell`, `close`) — the
+//!   only way to process a file larger than memory. Errors are structured
+//!   `${kind, message}` like `Net` — `catch e { e.kind == 'eof' }`.
+//!
+//! Predicate-style entries (`exists`, `is_dir`, `is_file`) never raise.
+//! Output entries (`eprint`) match `print` semantics: space-separated
+//! args + newline.
+//!
+//! The genuinely-waiting calls are *blocking* natives: inside a green
+//! thread they are offloaded to a worker pool so IO does not stall the
+//! actor's other coroutines (see [`crate::vm::offload`]). The fast
+//! metadata-only ops (`exists`, `is_dir`, `is_file`, `stat`, plus
+//! `seek` / `tell` / `close` on a handle) stay inline — offloading a
+//! microsecond syscall would cost more than it saves.
 
 use std::io::Write;
 
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
+use crate::vm::file_handle::{FileError, FileHandle, FileInner, FileMode};
 use crate::vm::offload::{BlockingJob, OffloadErr, OffloadOk};
 use crate::vm::value::{Arity, Value};
 
@@ -36,7 +45,18 @@ pub fn module() -> Value {
         ("is_dir",      native("is_dir",      Arity::Exact(1), is_dir)),
         ("is_file",     native("is_file",     Arity::Exact(1), is_file)),
         ("stat",        native("stat",        Arity::Exact(1), stat)),
-        ("read_line",   native_blocking("read_line",   Arity::Exact(0), read_line)),
+        // Streaming file handles. `read_line` accepts 0 args (stdin)
+        // or 1 arg (a FileHandle).
+        ("open",        native_blocking("open",        Arity::Exact(2), open)),
+        ("read",        native_blocking("read",        Arity::Exact(2), read)),
+        ("read_exact",  native_blocking("read_exact",  Arity::Exact(2), read_exact)),
+        ("read_line",   native_blocking("read_line",   Arity::Range(0, 1), read_line)),
+        ("read_until",  native_blocking("read_until",  Arity::Exact(2), read_until)),
+        ("read_all",    native_blocking("read_all",    Arity::Exact(1), read_all)),
+        ("write",       native_blocking("write",       Arity::Exact(2), write)),
+        ("seek",        native("seek",        Arity::Exact(2), seek)),
+        ("tell",        native("tell",        Arity::Exact(1), tell)),
+        ("close",       native("close",       Arity::Exact(1), close)),
         ("eprint",      native("eprint",      Arity::Variadic, eprint)),
     ])
 }
@@ -79,6 +99,121 @@ fn raise(msg: String) -> RuntimeError {
 fn io_err(msg: String) -> OffloadErr {
     OffloadErr { kind: None, message: msg }
 }
+
+// ---------------------------------------------------------------------
+// Streaming-handle error helpers (structured, like `Net`)
+// ---------------------------------------------------------------------
+
+/// A catchable structured error `${kind, message}` for the streaming
+/// file API — matches `Net`'s convention so a `catch` block can
+/// dispatch on `.kind` (`io`, `eof`, `closed`, `mode`, `invalid_mode`,
+/// `decode`).
+fn file_err(kind: &str, msg: String) -> RuntimeError {
+    let obj = object(&[
+        ("kind", Value::Str(kind.into())),
+        ("message", Value::Str(msg.into())),
+    ]);
+    RuntimeError::new(RuntimeErrorKind::Raised(obj), 0)
+}
+
+/// Classify a [`FileError`] into a structured error kind + message.
+fn classify_file(label: &str, e: FileError) -> (&'static str, String) {
+    match e {
+        FileError::Closed => ("closed", format!("IO.{label}: file is closed")),
+        FileError::WrongMode(msg) => ("mode", format!("IO.{label}: {msg}")),
+        FileError::Eof(msg) => ("eof", format!("IO.{label}: {msg}")),
+        FileError::Decode(msg) => ("decode", format!("IO.{label}: {msg}")),
+        FileError::InvalidMode(msg) => {
+            ("invalid_mode", format!("IO.{label}: {msg}"))
+        }
+        FileError::Io(io_err) => ("io", format!("IO.{label}: {io_err}")),
+    }
+}
+
+/// Map a [`FileError`] to a tigr `RuntimeError` for inline natives.
+fn map_file_err(label: &str, e: FileError) -> RuntimeError {
+    let (kind, msg) = classify_file(label, e);
+    file_err(kind, msg)
+}
+
+/// Map a [`FileError`] to an [`OffloadErr`] — the POD error a worker
+/// thread posts back; [`crate::vm::offload::decode`] rebuilds the same
+/// structured error the inline call would raise.
+fn offload_file_err(label: &str, e: FileError) -> OffloadErr {
+    let (kind, message) = classify_file(label, e);
+    OffloadErr { kind: Some(kind.to_string()), message }
+}
+
+/// Extract an owned file-handle argument. A `FileHandle` is an `Arc`,
+/// so the clone is a refcount bump.
+fn take_file(v: &Value, label: &str) -> Result<FileHandle, RuntimeError> {
+    match v {
+        Value::File(h) => Ok(h.clone()),
+        other => Err(file_err(
+            "mode",
+            format!(
+                "IO.{label}: expected a file handle, got {}",
+                other.type_name()
+            ),
+        )),
+    }
+}
+
+/// A non-negative byte-count argument.
+fn expect_count(v: &Value, label: &str) -> Result<usize, RuntimeError> {
+    match v {
+        Value::Int(n) if *n >= 0 => Ok(*n as usize),
+        Value::Int(n) => Err(file_err(
+            "io",
+            format!("IO.{label}: negative count {n}"),
+        )),
+        other => Err(file_err(
+            "io",
+            format!(
+                "IO.{label}: expected Int, got {}",
+                other.type_name()
+            ),
+        )),
+    }
+}
+
+/// A single byte (`Int` in `0..=255`).
+fn expect_byte(v: &Value, label: &str) -> Result<u8, RuntimeError> {
+    match v {
+        Value::Int(n) if (0..=255).contains(n) => Ok(*n as u8),
+        Value::Int(n) => Err(file_err(
+            "io",
+            format!("IO.{label}: byte value {n} out of range 0..=255"),
+        )),
+        other => Err(file_err(
+            "io",
+            format!(
+                "IO.{label}: expected Int, got {}",
+                other.type_name()
+            ),
+        )),
+    }
+}
+
+/// `data` for `write` — accepts a `Bytes` buffer or a `String` (which
+/// is written as its UTF-8 bytes).
+fn take_write_data(v: &Value) -> Result<Vec<u8>, RuntimeError> {
+    match v {
+        Value::Bytes(b) => Ok(b.borrow().clone()),
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        other => Err(file_err(
+            "io",
+            format!(
+                "IO.write: expected Bytes or String, got {}",
+                other.type_name()
+            ),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Whole-file path-based ops (unchanged from earlier IO surface).
+// ---------------------------------------------------------------------
 
 fn read_file(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
     let path = take_string(&args[0], "read_file")?;
@@ -240,24 +375,129 @@ fn stat(args: &[Value]) -> Result<Value, RuntimeError> {
     ]))
 }
 
-fn read_line(_args: &[Value]) -> Result<BlockingJob, RuntimeError> {
-    Ok(Box::new(|| {
-        let mut buf = String::new();
-        match std::io::stdin().read_line(&mut buf) {
-            Ok(0) => Ok(OffloadOk::StrOrNull(None)), // EOF
-            Ok(_) => {
-                // Strip trailing \n (and \r on Windows-style input).
-                if buf.ends_with('\n') {
-                    buf.pop();
-                    if buf.ends_with('\r') {
-                        buf.pop();
-                    }
-                }
-                Ok(OffloadOk::StrOrNull(Some(buf)))
-            }
-            Err(e) => Err(io_err(format!("read_line: {e}"))),
-        }
+// ---------------------------------------------------------------------
+// Streaming file handle ops.
+// ---------------------------------------------------------------------
+
+fn open(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let path = take_string(&args[0], "open")?;
+    let mode_str = take_string(&args[1], "open")?;
+    let Some(mode) = FileMode::parse(&mode_str) else {
+        return Err(file_err(
+            "invalid_mode",
+            format!(
+                "IO.open: unknown mode {mode_str:?} (expected 'r', 'w', or 'a')"
+            ),
+        ));
+    };
+    Ok(Box::new(move || match FileInner::open(path.clone(), mode) {
+        Ok(handle) => Ok(OffloadOk::File(handle)),
+        Err(e) => Err(offload_file_err(
+            &format!("open({path:?})"),
+            e,
+        )),
     }))
+}
+
+fn read(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let handle = take_file(&args[0], "read")?;
+    let n = expect_count(&args[1], "read")?;
+    Ok(Box::new(move || match handle.read_chunk(n) {
+        Ok(b) => Ok(OffloadOk::Bytes(b)),
+        Err(e) => Err(offload_file_err("read", e)),
+    }))
+}
+
+fn read_exact(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let handle = take_file(&args[0], "read_exact")?;
+    let n = expect_count(&args[1], "read_exact")?;
+    Ok(Box::new(move || match handle.read_exact(n) {
+        Ok(b) => Ok(OffloadOk::Bytes(b)),
+        Err(e) => Err(offload_file_err("read_exact", e)),
+    }))
+}
+
+fn read_line(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    if args.is_empty() {
+        // Stdin form, unchanged from earlier.
+        return Ok(Box::new(|| {
+            let mut buf = String::new();
+            match std::io::stdin().read_line(&mut buf) {
+                Ok(0) => Ok(OffloadOk::StrOrNull(None)), // EOF
+                Ok(_) => {
+                    if buf.ends_with('\n') {
+                        buf.pop();
+                        if buf.ends_with('\r') {
+                            buf.pop();
+                        }
+                    }
+                    Ok(OffloadOk::StrOrNull(Some(buf)))
+                }
+                Err(e) => Err(io_err(format!("read_line: {e}"))),
+            }
+        }));
+    }
+    let handle = take_file(&args[0], "read_line")?;
+    Ok(Box::new(move || match handle.read_line() {
+        Ok(line) => Ok(OffloadOk::StrOrNull(line)),
+        Err(e) => Err(offload_file_err("read_line", e)),
+    }))
+}
+
+fn read_until(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let handle = take_file(&args[0], "read_until")?;
+    let delim = expect_byte(&args[1], "read_until")?;
+    Ok(Box::new(move || match handle.read_until(delim) {
+        Ok(b) => Ok(OffloadOk::BytesOrNull(b)),
+        Err(e) => Err(offload_file_err("read_until", e)),
+    }))
+}
+
+fn read_all(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let handle = take_file(&args[0], "read_all")?;
+    Ok(Box::new(move || match handle.read_all() {
+        Ok(b) => Ok(OffloadOk::Bytes(b)),
+        Err(e) => Err(offload_file_err("read_all", e)),
+    }))
+}
+
+fn write(args: &[Value]) -> Result<BlockingJob, RuntimeError> {
+    let handle = take_file(&args[0], "write")?;
+    let data = take_write_data(&args[1])?;
+    Ok(Box::new(move || match handle.write_all(&data) {
+        Ok(n) => Ok(OffloadOk::Int(n as i64)),
+        Err(e) => Err(offload_file_err("write", e)),
+    }))
+}
+
+fn seek(args: &[Value]) -> Result<Value, RuntimeError> {
+    let handle = take_file(&args[0], "seek")?;
+    let pos = match &args[1] {
+        Value::Int(n) => *n,
+        other => {
+            return Err(file_err(
+                "io",
+                format!(
+                    "IO.seek: expected Int, got {}",
+                    other.type_name()
+                ),
+            ))
+        }
+    };
+    handle.seek(pos).map_err(|e| map_file_err("seek", e))?;
+    Ok(Value::Null)
+}
+
+fn tell(args: &[Value]) -> Result<Value, RuntimeError> {
+    let handle = take_file(&args[0], "tell")?;
+    let pos = handle.tell().map_err(|e| map_file_err("tell", e))?;
+    Ok(Value::Int(pos))
+}
+
+fn close(args: &[Value]) -> Result<Value, RuntimeError> {
+    let handle = take_file(&args[0], "close")?;
+    handle.close();
+    Ok(Value::Null)
 }
 
 fn eprint(args: &[Value]) -> Result<Value, RuntimeError> {

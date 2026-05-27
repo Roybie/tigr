@@ -1,0 +1,311 @@
+// tests/io_streaming_test.tg — streaming file IO (IO.open + handle ops).
+//
+// Companion to tests/io_offload_test.tg (whole-file offload). The
+// streaming API processes a file incrementally, so a 4 GB log never has
+// to fit in memory the way IO.read_file would force it to.
+//
+// Errors here are structured ${kind, message} (matching Net), so
+// Test.assert_raises can dispatch on .kind directly.
+
+Test  := import 'Test';
+IO    := import 'IO';
+Bytes := import 'Bytes';
+Time  := import 'Time';
+
+// Unique scratch dir per run so parallel CI never collides.
+scratch_dir := '.tigr_streaming_' + str(Time.now_ns());
+IO.mkdir(scratch_dir);
+
+scratch_path := fn(name) { scratch_dir + '/' + name };
+
+// Seed a fresh fixture with `contents`, returning the path.
+fixture := fn(name, contents) {
+    p := scratch_path(name);
+    IO.write_file(p, contents);
+    p
+};
+
+fixture_bytes := fn(name, bytes) {
+    p := scratch_path(name);
+    IO.write_bytes(p, bytes);
+    p
+};
+
+[
+    Test.suite('IO.open — modes & errors', [
+        Test.case('opens an existing file for read', fn() {
+            p := fixture('open_r.txt', 'hello');
+            f := IO.open(p, 'r');
+            Test.assert_eq(type(f), 'file');
+            IO.close(f)
+        }),
+
+        Test.case('open with unknown mode raises invalid_mode', fn() {
+            Test.assert_raises(fn() {
+                IO.open(scratch_path('open_z.txt'), 'z')
+            }, 'invalid_mode')
+        }),
+
+        Test.case('open in read mode on missing path raises io', fn() {
+            Test.assert_raises(fn() {
+                IO.open(scratch_path('does_not_exist.txt'), 'r')
+            }, 'io')
+        }),
+
+        Test.case('open in write mode creates the file (truncating)', fn() {
+            p := fixture('open_w.txt', 'old contents');
+            f := IO.open(p, 'w');
+            IO.close(f);
+            Test.assert_eq(IO.read_file(p), '')
+        }),
+
+        Test.case('open in append mode creates the file if absent', fn() {
+            p := scratch_path('open_a_new.txt');
+            f := IO.open(p, 'a');
+            IO.write(f, 'fresh');
+            IO.close(f);
+            Test.assert_eq(IO.read_file(p), 'fresh')
+        }),
+
+        Test.case('open in append mode preserves existing contents', fn() {
+            p := fixture('open_a.txt', 'before-');
+            f := IO.open(p, 'a');
+            IO.write(f, 'after');
+            IO.close(f);
+            Test.assert_eq(IO.read_file(p), 'before-after')
+        }),
+    ]),
+
+    Test.suite('streaming reads', [
+        Test.case('read_line yields each line and null at EOF', fn() {
+            p := fixture('lines.txt', 'alpha\nbeta\ngamma\n');
+            f := IO.open(p, 'r');
+            Test.assert_eq(IO.read_line(f), 'alpha');
+            Test.assert_eq(IO.read_line(f), 'beta');
+            Test.assert_eq(IO.read_line(f), 'gamma');
+            Test.assert_eq(IO.read_line(f), null);
+            IO.close(f)
+        }),
+
+        Test.case('read_line strips trailing CRLF too', fn() {
+            p := fixture('lines_crlf.txt', 'one\r\ntwo\r\n');
+            f := IO.open(p, 'r');
+            Test.assert_eq(IO.read_line(f), 'one');
+            Test.assert_eq(IO.read_line(f), 'two');
+            Test.assert_eq(IO.read_line(f), null);
+            IO.close(f)
+        }),
+
+        Test.case('read_line returns an unterminated final chunk', fn() {
+            p := fixture('lines_unterm.txt', 'a\nb');
+            f := IO.open(p, 'r');
+            Test.assert_eq(IO.read_line(f), 'a');
+            Test.assert_eq(IO.read_line(f), 'b');
+            Test.assert_eq(IO.read_line(f), null);
+            IO.close(f)
+        }),
+
+        Test.case('read returns up to n bytes; empty Bytes signals EOF', fn() {
+            p := fixture('chunks.txt', 'hello world');
+            f := IO.open(p, 'r');
+            first := IO.read(f, 5);
+            Test.assert_eq(Bytes.to_string(first), 'hello');
+            Test.assert_eq(Bytes.to_string(IO.read(f, 6)), ' world');
+            Test.assert_eq(#IO.read(f, 16), 0);
+            IO.close(f)
+        }),
+
+        Test.case('read_exact returns exactly n bytes', fn() {
+            p := fixture('exact.txt', '0123456789');
+            f := IO.open(p, 'r');
+            Test.assert_eq(Bytes.to_string(IO.read_exact(f, 4)), '0123');
+            Test.assert_eq(Bytes.to_string(IO.read_exact(f, 6)), '456789');
+            IO.close(f)
+        }),
+
+        Test.case('read_exact raises eof when short', fn() {
+            p := fixture('exact_short.txt', 'abc');
+            f := IO.open(p, 'r');
+            Test.assert_raises(fn() { IO.read_exact(f, 10) }, 'eof');
+            IO.close(f)
+        }),
+
+        Test.case('read_until preserves the delimiter', fn() {
+            p := fixture('until.txt', 'a|b|c');
+            f := IO.open(p, 'r');
+            Test.assert_eq(Bytes.to_string(IO.read_until(f, 124)), 'a|');
+            Test.assert_eq(Bytes.to_string(IO.read_until(f, 124)), 'b|');
+            // Trailing chunk with no delim is returned as-is.
+            Test.assert_eq(Bytes.to_string(IO.read_until(f, 124)), 'c');
+            Test.assert_eq(IO.read_until(f, 124), null);
+            IO.close(f)
+        }),
+
+        Test.case('read_all returns the rest of the file', fn() {
+            p := fixture('all.txt', 'one\ntwo\nthree');
+            f := IO.open(p, 'r');
+            _ := IO.read_line(f);
+            rest := IO.read_all(f);
+            Test.assert_eq(Bytes.to_string(rest), 'two\nthree');
+            IO.close(f)
+        }),
+
+        Test.case('mixed read_line then read sees only post-line bytes', fn() {
+            // The over-read buffer must be drained before the raw read.
+            p := fixture('mixed.txt', 'first line\nXYZ');
+            f := IO.open(p, 'r');
+            Test.assert_eq(IO.read_line(f), 'first line');
+            Test.assert_eq(Bytes.to_string(IO.read(f, 100)), 'XYZ');
+            IO.close(f)
+        }),
+
+        Test.case('read_line on non-UTF8 raises decode', fn() {
+            // \xff is invalid UTF-8 anywhere.
+            p := fixture_bytes('bad_utf8.bin',
+                Bytes.from_array([72, 105, 255, 10]));
+            f := IO.open(p, 'r');
+            Test.assert_raises(fn() { IO.read_line(f) }, 'decode');
+            IO.close(f)
+        }),
+    ]),
+
+    Test.suite('writes', [
+        Test.case('write returns the byte count', fn() {
+            p := scratch_path('w_count.txt');
+            f := IO.open(p, 'w');
+            n := IO.write(f, 'hello');
+            Test.assert_eq(n, 5);
+            IO.close(f);
+            Test.assert_eq(IO.read_file(p), 'hello')
+        }),
+
+        Test.case('write accepts a Bytes buffer', fn() {
+            p := scratch_path('w_bytes.bin');
+            f := IO.open(p, 'w');
+            IO.write(f, Bytes.from_array([65, 66, 67]));
+            IO.close(f);
+            Test.assert_eq(IO.read_file(p), 'ABC')
+        }),
+
+        Test.case('write on a read-only handle raises mode', fn() {
+            p := fixture('w_readonly.txt', 'hi');
+            f := IO.open(p, 'r');
+            Test.assert_raises(fn() { IO.write(f, 'x') }, 'mode');
+            IO.close(f)
+        }),
+
+        Test.case('read on a write-only handle raises mode', fn() {
+            p := scratch_path('r_writeonly.txt');
+            f := IO.open(p, 'w');
+            Test.assert_raises(fn() { IO.read(f, 4) }, 'mode');
+            IO.close(f)
+        }),
+    ]),
+
+    Test.suite('seek & tell', [
+        Test.case('tell at start of a fresh read handle is 0', fn() {
+            p := fixture('seek_tell.txt', 'abcdef');
+            f := IO.open(p, 'r');
+            Test.assert_eq(IO.tell(f), 0);
+            IO.close(f)
+        }),
+
+        Test.case('seek then tell reports the new position', fn() {
+            p := fixture('seek_pos.txt', 'abcdef');
+            f := IO.open(p, 'r');
+            IO.seek(f, 3);
+            Test.assert_eq(IO.tell(f), 3);
+            Test.assert_eq(Bytes.to_string(IO.read(f, 10)), 'def');
+            IO.close(f)
+        }),
+
+        Test.case('tell after read_line accounts for buffered surplus', fn() {
+            // Trailing 'bbb' is read into the surplus buffer by the
+            // read_line over-read; tell must not count it as consumed.
+            p := fixture('tell_buf.txt', 'aaa\nbbb');
+            f := IO.open(p, 'r');
+            _ := IO.read_line(f);
+            Test.assert_eq(IO.tell(f), 4);
+            IO.close(f)
+        }),
+
+        Test.case('seek invalidates buffered surplus from a prior read_line', fn() {
+            p := fixture('seek_buf.txt', 'aaa\nbbb\nccc');
+            f := IO.open(p, 'r');
+            _ := IO.read_line(f);
+            IO.seek(f, 0);
+            Test.assert_eq(IO.read_line(f), 'aaa');
+            IO.close(f)
+        }),
+
+        Test.case('negative seek raises io', fn() {
+            p := fixture('seek_neg.txt', 'x');
+            f := IO.open(p, 'r');
+            Test.assert_raises(fn() { IO.seek(f, -1) }, 'io');
+            IO.close(f)
+        }),
+    ]),
+
+    Test.suite('close', [
+        Test.case('close is idempotent', fn() {
+            p := fixture('close_twice.txt', 'x');
+            f := IO.open(p, 'r');
+            IO.close(f);
+            IO.close(f);   // does not raise
+            Test.assert_eq(true, true)
+        }),
+
+        Test.case('read on a closed handle raises closed', fn() {
+            p := fixture('closed_read.txt', 'x');
+            f := IO.open(p, 'r');
+            IO.close(f);
+            Test.assert_raises(fn() { IO.read(f, 1) }, 'closed')
+        }),
+
+        Test.case('write on a closed handle raises closed', fn() {
+            p := scratch_path('closed_write.txt');
+            f := IO.open(p, 'w');
+            IO.close(f);
+            Test.assert_raises(fn() { IO.write(f, 'x') }, 'closed')
+        }),
+    ]),
+
+    Test.suite('green-thread offload', [
+        Test.case('two go-blocks reading separate files run concurrently', fn() {
+            // Two coroutines each open, line-iterate, and close their own
+            // file. With offload working, both make progress while their
+            // sibling parks on disk IO. Pattern from io_offload_test.tg.
+            a_done := false;
+            b_done := false;
+
+            seed_a := scratch_path('go_a.txt');
+            seed_b := scratch_path('go_b.txt');
+            IO.write_file(seed_a, 'a1\na2\na3\n');
+            IO.write_file(seed_b, 'b1\nb2\nb3\n');
+
+            go fn() {
+                f := IO.open(seed_a, 'r');
+                while ((line := IO.read_line(f)) != null) { yield };
+                IO.close(f);
+                a_done = true
+            };
+            go fn() {
+                f := IO.open(seed_b, 'r');
+                while ((line := IO.read_line(f)) != null) { yield };
+                IO.close(f);
+                b_done = true
+            };
+            while (!a_done || !b_done) { yield };
+            Test.assert(a_done && b_done)
+        }),
+    ]),
+
+    // Last suite leaves a teardown line, since tigr test runs them in
+    // declaration order and an evaluated array drives the run.
+    Test.suite('teardown', [
+        Test.case('remove scratch directory', fn() {
+            IO.remove(scratch_dir);
+            Test.assert(!IO.exists(scratch_dir))
+        }),
+    ]),
+]

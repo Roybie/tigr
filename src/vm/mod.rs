@@ -8,6 +8,7 @@ pub mod channel;
 pub mod chunk;
 pub mod compiler;
 pub mod error;
+pub mod file_handle;
 pub mod fold;
 pub mod gc;
 pub mod io_capture;

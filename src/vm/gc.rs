@@ -568,11 +568,12 @@ impl Trace for Value {
             | Value::Range(_)
             | Value::NativeFn(_)
             | Value::BigInt(_)
-            // A channel / task / socket is `Arc`-backed, no `GcRef` —
-            // leaves.
+            // A channel / task / socket / file is `Arc`-backed, no
+            // `GcRef` — leaves.
             | Value::Channel(_)
             | Value::Task(_)
-            | Value::Socket(_) => {}
+            | Value::Socket(_)
+            | Value::File(_) => {}
         }
     }
 }

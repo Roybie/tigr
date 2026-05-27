@@ -467,6 +467,7 @@ fn write_value(
         | Value::Channel(_)
         | Value::Task(_)
         | Value::Socket(_)
+        | Value::File(_)
         | Value::Generator(_)
         | Value::GreenHandle(_)
         | Value::LocalChannel(_) => {

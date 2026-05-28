@@ -1089,8 +1089,15 @@ impl Compiler {
                             self.compile_assign_pattern(pat, e.span)?;
                         } else {
                             self.compile_expr(init)?;
+                            // `compile_pattern` turns the source into an
+                            // anonymous `""` local at this slot. Reload
+                            // it after destructuring so the Decl-expr's
+                            // value is the rhs (matching `=`/non-pattern
+                            // `:=`), not null.
+                            let src_slot = (self.current().stack_height - 1) as u8;
                             self.compile_pattern(pat, e.span)?;
-                            self.emit_op(OpCode::PushNull, line);
+                            self.emit_op(OpCode::LoadLocal, line);
+                            self.emit_byte(src_slot, line);
                         }
                     }
                 }

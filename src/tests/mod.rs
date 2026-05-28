@@ -2773,6 +2773,22 @@ fn v04_pattern_decl_with_rest_mid_expr() {
     assert_eq!(v, Value::Int(20 + 1));
 }
 
+#[test]
+fn v04_pattern_decl_top_level_is_rhs() {
+    // Top-level pattern Decls (a stmt or tail Decl, not mid-expression)
+    // aren't hoisted, so they hit a different compile path from the
+    // mid-expr case covered above. They must still evaluate to the rhs —
+    // matching `x := 5` and `${a,b} = ...`.
+    let v = run("[a, b] := [3, 4]");
+    assert_eq!(
+        v,
+        Value::Array(crate::vm::gc::alloc_array(vec![Value::Int(3), Value::Int(4)])),
+    );
+    let v = run("${head, ...rest} := ${head: 1, a: 2, b: 3}");
+    let crate::vm::value::Value::Object(o) = v else { panic!("not an object") };
+    assert_eq!(o.borrow().len(), 3);
+}
+
 // ---- v0.4 Phase 2: number-literal extensions ----
 
 #[test]

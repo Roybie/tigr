@@ -1,0 +1,437 @@
+// dns_test.tg — exercises build_query from main.tg.
+//
+// Run with `tigr dns_test.tg` from this directory.
+
+Test  := import 'Test';
+Bytes := import 'Bytes';
+DNS  := import './dns';
+
+// Expected wire format for a standard recursive DNS query:
+//   Header (12 bytes):
+//     ID       (2)  — caller-supplied
+//     Flags    (2)  — 0x0100 (QR=0, OPCODE=0, RD=1)
+//     QDCOUNT  (2)  — 1
+//     ANCOUNT  (2)  — 0
+//     NSCOUNT  (2)  — 0
+//     ARCOUNT  (2)  — 0
+//   Question:
+//     QNAME    — length-prefixed labels, terminated by 0x00
+//     QTYPE    (2)
+//     QCLASS   (2)  — 0x0001 (IN)
+
+A_RECORD     := 1;
+CNAME_RECORD := 5;
+MX_RECORD    := 15;
+AAAA_RECORD  := 28;
+
+// parse_response is expected to return a record:
+//   {
+//     header: { id, flags, qdcount, ancount, nscount, arcount },
+//     question:   [{ name, qtype, qclass }],
+//     answer:     [{ name, type, class, ttl, rdata }],
+//     authority:  [...same shape...],
+//     additional: [...same shape...],
+//   }
+// Names are decoded to dotted strings (compression pointers followed).
+// rdata is parsed by record type:
+//   A     → dotted IPv4 string, e.g. '93.184.216.34'
+//   AAAA  → canonical IPv6 string (lowercase, leading zeros stripped per group)
+//   CNAME → decoded name (follows compression pointers)
+//   other → raw Bytes
+
+// Reusable fixtures for the parse_response suites.
+HEADER_ONLY := Bytes.from_array([
+    0x12, 0x34,             // ID
+    0x81, 0x80,             // flags: QR=1, RD=1, RA=1, RCODE=0
+    0x00, 0x00,             // QDCOUNT
+    0x00, 0x00,             // ANCOUNT
+    0x00, 0x00,             // NSCOUNT
+    0x00, 0x00,             // ARCOUNT
+]);
+
+// example.com A 93.184.216.34, with the answer's NAME as a compression
+// pointer (0xc0 0x0c) back to the question's QNAME at offset 12.
+EXAMPLE_A := Bytes.from_array([
+    // header
+    0xab, 0xcd, 0x81, 0x80,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    // question: example.com A IN
+    7, 101, 120, 97, 109, 112, 108, 101,
+    3, 99, 111, 109,
+    0,
+    0x00, 0x01, 0x00, 0x01,
+    // answer: <ptr to 0x0c> A IN ttl=300 rdlen=4 93.184.216.34
+    0xc0, 0x0c,
+    0x00, 0x01,
+    0x00, 0x01,
+    0x00, 0x00, 0x01, 0x2c,
+    0x00, 0x04,
+    93, 184, 216, 34,
+]);
+
+[
+    Test.suite('DNS — build_query', [
+        Test.case('encodes the header, QNAME, QTYPE, and QCLASS for various inputs', fn() {
+            // example.com, type A, id 0x1234
+            q := Bytes.to_array(DNS.build_query(0x1234, 'example.com', A_RECORD));
+            Test.assert_eq(q, [
+                // header
+                0x12, 0x34,             // ID
+                0x01, 0x00,             // flags: RD=1
+                0x00, 0x01,             // QDCOUNT
+                0x00, 0x00,             // ANCOUNT
+                0x00, 0x00,             // NSCOUNT
+                0x00, 0x00,             // ARCOUNT
+                // QNAME: 7"example" 3"com" 0
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                // QTYPE A, QCLASS IN
+                0x00, 0x01,
+                0x00, 0x01,
+            ]);
+
+            // www.example.com, type AAAA, id 0x0001
+            q2 := Bytes.to_array(DNS.build_query(0x0001, 'www.example.com', AAAA_RECORD));
+            Test.assert_eq(q2, [
+                0x00, 0x01,
+                0x01, 0x00,
+                0x00, 0x01,
+                0x00, 0x00,
+                0x00, 0x00,
+                0x00, 0x00,
+                // 3"www" 7"example" 3"com" 0
+                3, 119, 119, 119,
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                0x00, 0x1c,             // AAAA
+                0x00, 0x01,
+            ]);
+
+            // single-label host
+            q3 := Bytes.to_array(DNS.build_query(0xabcd, 'localhost', A_RECORD));
+            Test.assert_eq(q3, [
+                0xab, 0xcd,
+                0x01, 0x00,
+                0x00, 0x01,
+                0x00, 0x00,
+                0x00, 0x00,
+                0x00, 0x00,
+                9, 108, 111, 99, 97, 108, 104, 111, 115, 116,
+                0,
+                0x00, 0x01,
+                0x00, 0x01,
+            ]);
+
+            // MX query for a deeper subdomain
+            q4 := Bytes.to_array(DNS.build_query(0xffff, 'mail.foo.bar.org', MX_RECORD));
+            Test.assert_eq(q4, [
+                0xff, 0xff,
+                0x01, 0x00,
+                0x00, 0x01,
+                0x00, 0x00,
+                0x00, 0x00,
+                0x00, 0x00,
+                4, 109, 97, 105, 108,
+                3, 102, 111, 111,
+                3, 98, 97, 114,
+                3, 111, 114, 103,
+                0,
+                0x00, 0x0f,             // MX
+                0x00, 0x01,
+            ]);
+
+            // ID 0 is a valid edge case
+            q5 := Bytes.to_array(DNS.build_query(0, 'a.b', A_RECORD));
+            Test.assert_eq(q5, [
+                0x00, 0x00,
+                0x01, 0x00,
+                0x00, 0x01,
+                0x00, 0x00,
+                0x00, 0x00,
+                0x00, 0x00,
+                1, 97,
+                1, 98,
+                0,
+                0x00, 0x01,
+                0x00, 0x01,
+            ])
+        }),
+    ]),
+
+    // read_name returns [name, next_offset], where next_offset is the
+    // position in `msg` immediately after the bytes consumed at the
+    // *call site* (past the terminator for an inline name, or past the
+    // 2-byte pointer if the name ended with one).
+    Test.suite('DNS — read_name', [
+        Test.case('decodes a single inline name from offset 0', fn() {
+            // [7]example[3]com[0]  — 13 bytes, terminator at 12
+            msg := Bytes.from_array([
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+            ]);
+            Test.assert_eq(DNS.read_name(msg, 0), ['example.com', 13])
+        }),
+
+        Test.case('decodes a single-label name', fn() {
+            // [9]localhost[0]  — 11 bytes, terminator at 10
+            msg := Bytes.from_array([
+                9, 108, 111, 99, 97, 108, 104, 111, 115, 116,
+                0,
+            ]);
+            Test.assert_eq(DNS.read_name(msg, 0), ['localhost', 11])
+        }),
+
+        Test.case('decodes a deeper subdomain', fn() {
+            // [4]mail[3]foo[3]bar[3]org[0]  — 18 bytes, terminator at 17
+            msg := Bytes.from_array([
+                4, 109, 97, 105, 108,
+                3, 102, 111, 111,
+                3, 98, 97, 114,
+                3, 111, 114, 103,
+                0,
+            ]);
+            Test.assert_eq(DNS.read_name(msg, 0), ['mail.foo.bar.org', 18])
+        }),
+
+        Test.case('reads an inline name from a non-zero offset', fn() {
+            // EXAMPLE_A places the question's QNAME at offset 12,
+            // 13 bytes long, terminator at 24 → next = 25.
+            Test.assert_eq(DNS.read_name(EXAMPLE_A, 12), ['example.com', 25])
+        }),
+
+        Test.case('follows a compression pointer', fn() {
+            // EXAMPLE_A's answer NAME is a 2-byte pointer at offset 29
+            // (0xc0 0x0c → offset 12). next should land past the pointer.
+            Test.assert_eq(DNS.read_name(EXAMPLE_A, 29), ['example.com', 31])
+        }),
+
+        Test.case('partial labels followed by a pointer combine into one name', fn() {
+            // [7]example[3]com[0] at offset 0, then [3]www then a pointer
+            // to offset 0 — read at offset 13 consumes 4 label bytes + 2
+            // pointer bytes, so next = 19.
+            msg := Bytes.from_array([
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                // offset 13: [3]www <ptr to 0>
+                3, 119, 119, 119,
+                0xc0, 0x00,
+            ]);
+            Test.assert_eq(DNS.read_name(msg, 13), ['www.example.com', 19])
+        }),
+
+        Test.case('follows a chain of compression pointers', fn() {
+            // offset 0:  [3]com[0]              (a tail)
+            // offset 5:  [7]example <ptr to 0>  (uses the tail)
+            // offset 15: [3]www <ptr to 5>      (uses the prior pointer)
+            // Read at 15 consumes 4 label bytes + 2 pointer bytes → next = 21.
+            msg := Bytes.from_array([
+                // offset 0
+                3, 99, 111, 109,
+                0,
+                // offset 5
+                7, 101, 120, 97, 109, 112, 108, 101,
+                0xc0, 0x00,
+                // offset 15
+                3, 119, 119, 119,
+                0xc0, 0x05,
+            ]);
+            Test.assert_eq(DNS.read_name(msg, 15), ['www.example.com', 21])
+        }),
+    ]),
+
+    Test.suite('DNS — parse_response header', [
+        Test.case('decodes the 12-byte header fields', fn() {
+            r := DNS.parse_response(HEADER_ONLY, 0x1234);
+            Test.assert_eq(r.header.id, 0x1234);
+            Test.assert_eq(r.header.flags, 0x8180);
+            Test.assert_eq(r.header.qdcount, 0);
+            Test.assert_eq(r.header.ancount, 0);
+            Test.assert_eq(r.header.nscount, 0);
+            Test.assert_eq(r.header.arcount, 0)
+        }),
+
+        Test.case('header-only response has empty sections', fn() {
+            r := DNS.parse_response(HEADER_ONLY, 0x1234);
+            Test.assert_eq(r.question, []);
+            Test.assert_eq(r.answer, []);
+            Test.assert_eq(r.authority, []);
+            Test.assert_eq(r.additional, [])
+        }),
+
+        Test.case('reflects counts from the header', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.header.id, 0xabcd);
+            Test.assert_eq(r.header.qdcount, 1);
+            Test.assert_eq(r.header.ancount, 1);
+            Test.assert_eq(#r.question, 1);
+            Test.assert_eq(#r.answer, 1)
+        }),
+
+        Test.case('raises mismatched_id when the IDs do not match', fn() {
+            Test.assert_raises(
+                fn() { DNS.parse_response(HEADER_ONLY, 0x9999) },
+                'mismatched_id')
+        }),
+    ]),
+
+    Test.suite('DNS — parse_response question', [
+        Test.case('decodes QNAME to a dotted string', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.question[0].name, 'example.com')
+        }),
+
+        Test.case('decodes QTYPE and QCLASS', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.question[0].qtype, 1);
+            Test.assert_eq(r.question[0].qclass, 1)
+        }),
+    ]),
+
+    Test.suite('DNS — parse_response answer', [
+        Test.case('follows a compression pointer in the answer NAME', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.answer[0].name, 'example.com')
+        }),
+
+        Test.case('decodes TYPE, CLASS, and TTL', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.answer[0].type, 1);
+            Test.assert_eq(r.answer[0].class, 1);
+            Test.assert_eq(r.answer[0].ttl, 300)
+        }),
+
+        Test.case('parses A RDATA as a dotted IPv4 string', fn() {
+            r := DNS.parse_response(EXAMPLE_A, 0xabcd);
+            Test.assert_eq(r.answer[0].rdata, '93.184.216.34')
+        }),
+
+        Test.case('parses AAAA RDATA as a canonical IPv6 string', fn() {
+            // example.com AAAA 2606:2800:220:1:248:1893:25c8:1946
+            resp := Bytes.from_array([
+                0x00, 0x01, 0x81, 0x80,
+                0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                0x00, 0x1c, 0x00, 0x01,
+                0xc0, 0x0c,
+                0x00, 0x1c,
+                0x00, 0x01,
+                0x00, 0x00, 0x00, 0x3c,
+                0x00, 0x10,
+                0x26, 0x06, 0x28, 0x00, 0x02, 0x20, 0x00, 0x01,
+                0x02, 0x48, 0x18, 0x93, 0x25, 0xc8, 0x19, 0x46,
+            ]);
+            r := DNS.parse_response(resp, 0x0001);
+            Test.assert_eq(r.answer[0].type, 28);
+            Test.assert_eq(r.answer[0].ttl, 60);
+            Test.assert_eq(r.answer[0].rdata, '2606:2800:220:1:248:1893:25c8:1946')
+        }),
+
+        Test.case('parses multiple A answers in one response', fn() {
+            // Two A records for example.com: 1.2.3.4 and 5.6.7.8
+            resp := Bytes.from_array([
+                0xbe, 0xef, 0x81, 0x80,
+                0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                0x00, 0x01, 0x00, 0x01,
+                // answer 1
+                0xc0, 0x0c,
+                0x00, 0x01, 0x00, 0x01,
+                0x00, 0x00, 0x00, 0x3c,
+                0x00, 0x04,
+                1, 2, 3, 4,
+                // answer 2
+                0xc0, 0x0c,
+                0x00, 0x01, 0x00, 0x01,
+                0x00, 0x00, 0x00, 0x3c,
+                0x00, 0x04,
+                5, 6, 7, 8,
+            ]);
+            r := DNS.parse_response(resp, 0xbeef);
+            Test.assert_eq(#r.answer, 2);
+            Test.assert_eq(r.answer[0].rdata, '1.2.3.4');
+            Test.assert_eq(r.answer[1].rdata, '5.6.7.8')
+        }),
+
+        Test.case('parses CNAME RDATA as a decoded name (with pointer)', fn() {
+            // Query: www.example.com → CNAME example.com
+            // Question's QNAME ([3]www[7]example[3]com[0]) is at offset 12.
+            // "example.com" begins at offset 16 (the [7]example label),
+            // so the CNAME RDATA is a 2-byte pointer 0xc0 0x10.
+            resp := Bytes.from_array([
+                0xca, 0xfe, 0x81, 0x80,
+                0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                // question: www.example.com CNAME IN
+                3, 119, 119, 119,
+                7, 101, 120, 97, 109, 112, 108, 101,
+                3, 99, 111, 109,
+                0,
+                0x00, 0x05, 0x00, 0x01,
+                // answer: <ptr to 0x0c> CNAME IN ttl=60 rdlen=2 <ptr to 0x10>
+                0xc0, 0x0c,
+                0x00, 0x05,
+                0x00, 0x01,
+                0x00, 0x00, 0x00, 0x3c,
+                0x00, 0x02,
+                0xc0, 0x10,
+            ]);
+            r := DNS.parse_response(resp, 0xcafe);
+            Test.assert_eq(r.answer[0].name, 'www.example.com');
+            Test.assert_eq(r.answer[0].type, CNAME_RECORD);
+            Test.assert_eq(r.answer[0].rdata, 'example.com')
+        }),
+
+        Test.case('parses CNAME RDATA written inline (no pointer)', fn() {
+            // The CNAME target is encoded as full labels rather than
+            // a pointer — exercises in-RDATA name decoding without
+            // any compression.
+            resp := Bytes.from_array([
+                0x00, 0x2b, 0x81, 0x80,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                // answer: alias.test CNAME IN ttl=30 rdlen=14 target.test
+                5, 97, 108, 105, 97, 115,
+                4, 116, 101, 115, 116,
+                0,
+                0x00, 0x05, 0x00, 0x01,
+                0x00, 0x00, 0x00, 0x1e,
+                0x00, 0x0d,
+                // rdata: [6]target[4]test[0]
+                6, 116, 97, 114, 103, 101, 116,
+                4, 116, 101, 115, 116,
+                0,
+            ]);
+            r := DNS.parse_response(resp, 0x002b);
+            Test.assert_eq(r.answer[0].name, 'alias.test');
+            Test.assert_eq(r.answer[0].type, CNAME_RECORD);
+            Test.assert_eq(r.answer[0].rdata, 'target.test')
+        }),
+
+        Test.case('parses an inline answer NAME with A RDATA', fn() {
+            // Single answer where the NAME is written out as labels
+            // rather than as a compression pointer.
+            resp := Bytes.from_array([
+                0x00, 0x2a, 0x81, 0x80,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                // answer: foo.test A IN ttl=10 rdlen=4 10.0.0.1
+                3, 102, 111, 111,
+                4, 116, 101, 115, 116,
+                0,
+                0x00, 0x01, 0x00, 0x01,
+                0x00, 0x00, 0x00, 0x0a,
+                0x00, 0x04,
+                10, 0, 0, 1,
+            ]);
+            r := DNS.parse_response(resp, 0x002a);
+            Test.assert_eq(r.answer[0].name, 'foo.test');
+            Test.assert_eq(r.answer[0].ttl, 10);
+            Test.assert_eq(r.answer[0].rdata, '10.0.0.1')
+        }),
+    ]),
+]

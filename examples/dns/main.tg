@@ -1,0 +1,83 @@
+String := import 'String';
+Os     := import 'Os';
+DNS    := import './dns';
+
+TYPE_FROM_STRING := ${
+  A: 1,
+  AAAA: 28,
+  CNAME: 5,
+};
+
+qtype    := 'A';
+server   := '1.1.1.1';
+show_ttl := false;
+
+args := Os.args;
+name := args[2];
+
+i := 2;
+while i < #args {
+  arg := args[i];
+  if arg == '--type' {
+    qtype = args[i + 1];
+    i = i + 2;
+  } else if arg == '--server' {
+    server = args[i + 1];
+    i = i + 2;
+  } else if arg == '--show-ttl' {
+    show_ttl = true;
+    i = i + 1;
+  } else {
+    i = i + 1;
+  };
+};
+
+if !name {
+  print('usage: tigr main.tg <name> [--type A|AAAA|CNAME] [--server <ip>] [--show-ttl]');
+  Os.exit(1);
+};
+
+qtype_int := TYPE_FROM_STRING[qtype];
+if !qtype_int {
+  print('unknown --type: {qtype} (expected A, AAAA, or CNAME)');
+  Os.exit(1);
+};
+
+response := try {
+  DNS.resolve(name, qtype_int, server)
+} catch (e) {
+  if e.kind == 'rcode' {
+    print('Error: {match e.value {
+      1 => 'Form Error',
+      2 => 'Server Failure',
+      3 => 'Domain Doesn\'t Exist',
+      4 => 'Unsupported Query Type',
+      5 => 'Refused',
+      _ => e.value
+    }}');
+  } else {
+    print('Error: {e.kind || 'unknown'}');
+  };
+  print(e.message);
+  Os.exit(1);
+};
+
+if #response.answer == 0 {
+  print('No {qtype} entries for {name}');
+  Os.exit(0);
+};
+
+for (ans, response.answer) {
+  row := if show_ttl {
+    [ans.name, str(ans.ttl), DNS.type_to_string(ans.type), ans.rdata]
+  } else {
+    [ans.name, DNS.type_to_string(ans.type), ans.rdata]
+  };
+  fmt := if show_ttl {
+    '%(<{#ans.name + 3})%(<6)%(<6)%()'
+  } else {
+    '%(<{#ans.name + 3})%(<6)%()'
+  };
+  print(String.printf(fmt, row));
+};
+Os.exit(0); // Prevent output of the final value (null)

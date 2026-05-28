@@ -1,0 +1,187 @@
+Bytes := import 'Bytes';
+String := import 'String';
+Net := import 'Net';
+Object := import 'Object';
+Random := import 'Random';
+
+PORT := 53;
+
+_type_to_string := fn(t) {
+  match t {
+    1 => 'A',
+    28 => 'AAAA',
+    5 => 'CNAME',
+    _ => 'Unknown'
+  }
+};
+
+_encode_qname := fn(name) {
+  out := Bytes.new(0);
+  for (part, String.split(name, '.')) {
+    if (#part == 0) { continue };
+    Bytes.push(out, #part);
+    Bytes.extend(out, Bytes.from_string(part));
+  };
+  Bytes.push(out, 0)
+};
+
+_build_query := fn(id, name, qtype) {
+  header := Bytes.new(12);
+  Bytes.write_u16_be(header, 0, id);      // ID
+  Bytes.write_u16_be(header, 2, 0x0100);  // flags RD=1
+  Bytes.write_u16_be(header, 4, 1);       // QDCOUNT = 1
+  Bytes.write_u16_be(header, 6, 0);       // ANCOUNT
+  Bytes.write_u16_be(header, 8, 0);       // NSCOUNT
+  Bytes.write_u16_be(header, 10, 0);      // ARCOUNT
+
+  qname := _encode_qname(name);
+
+  tail := Bytes.new(4);
+  Bytes.write_u16_be(tail, 0, qtype);     // QTYPE
+  Bytes.write_u16_be(tail, 2, 1);         // QCLASS = IN
+
+  header + qname + tail
+};
+
+_format_ipv4 := fn(rdata) {
+  String.join(rdata, '.')
+};
+
+_format_ipv6 := fn(rdata) {
+  for[] (i,0..16:2) {
+    String.format(Bytes.read_u16_be(rdata, i), 'x')
+  } |> String.join(':')
+};
+
+// Decode name beginning at offset
+_read_name := fn(msg, offset) {
+  next := null;
+
+  name := String.join(
+    while[] ((len := Bytes.read_u8(msg, offset)) != 0) {
+      if (len & 0xC0) == 0xC0 {
+        if !next { next = offset + 2 };
+        offset = Bytes.read_u16_be(msg, offset) & 0x3FFF;
+        continue;
+      } else {
+        label := Bytes.slice(msg, offset + 1, offset + 1 + len);
+        offset += 1 + len;
+        Bytes.to_string(label)
+      }
+    },
+    '.'
+  );
+
+  if !next { next = offset + 1 };
+  [name, next]
+};
+
+// parse_response is expected to return a record:
+//   {
+//     header: { id, flags, qdcount, ancount, nscount, arcount },
+//     question:   [{ name, qtype, qclass }],
+//     answer:     [{ name, type, class, ttl, rdata }],   // rdata as Bytes
+//     authority:  [...same shape...],
+//     additional: [...same shape...],
+//   }
+_parse_response := fn(response, id) {
+  header := ${
+    id: Bytes.read_u16_be(response, 0),
+    flags: Bytes.read_u16_be(response, 2),
+    qdcount: Bytes.read_u16_be(response, 4),
+    ancount: Bytes.read_u16_be(response, 6),
+    nscount: Bytes.read_u16_be(response, 8),
+    arcount: Bytes.read_u16_be(response, 10),
+  };
+
+  // Check ID matches
+  if id != header.id {
+    raise ${ kind: 'mismatched_id', message: 'Response ID ({id}) does not match Request ID ({header.id})' };
+  };
+
+  // rcode check
+  if (rcode := header.flags & 0x0F) != 0 {
+    raise ${ kind: 'rcode', message: 'server returned rcode: {rcode}', value: rcode };
+  };
+
+  name := null;
+  // get questions
+  offset := 12; // after header
+  question := for[] (i, 0..header.qdcount) {
+    [name, offset] = _read_name(response, offset);
+    qtype := Bytes.read_u16_be(response, offset);
+    offset += 2;
+    qclass := Bytes.read_u16_be(response, offset);
+    offset += 2;
+    ${
+      name,
+      qtype,
+      qclass
+    }
+  };
+
+  answer := for[] (i,0..header.ancount) {
+    [name, offset] = _read_name(response, offset);
+    rtype := Bytes.read_u16_be(response, offset);
+    offset += 2;
+    class := Bytes.read_u16_be(response, offset);
+    offset += 2;
+    ttl := Bytes.read_u32_be(response, offset);
+    offset += 4;
+    rdlen := Bytes.read_u16_be(response, offset);
+    offset += 2;
+
+    rdata := Bytes.slice(response, offset, offset + rdlen);
+
+    rdata = match rtype {
+      1   => _format_ipv4(rdata),
+      28  => _format_ipv6(rdata),
+      5   => _read_name(response, offset)[0],
+      _   => Bytes.to_hex(rdata),
+    };
+
+    offset += rdlen;
+
+    ${
+      name,
+      'type': rtype,
+      class,
+      ttl,
+      rdata
+    }
+  };
+  authority := [];
+  additional := [];
+
+  ${
+    header,
+    question,
+    answer,
+    authority,
+    additional
+  }
+};
+
+_resolve := fn(name, qtype = 1, server = '1.1.1.1') {
+  id := Random.int(0, 0xffff);
+
+  query := _build_query(id, name, qtype);
+
+  sender    := Net.bind('0.0.0.0', 0);
+
+  Net.send_to(sender, query, server, PORT);
+  response := Net.recv_from(sender, 4096);
+
+  Net.close(sender);
+
+  // handle response
+  _parse_response(response.data, id)
+};
+
+${
+  read_name: _read_name,
+  build_query: _build_query,
+  parse_response: _parse_response,
+  resolve: _resolve,
+  type_to_string: _type_to_string
+}

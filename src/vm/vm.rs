@@ -439,6 +439,32 @@ impl Vm {
         Ok(task)
     }
 
+    /// Build an `ImportFailed` runtime error from a compile-time
+    /// `Error` in the imported file. If the inner error has a known
+    /// source id, pre-render its snippet against that source so the
+    /// top-level renderer prints the imported file:line as the primary
+    /// location instead of the import call. The `try_catch` machinery
+    /// will populate `trace` with the import-chain frames as it unwinds;
+    /// the renderer turns those into "imported from:" lines.
+    fn import_failed_from_inner(
+        &self,
+        path_str: &str,
+        inner: crate::vm::error::Error,
+        line: u32,
+    ) -> RuntimeError {
+        let mut err = RuntimeError::new(
+            RuntimeErrorKind::ImportFailed(
+                path_str.to_string(),
+                format!("{inner}"),
+            ),
+            line,
+        );
+        if !inner.source().is_unknown() {
+            err.rendered = Some(inner.render(&self.source_map.borrow()));
+        }
+        err
+    }
+
     /// Fill in `err.source` from the chunk on top of the call stack
     /// when it isn't already set. Called at the `exec` boundary —
     /// before `try_catch` may unwind frames.
@@ -1859,12 +1885,8 @@ impl Vm {
                             ) {
                                 Ok(m) => m,
                                 Err(e) => {
-                                    return Err(RuntimeError::new(
-                                        RuntimeErrorKind::ImportFailed(
-                                            path_str.to_string(),
-                                            format!("{e}"),
-                                        ),
-                                        line,
+                                    return Err(self.import_failed_from_inner(
+                                        &path_str, e, line,
                                     ));
                                 }
                             };
@@ -1933,18 +1955,18 @@ impl Vm {
                             line,
                         ));
                     }
-                    let main = match crate::vm::compile_file_into(
+                    // Scope the mutable source-map borrow tightly so
+                    // `import_failed_from_inner` can re-borrow immutably
+                    // when rendering the inner error on the Err path.
+                    let compile_result = crate::vm::compile_file_into(
                         &path,
                         &mut self.source_map.borrow_mut(),
-                    ) {
+                    );
+                    let main = match compile_result {
                         Ok(m) => m,
                         Err(e) => {
-                            return Err(RuntimeError::new(
-                                RuntimeErrorKind::ImportFailed(
-                                    path_str.to_string(),
-                                    format!("{e}"),
-                                ),
-                                line,
+                            return Err(self.import_failed_from_inner(
+                                &path_str, e, line,
                             ));
                         }
                     };

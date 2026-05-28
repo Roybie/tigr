@@ -171,11 +171,23 @@ pub struct RuntimeError {
     /// innermost frame first. Empty until `try_catch` records it; stays
     /// empty for caught errors (the partial trace is simply discarded).
     pub trace: Vec<TraceFrame>,
+    /// When set, the renderer prints this snippet instead of the default
+    /// `--> file:line` rendering for `self.source`/`self.line`. Used for
+    /// `ImportFailed` carrying a compile error in the imported file so
+    /// the primary location points at that file, not the import call.
+    /// The `trace` is still appended as "imported from:" lines.
+    pub rendered: Option<String>,
 }
 
 impl RuntimeError {
     pub fn new(kind: RuntimeErrorKind, line: u32) -> Self {
-        RuntimeError { kind, line, source: SourceId::UNKNOWN, trace: Vec::new() }
+        RuntimeError {
+            kind,
+            line,
+            source: SourceId::UNKNOWN,
+            trace: Vec::new(),
+            rendered: None,
+        }
     }
 }
 
@@ -318,6 +330,27 @@ impl Error {
     /// Falls back to the legacy single-line `Display` form when the
     /// source is unknown.
     pub fn render(&self, sources: &SourceMap) -> String {
+        // ImportFailed pre-renders the inner compile error against the
+        // imported file's source so its primary `--> file:line` points
+        // at the actual error site, not the import call. Append the
+        // import chain as "imported from:" lines (from `e.trace`, which
+        // try_catch populates with each Import frame as it unwinds).
+        if let Error::Runtime(e) = self {
+            if let Some(rendered) = &e.rendered {
+                let mut out = rendered.clone();
+                if !e.trace.is_empty() {
+                    out.push_str("imported from:\n");
+                    for tf in &e.trace {
+                        let loc = sources
+                            .get(tf.source)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<unknown>");
+                        out.push_str(&format!("  {loc}:{}\n", tf.line));
+                    }
+                }
+                return out;
+            }
+        }
         let (label, line, col_start, span_len, body) = match self {
             Error::Lex(e) => (
                 "lex",

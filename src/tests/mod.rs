@@ -2472,6 +2472,49 @@ fn v04_render_parse_unexpected_token() {
 }
 
 #[test]
+fn render_compile_error_in_imported_file_points_at_imported_file() {
+    // Compile errors during import used to render at the import line in
+    // the parent file. They now render against the imported file's
+    // source and append the import chain as "imported from:" lines.
+    use std::io::Write;
+    let dir = std::env::temp_dir()
+        .join(format!("tigr_import_compile_render_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad_path = dir.join("bad.tg");
+    {
+        let mut f = std::fs::File::create(&bad_path).unwrap();
+        writeln!(f, "// inner module").unwrap();
+        writeln!(f, "x := nope_undeclared;").unwrap();
+    }
+    let main_path = dir.join("main.tg");
+    {
+        let mut f = std::fs::File::create(&main_path).unwrap();
+        writeln!(f, "import './bad'").unwrap();
+    }
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::vm::source_map::SourceMap::new(),
+    ));
+    let result = crate::vm::run_file_with_map(&main_path, sources.clone());
+    let out = match result {
+        Ok((v, _)) => panic!("expected error, got {v:?}"),
+        Err(e) => e.render(&sources.borrow()),
+    };
+    assert!(
+        out.contains("error[compile]") && out.contains("nope_undeclared"),
+        "expected compile-error snippet — got:\n{out}",
+    );
+    assert!(
+        out.contains("bad.tg") && out.contains(":2"),
+        "expected primary location to point at bad.tg:2 — got:\n{out}",
+    );
+    assert!(
+        out.contains("imported from:") && out.contains("main.tg:1"),
+        "expected `imported from:` chain pointing at main.tg:1 — got:\n{out}",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn v04_render_error_in_imported_file() {
     use std::io::Write;
     let dir = std::env::temp_dir().join(format!("tigr_v04_render_{}", std::process::id()));

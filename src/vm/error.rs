@@ -65,6 +65,10 @@ pub enum ParseErrorKind {
     UnexpectedToken(Token),
     InvalidAssignTarget,
     ExpectedEof(Token),
+    /// Two expressions ran together with no `;` between them. The span
+    /// points at the end of the first expression, where the separator
+    /// belongs, rather than at the next expression's first token.
+    MissingSemicolon { found: Token },
     InterpolationError(String),
     InvalidPattern(String),
 }
@@ -78,6 +82,10 @@ impl fmt::Display for ParseError {
             ParseErrorKind::UnexpectedToken(t) => write!(f, "unexpected token `{}`", t),
             ParseErrorKind::InvalidAssignTarget => f.write_str("invalid assignment target"),
             ParseErrorKind::ExpectedEof(t) => write!(f, "expected end of input, found `{}`", t),
+            ParseErrorKind::MissingSemicolon { found } => write!(
+                f,
+                "missing `;` before `{found}` — did you forget a semicolon?"
+            ),
             ParseErrorKind::InterpolationError(m) => write!(f, "in interpolation: {m}"),
             ParseErrorKind::InvalidPattern(m) => write!(f, "invalid pattern: {m}"),
         }

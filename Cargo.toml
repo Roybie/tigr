@@ -5,6 +5,16 @@ authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 edition = "2021"
 exclude = ["examples/*"]
 
+# Option A workspace: the `tigr` package stays the root crate (so the
+# release/Pages workflows and `wasm-pack build` still target it
+# unchanged); the language server is an additional member. Its deps
+# (tokio, tower-lsp) never enter a `--bin tigr` or wasm build because
+# nothing in this package depends on that crate. resolver = "2" matches
+# the package edition and silences cargo's workspace-default warning.
+[workspace]
+members = ["crates/tigr-lsp"]
+resolver = "2"
+
 [lib]
 # `rlib` backs the `tigr` binary and the test harness; `cdylib` is the
 # linkage `wasm-bindgen` needs to emit the playground's `.wasm`.

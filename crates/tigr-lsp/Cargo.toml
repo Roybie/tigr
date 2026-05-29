@@ -1,0 +1,25 @@
+[package]
+name = "tigr-lsp"
+version = "0.1.0"
+authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
+edition = "2021"
+description = "Language Server Protocol implementation for the tigr language."
+
+[[bin]]
+name = "tigr-lsp"
+path = "src/main.rs"
+
+[dependencies]
+# The language core. We reuse its lexer/parser/compiler frontend rather
+# than re-implementing one; `compile_source_with_id` runs the whole
+# pipeline up to (but not including) execution and hands back the first
+# error with a byte span.
+tigr = { path = "../.." }
+# tower-lsp supplies the JSON-RPC plumbing, the LanguageServer trait, and
+# re-exports lsp-types + the async_trait macro.
+tower-lsp = "0.20"
+# A current-thread runtime is deliberate: the compiler allocates into the
+# VM's thread-local GC heap, so every compile (and the drop of its result)
+# must stay on one thread. `io-std` gives the async stdin/stdout the LSP
+# stdio transport needs.
+tokio = { version = "1", features = ["rt", "io-std", "macros"] }

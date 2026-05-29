@@ -139,9 +139,24 @@ impl Parser {
                     return Ok(Block { stmts, tail });
                 }
                 continue;
-            } else {
+            } else if self.check_any(terminators) {
                 tail = Some(Box::new(expr));
                 return Ok(Block { stmts, tail });
+            } else {
+                // No `;` and the next token isn't a block terminator, so a
+                // second expression is starting where a separator should
+                // be. Report it as a forgotten `;` pointing at the end of
+                // this expression (the last token we consumed) — that's
+                // where the `;` belongs — instead of letting it surface
+                // downstream as a confusing "unexpected token" on the
+                // next line.
+                let prev = self.tokens[self.pos.saturating_sub(1)].span;
+                return Err(ParseError::new(
+                    ParseErrorKind::MissingSemicolon {
+                        found: self.peek().clone(),
+                    },
+                    Span::new(prev.end, prev.end + 1, prev.line),
+                ));
             }
         }
     }

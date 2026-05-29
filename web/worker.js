@@ -13,13 +13,21 @@
 //                    { id, ok, incomplete, value, output, error, ms }
 
 import init, { WasmRepl, run_program, version } from './pkg/tigr.js';
+import { VERSION } from './pkg/meta.js';
 
 let repl = null;
 
 // Load the wasm module, then announce readiness. A persistent REPL
 // session backs the console tab; the editor tab uses `run_program`,
 // which spins up its own throwaway session per run.
-init()
+//
+// The `?v=VERSION` query cache-busts the wasm: GitHub Pages serves it
+// through a CDN that caches each URL independently, so after a release a
+// browser could fetch the new JS glue against a stale `tigr_bg.wasm` and
+// hit "wasm.<export> is not a function". A version-stamped URL the cache
+// has never seen forces a fresh fetch. `import.meta.url` is the worker's
+// own location (web/), so the relative path resolves to web/pkg/.
+init(new URL(`./pkg/tigr_bg.wasm?v=${VERSION}`, import.meta.url))
   .then(() => {
     repl = new WasmRepl();
     self.postMessage({ kind: 'ready', version: version() });

@@ -649,6 +649,22 @@ impl Vm {
     /// [`call_value`] passes the depth it started at so the nested run
     /// returns once its callee frame has returned.
     fn run_until(&mut self, floor: usize) -> Result<Value, RuntimeError> {
+        // Frame cache (dispatch fast path). `closure` / `function_rc`
+        // describe the frame whose bytecode is currently executing and
+        // persist across loop iterations. Recomputing them every
+        // iteration — an arena borrow plus an `Rc<Function>` clone — was
+        // pure overhead on the VM's hottest path, since they only change
+        // when the current frame does (a call, return, tail-call, or
+        // coroutine switch). We refresh them lazily: the check below is
+        // an identity comparison of the live frame's closure handle
+        // against the cached one. It is sound because a closure's
+        // `function` is immutable, so a matching handle guarantees the
+        // cached `function_rc`/chunk is still the right one; a tail-call
+        // (which rebinds `frame.closure`) or any frame switch changes the
+        // handle and triggers a refresh.
+        let mut closure = self.frames.last().expect("at least one frame").closure;
+        let mut function_rc = closure.borrow().function.clone();
+
         loop {
             // GC safepoint: collect here, before any opcode work, while
             // no borrow guard is live and every root is on a Vm field.
@@ -661,12 +677,16 @@ impl Vm {
                 self.poll_io_completions();
             }
 
-            // Snapshot the current frame's chunk for this iteration.
-            // The closure handle is `Copy`; cloning the `Rc<Function>`
-            // out lets us read the chunk while mutating self.stack /
-            // self.frames.
-            let closure = self.frames.last().expect("at least one frame").closure;
-            let function_rc = closure.borrow().function.clone();
+            // Refresh the frame cache only when the current frame's
+            // closure handle differs from the cached one — i.e. after a
+            // call, return, tail-call, or coroutine switch. On the common
+            // path (arithmetic, loads, in-frame jumps) this is two
+            // integer comparisons and we keep the cached chunk.
+            let cur_closure = self.frames.last().expect("at least one frame").closure;
+            if cur_closure != closure {
+                closure = cur_closure;
+                function_rc = closure.borrow().function.clone();
+            }
             let chunk = &function_rc.chunk;
             let base_slot = self.frames.last().unwrap().base_slot;
             let mut ip = self.frames.last().unwrap().ip;

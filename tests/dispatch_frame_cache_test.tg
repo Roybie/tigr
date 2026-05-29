@@ -1,0 +1,147 @@
+// tests/dispatch_frame_cache_test.tg — regression coverage for the
+// VM dispatch loop's frame cache.
+//
+// The dispatch loop caches the current frame's closure / function /
+// chunk across iterations and refreshes only when the live frame's
+// closure handle changes. These cases stress exactly the transitions
+// that must invalidate that cache:
+//
+//   - calls/returns *between distinct closures* (handle changes),
+//   - tail-calls that rebind the frame's closure in place — both
+//     self-tail (handle unchanged, base changes) and mutual-tail
+//     (handle changes every step),
+//   - deep self-recursion (same closure, many different bases),
+//   - generators/green threads interleaved with recursion (frame
+//     switches that swap the whole frame).
+//
+// A stale cache would execute the wrong chunk and either crash or
+// return a wrong value, so each assertion is a guard. Run under
+// `TIGR_GC_TORTURE=1 tigr test` to also exercise a collection between
+// every dispatch step.
+//
+// Evaluates to an array of suites so `tigr test` aggregates the tally.
+
+Test := import 'Test';
+Iter := import 'Iter';
+
+// Mutually-recursive parity, declared with a forward `null` binding so
+// each body resolves the other. Captured by upvalue, so reassigning
+// `is_odd` after `is_even` compiles is visible to it.
+is_odd := null;
+is_even := fn(n) { if n == 0 { true } else { is_odd(n - 1) } };
+is_odd = fn(n) { if n == 0 { false } else { is_even(n - 1) } };
+
+// Distinct top-level closures to interleave.
+inc := fn(x) { x + 1 };
+dbl := fn(x) { x * 2 };
+neg := fn(x) { 0 - x };
+
+[
+    Test.suite('frame cache — cross-closure tail calls', [
+        Test.case('shallow mutual recursion is correct', fn() {
+            Test.assert_eq(is_even(10), true);
+            Test.assert_eq(is_odd(10), false);
+            Test.assert_eq(is_even(7), false);
+            Test.assert_eq(is_odd(7), true)
+        }),
+
+        // Deep enough that it only completes if mutual tail calls are
+        // TCO'd; every step rebinds the frame's closure to the *other*
+        // function, so the cache must refresh on each one.
+        Test.case('deep mutual tail recursion stays correct', fn() {
+            Test.assert_eq(is_even(500000), true);
+            Test.assert_eq(is_odd(500000), false);
+            Test.assert_eq(is_even(500001), false)
+        }),
+    ]),
+
+    Test.suite('frame cache — interleaved distinct closures', [
+        // Each loop step calls three different closures, so the cached
+        // closure handle changes on essentially every call/return.
+        Test.case('alternating closures over a loop', fn() {
+            total := 0;
+            for (i, 0..1000) { total = total + inc(i) + dbl(i) + neg(i) };
+            // per i: (i+1) + 2i + (-i) = 2i + 1; sum over 0..999 = 1_000_000
+            Test.assert_eq(total, 1000000)
+        }),
+
+        // Higher-order application: map an array of distinct closures.
+        Test.case('mapping distinct closures', fn() {
+            fns := [inc, dbl, neg, inc, dbl];
+            out := for[] (f, fns) { f(10) };
+            Test.assert_eq(out, [11, 20, -10, 11, 20])
+        }),
+
+        // Nested calls through three distinct closures in one expression.
+        Test.case('nested distinct-closure calls', fn() {
+            Test.assert_eq(inc(dbl(neg(5))), -9)
+        }),
+    ]),
+
+    Test.suite('frame cache — same-closure recursion', [
+        // Same closure handle, a fresh base_slot at every depth.
+        Test.case('deep self-recursion (sum to n)', fn() {
+            sum := fn(n) { if n == 0 { 0 } else { n + sum(n - 1) } };
+            Test.assert_eq(sum(5000), 5000 * 5001 / 2)
+        }),
+
+        // Self-tail recursion: handle unchanged, base changes, TailCall
+        // reuses the frame.
+        Test.case('deep self-tail recursion (countdown)', fn() {
+            countdown := null;
+            countdown = fn(n, acc) {
+                if n == 0 { acc } else { countdown(n - 1, acc + n) }
+            };
+            Test.assert_eq(countdown(1000000, 0), 1000000 * 1000001 / 2)
+        }),
+
+        // Classic non-tail double recursion — many call/return pairs of
+        // the same closure at varying depth.
+        Test.case('naive fibonacci', fn() {
+            fib := null;
+            fib = fn(n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } };
+            Test.assert_eq(fib(20), 6765)
+        }),
+    ]),
+
+    Test.suite('frame cache — coroutine switches', [
+        // A generator resumes its own paused frame between driver calls;
+        // the driver also recurses, so frames switch back and forth.
+        Test.case('generator interleaved with recursion', fn() {
+            ramp := gen fn(n) {
+                i := 0;
+                while i < n { yield i * i; i = i + 1; };
+            };
+            sum := fn(g, acc) {
+                r := g.next();
+                if r.done { acc } else { sum(g, acc + r.value) }
+            };
+            // 0^2 + 1^2 + ... + 4^2 = 30
+            Test.assert_eq(sum(ramp(5), 0), 30)
+        }),
+
+        // Drive a generator through the Iter pipeline (which calls back
+        // into next() across frame boundaries).
+        Test.case('generator through Iter pipeline', fn() {
+            ramp := gen fn(n) {
+                i := 0;
+                while i < n { yield i; i = i + 1; };
+            };
+            out := Iter.from(ramp(6))
+                |> Iter.map(fn(x) { x * 10 })
+                |> Iter.filter(fn(x) { x % 20 == 0 })
+                |> Iter.collect();
+            Test.assert_eq(out, [0, 20, 40])
+        }),
+
+        // Green thread sharing the heap, joined back into the parent.
+        Test.case('green thread join returns its value', fn() {
+            h := go fn() {
+                t := 0;
+                for (i, 0..100) { t = t + i };
+                t
+            };
+            Test.assert_eq(join(h), 4950)
+        }),
+    ]),
+]

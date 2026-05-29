@@ -1,0 +1,14 @@
+// Tight arithmetic loop with *variable-only* operands, so the v0.12
+// constant folder has nothing to fold — every sub-expression runs on
+// each iteration. This isolates raw per-opcode dispatch cost: each
+// iteration is a handful of LoadLocal / arithmetic / StoreLocal ops
+// with almost no real work behind each one, so the interpreter's
+// per-instruction bookkeeping dominates.
+
+total := 0;
+step := 1;
+for (i, 0..2000000) {
+    total = total + i * step - i + step;
+};
+
+total

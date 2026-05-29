@@ -1,0 +1,13 @@
+// Nested loops: the inner body is trivial, so the cost is almost all
+// loop machinery — iterator advance, the back-edge jump, and the
+// counter add. Jump- and dispatch-bound with no allocation and no
+// calls, a complement to arith_unfolded_bench.
+
+total := 0;
+for (i, 0..2000) {
+    for (j, 0..2000) {
+        total = total + 1;
+    };
+};
+
+total

@@ -1,0 +1,16 @@
+// Local-variable read/write churn. Each iteration declares several
+// locals that each depend on the previous, producing a dense stream of
+// LoadLocal / StoreLocal opcodes with minimal real work per op — the
+// other end of the dispatch-overhead spectrum from a few heavy ops.
+
+total := 0;
+for (i, 0..1000000) {
+    a := i + 1;
+    b := a + i;
+    c := b + a;
+    d := c + b;
+    e := d + c;
+    total = total + e;
+};
+
+total

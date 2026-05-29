@@ -1,0 +1,15 @@
+// Non-recursive call/return churn: a tiny function invoked in a tight
+// loop. Every iteration pushes a call frame and pops it again, so this
+// stresses the frame setup/teardown path specifically — the code that
+// the dispatch-loop frame-cache refactor has to reload across. Unlike
+// recursion_bench it keeps the call depth flat at 1, so it measures
+// per-call overhead rather than deep-stack behaviour.
+
+add := fn(a, b) { a + b };
+
+total := 0;
+for (i, 0..1500000) {
+    total = add(total, i);
+};
+
+total

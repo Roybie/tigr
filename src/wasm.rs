@@ -93,6 +93,14 @@ impl Default for WasmRepl {
     }
 }
 
+/// The crate version (`CARGO_PKG_VERSION`), so the playground UI shows
+/// the same version the wasm was built from — one source of truth, no
+/// hand-edited version string in the HTML to drift on a release bump.
+#[wasm_bindgen]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Evaluate `source` in a throwaway session — the editor tab's "Run".
 #[wasm_bindgen]
 pub fn run_program(source: &str) -> EvalResult {

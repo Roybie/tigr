@@ -61,7 +61,7 @@ const HOOKS = [
   'tab-repl', 'tab-editor', 'panel-repl', 'panel-editor',
   'repl-scrollback', 'repl-prompt', 'repl-input', 'repl-reset',
   'editor', 'editor-run', 'editor-run-kbd', 'editor-stop', 'editor-output', 'editor-meta', 'editor-exit', 'editor-examples', 'editor-file',
-  'status',
+  'status', 'version-badge', 'repl-version',
 ];
 
 function bindUI() {
@@ -440,6 +440,12 @@ function main() {
   setStatus('loading…');
   vm.ready.then((msg) => {
     setStatus(msg && msg.error ? `load failed: ${msg.error}` : 'ready');
+    // Fill the version from the wasm build (CARGO_PKG_VERSION) so there's
+    // no hand-edited version string in the HTML to drift on a release.
+    if (msg && msg.version) {
+      if (ui.version_badge) ui.version_badge.textContent = `v${msg.version}`;
+      if (ui.repl_version) ui.repl_version.textContent = `v${msg.version}`;
+    }
   });
 }
 

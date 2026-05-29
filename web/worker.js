@@ -9,10 +9,10 @@
 // Protocol:
 //   main -> worker : { id, kind: 'eval' | 'run', source }
 //                    { id, kind: 'reset' }
-//   worker -> main : { kind: 'ready' }
+//   worker -> main : { kind: 'ready', version }
 //                    { id, ok, incomplete, value, output, error, ms }
 
-import init, { WasmRepl, run_program } from './pkg/tigr.js';
+import init, { WasmRepl, run_program, version } from './pkg/tigr.js';
 
 let repl = null;
 
@@ -22,7 +22,7 @@ let repl = null;
 init()
   .then(() => {
     repl = new WasmRepl();
-    self.postMessage({ kind: 'ready' });
+    self.postMessage({ kind: 'ready', version: version() });
   })
   .catch((err) => {
     self.postMessage({ kind: 'ready', error: String(err) });

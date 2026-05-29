@@ -157,7 +157,7 @@ fn render_local(name: &str, b: &Binding) -> String {
 /// The `Module.member` access whose member key contains `offset`, if any.
 /// Dot-access lowers to `Index(Ident(module), Str(member))`, and the key
 /// `Str` carries the exact span of the member name.
-fn member_at(program: &Block, offset: usize) -> Option<(String, String)> {
+pub fn member_at(program: &Block, offset: usize) -> Option<(String, String)> {
     let mut best: Option<(String, String, Span)> = None;
     walk_block(program, &mut |se| {
         if let Expr::Index(obj, key) = &se.expr {
@@ -260,6 +260,224 @@ pub fn canonical_module(program: &Block, name: &str) -> String {
     import_aliases(program)
         .remove(name)
         .unwrap_or_else(|| name.to_string())
+}
+
+// ---------------- cross-file imports (Phase 5a) ----------------
+
+/// Something under the cursor that points into another file. The `path` is
+/// the raw import-path string as written (e.g. `./dns`); the caller
+/// resolves it to a file relative to the importing document.
+pub enum ImportTarget {
+    /// The whole module: the cursor is on an `import '<path>'` path string.
+    Module { path: String },
+    /// A specific member: the cursor is on the `member` of `Alias.member`,
+    /// where `Alias` is a `:= import '<path>'` file import.
+    Member { path: String, member: String },
+}
+
+/// Whether an import path resolves to a file (rather than a built-in
+/// module). Mirrors the VM: a path is file-shaped iff it contains a path
+/// separator or a `.`; bare names resolve against the stdlib/native
+/// modules, which have no on-disk location to jump to.
+pub fn is_file_path(path: &str) -> bool {
+    path.contains('/') || path.contains('\\') || path.contains('.')
+}
+
+/// If `offset` sits on something that refers into an imported file, return
+/// what to resolve. Two shapes: the path string of an `import` expression,
+/// or the `member` of a `file_alias.member` access. Bare (stdlib) imports
+/// are not file targets and return `None` here (hover/the catalog cover
+/// them).
+pub fn import_target(program: &Block, offset: usize) -> Option<ImportTarget> {
+    // `Alias.member` — resolve the receiver alias to its import path.
+    if let Some((alias, member)) = member_at(program, offset) {
+        if let Some(path) = import_aliases(program).remove(&alias) {
+            if is_file_path(&path) {
+                return Some(ImportTarget::Member { path, member });
+            }
+        }
+    }
+    // The path string of an `import '<path>'` under the cursor.
+    let mut found: Option<String> = None;
+    walk_block(program, &mut |se| {
+        if let Expr::Import(arg) = &se.expr {
+            if let Expr::Str(path) = &arg.expr {
+                if contains(arg.span, offset) && is_file_path(path) {
+                    found = Some(path.clone());
+                }
+            }
+        }
+    });
+    found.map(|path| ImportTarget::Module { path })
+}
+
+/// The definition span of `member` within an imported module's tree.
+///
+/// A tigr module hands back the value of its final expression, which is
+/// conventionally an object literal of `name: value` exports. So: take the
+/// module's final value; if it is an object literal with a `member:` field,
+/// jump to the field value — following a bare-identifier value (the common
+/// `resolve: _resolve` re-export) through to the top-level declaration it
+/// names. If the export object yields nothing, fall back to a top-level
+/// declaration named `member` directly.
+pub fn module_member_def(foreign: &Block, member: &str) -> Option<Span> {
+    if let Some(value) = export_object_field(foreign, member) {
+        // `member: some_ident` re-exports a top-level binding — prefer its
+        // declaration over the reference in the export object.
+        if let Expr::Ident(name) = &value.expr {
+            if let Some(span) = top_level_decl_span(foreign, name) {
+                return Some(span);
+            }
+        }
+        return Some(value.span);
+    }
+    top_level_decl_span(foreign, member)
+}
+
+/// The value expression of the `member:` field in the module's exported
+/// object literal, if the module's final value is one.
+fn export_object_field<'a>(foreign: &'a Block, member: &str) -> Option<&'a SpannedExpr> {
+    let value = module_value(foreign)?;
+    if let Expr::Object(members) = &value.expr {
+        for m in members {
+            if let ObjectMember::Pair(key, v) = m {
+                if key == member {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The module's value: its final expression. Unwraps a trailing
+/// block/scope so `( ...; ${...} )` or `{ ...; ${...} }` still reach the
+/// object inside.
+fn module_value(block: &Block) -> Option<&SpannedExpr> {
+    let tail = block.tail.as_deref()?;
+    match &tail.expr {
+        Expr::Block(inner) | Expr::Scope(inner) => module_value(inner),
+        _ => Some(tail),
+    }
+}
+
+/// The binder span of a top-level `name := …` declaration, if present.
+fn top_level_decl_span(block: &Block, name: &str) -> Option<Span> {
+    top_level_decl(block, name).map(|(span, _)| span)
+}
+
+/// The binder span and initialiser of a top-level `name := init`
+/// declaration, if present.
+fn top_level_decl<'a>(block: &'a Block, name: &str) -> Option<(Span, &'a SpannedExpr)> {
+    for se in block.stmts.iter().chain(block.tail.as_deref()) {
+        if let Expr::Decl(Pattern::Ident(binder), init) = &se.expr {
+            if binder.name == name {
+                return Some((binder.span, init));
+            }
+        }
+    }
+    None
+}
+
+/// Every `alias := import 'path'` in `program`, as `(alias, path)` pairs in
+/// source order (duplicates kept — a file may bind the same module twice).
+/// Unlike `import_aliases`, this is a list, so all aliases of one module are
+/// available to the cross-file reference scan.
+pub fn import_alias_pairs(program: &Block) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    walk_block(program, &mut |se| {
+        if let Expr::Decl(Pattern::Ident(alias), init) = &se.expr {
+            if let Expr::Import(arg) = &init.expr {
+                if let Expr::Str(path) = &arg.expr {
+                    out.push((alias.name.clone(), path.clone()));
+                }
+            }
+        }
+    });
+    out
+}
+
+/// The key spans of every `receiver.member` access in `program` (the
+/// member-name `Str` of an `Index(Ident(receiver), Str(member))`). Used to
+/// find and rename cross-file uses of an exported member.
+pub fn member_access_spans(program: &Block, receiver: &str, member: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    walk_block(program, &mut |se| {
+        if let Expr::Index(obj, key) = &se.expr {
+            if let (Expr::Ident(r), Expr::Str(m)) = (&obj.expr, &key.expr) {
+                if r == receiver && m == member {
+                    out.push(key.span);
+                }
+            }
+        }
+    });
+    out
+}
+
+/// The span of a module's exported object literal (`module_value`), when its
+/// final value is one. The caller text-scans within it to locate an export
+/// key, which the AST doesn't span (an `ObjectMember::Pair` key is a bare
+/// `String`).
+pub fn export_object_span(foreign: &Block) -> Option<Span> {
+    let value = module_value(foreign)?;
+    matches!(value.expr, Expr::Object(_)).then_some(value.span)
+}
+
+/// One member of a user module's exported object literal.
+pub struct ExportedMember {
+    /// The export key (the name read off the imported object).
+    pub name: String,
+    /// A function shows its parameter list (`resolve(name, qtype?)`);
+    /// any other value is just the bare name.
+    pub signature: String,
+    pub is_function: bool,
+    /// Where the member is defined in the module file — the re-exported
+    /// declaration, or the inline value expression.
+    pub def_span: Span,
+}
+
+/// The members a user module exports: the fields of its final object
+/// literal (`module_value`). A `key: ident` re-export takes its signature
+/// and jump target from the top-level declaration `ident` names; an inline
+/// value uses the value itself. A module whose value is not an object
+/// literal exports nothing here.
+pub fn module_exports(foreign: &Block) -> Vec<ExportedMember> {
+    let Some(value) = module_value(foreign) else {
+        return Vec::new();
+    };
+    let Expr::Object(members) = &value.expr else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .filter_map(|m| match m {
+            ObjectMember::Pair(key, v) => Some(export_member(foreign, key, v)),
+            ObjectMember::Spread(_) => None,
+        })
+        .collect()
+}
+
+fn export_member(foreign: &Block, key: &str, value: &SpannedExpr) -> ExportedMember {
+    // `key: some_ident` re-exports a top-level binding: describe and locate
+    // it from its declaration rather than from the export field.
+    if let Expr::Ident(name) = &value.expr {
+        if let Some((span, init)) = top_level_decl(foreign, name) {
+            let (signature, is_function) = fn_sig_or_name(key, init);
+            return ExportedMember { name: key.to_string(), signature, is_function, def_span: span };
+        }
+    }
+    let (signature, is_function) = fn_sig_or_name(key, value);
+    ExportedMember { name: key.to_string(), signature, is_function, def_span: value.span }
+}
+
+/// `(signature, is_function)` for an export value: a `fn` literal shows its
+/// parameter list under `key`; anything else is just `key`.
+fn fn_sig_or_name(key: &str, e: &SpannedExpr) -> (String, bool) {
+    if let Expr::Fn { params, defaults, rest, .. } = &e.expr {
+        (fn_signature(key, params, defaults, rest.as_deref()), true)
+    } else {
+        (key.to_string(), false)
+    }
 }
 
 /// Look up `name` in the scope chain active at `offset`, innermost first.
@@ -1065,6 +1283,100 @@ mod tests {
         let prog = parse_tree("M := import 'Math';");
         assert_eq!(canonical_module(&prog, "M"), "Math");
         assert_eq!(canonical_module(&prog, "Other"), "Other");
+    }
+
+    #[test]
+    fn import_target_on_member_of_a_file_import() {
+        let src = "DNS := import './dns';\nDNS.resolve('a');";
+        let off = at(src, "resolve(");
+        match import_target(&parse_tree(src), off) {
+            Some(ImportTarget::Member { path, member }) => {
+                assert_eq!(path, "./dns");
+                assert_eq!(member, "resolve");
+            }
+            other => panic!("expected Member, got {:?}", other.is_some()),
+        }
+    }
+
+    #[test]
+    fn import_target_on_a_path_string() {
+        let src = "DNS := import './dns';";
+        let off = at(src, "./dns");
+        match import_target(&parse_tree(src), off) {
+            Some(ImportTarget::Module { path }) => assert_eq!(path, "./dns"),
+            _ => panic!("expected Module"),
+        }
+    }
+
+    #[test]
+    fn import_target_ignores_bare_stdlib_imports() {
+        let src = "Math := import 'Math';\nMath.sqrt(4.0);";
+        // Neither the path string nor the member of a bare import is a file.
+        assert!(import_target(&parse_tree(src), at(src, "'Math'")).is_none());
+        assert!(import_target(&parse_tree(src), at(src, "sqrt(")).is_none());
+    }
+
+    #[test]
+    fn module_member_def_follows_a_reexport_to_its_decl() {
+        // The conventional shape: private decls re-exported by an object.
+        let module = "_resolve := fn(n) { n };\n${ resolve: _resolve }";
+        let tree = parse_tree(module);
+        let span = module_member_def(&tree, "resolve").expect("member def");
+        // Jumps to the `_resolve` declaration, not the export field.
+        assert_eq!(&module[span.start..span.end], "_resolve");
+        assert_eq!(span.start, module.find("_resolve :=").unwrap());
+    }
+
+    #[test]
+    fn module_member_def_handles_inline_and_missing_members() {
+        let module = "${ answer: 42, f: fn(x) { x } }";
+        let tree = parse_tree(module);
+        // An inline (non-ident) value: jump to the value expression.
+        let span = module_member_def(&tree, "answer").expect("inline member");
+        assert_eq!(&module[span.start..span.end], "42");
+        // An unknown member resolves to nothing.
+        assert!(module_member_def(&tree, "nope").is_none());
+    }
+
+    #[test]
+    fn module_member_def_falls_back_to_a_top_level_decl() {
+        // No export object — the module's value is the decl itself.
+        let module = "greet := fn() { 'hi' }";
+        let tree = parse_tree(module);
+        let span = module_member_def(&tree, "greet").expect("top-level decl");
+        assert_eq!(&module[span.start..span.end], "greet");
+    }
+
+    #[test]
+    fn module_exports_lists_members_with_signatures() {
+        let module = "_resolve := fn(name, qtype = 1) { name };\n\
+                      ${ resolve: _resolve, answer: 42 }";
+        let tree = parse_tree(module);
+        let exports = module_exports(&tree);
+        let resolve = exports.iter().find(|e| e.name == "resolve").unwrap();
+        assert!(resolve.is_function);
+        assert_eq!(resolve.signature, "resolve(name, qtype?)");
+        // Re-export jumps to the private decl, not the export field.
+        assert_eq!(&module[resolve.def_span.start..resolve.def_span.end], "_resolve");
+        let answer = exports.iter().find(|e| e.name == "answer").unwrap();
+        assert!(!answer.is_function);
+        assert_eq!(answer.signature, "answer");
+    }
+
+    #[test]
+    fn member_access_spans_find_every_use() {
+        let src = "DNS.resolve('a');\nx := DNS.resolve('b');\nDNS.other();";
+        let spans = member_access_spans(&parse_tree(src), "DNS", "resolve");
+        assert_eq!(spans.len(), 2);
+        assert!(spans.iter().all(|s| &src[s.start..s.end] == "resolve"));
+    }
+
+    #[test]
+    fn import_alias_pairs_lists_all_imports() {
+        let src = "A := import './a';\nB := import 'Math';";
+        let pairs = import_alias_pairs(&parse_tree(src));
+        assert!(pairs.contains(&("A".to_string(), "./a".to_string())));
+        assert!(pairs.contains(&("B".to_string(), "Math".to_string())));
     }
 
     #[test]

@@ -15,7 +15,7 @@ mod analysis;
 mod catalog;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tower_lsp::jsonrpc::Result;
@@ -39,10 +39,25 @@ struct Document {
     tree: Option<Arc<Block>>,
 }
 
+/// A disk file parsed for a cross-file request, cached alongside the mtime
+/// it was read at so a later read re-parses only when the file changed.
+struct CachedTree {
+    mtime: Option<std::time::SystemTime>,
+    text: String,
+    tree: Arc<Block>,
+}
+
 struct Backend {
     client: Client,
     /// Open documents, keyed by URI.
     docs: Mutex<HashMap<Url, Document>>,
+    /// Closed/imported files parsed on demand for cross-file requests,
+    /// keyed by URI and validated by mtime. Open documents (in `docs`)
+    /// always take precedence so unsaved edits win.
+    foreign: Mutex<HashMap<Url, CachedTree>>,
+    /// Workspace folder paths captured at `initialize`, searched by
+    /// `workspace/symbol` and the cross-file reference/rename scan.
+    roots: Mutex<Vec<PathBuf>>,
     /// Position encoding negotiated in `initialize`. tigr spans are byte
     /// offsets; this decides whether a column counts bytes (UTF-8) or
     /// UTF-16 code units when we project an offset onto an LSP position.
@@ -78,6 +93,165 @@ impl Backend {
         Some((text, offset, tree))
     }
 
+    /// The text and recovered AST of `uri`, whether or not it is an open
+    /// document. An open buffer comes from the cache (so unsaved edits are
+    /// honoured); any other file is read from disk, parsed, and cached
+    /// against its mtime — a later read re-parses only if the file changed.
+    fn load_tree(&self, uri: &Url) -> Option<(String, Arc<Block>)> {
+        if let Some(found) = self.tree_and_text(uri) {
+            return Some(found);
+        }
+        let path = uri.to_file_path().ok()?;
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        // Cache hit only while the file is unchanged since we parsed it.
+        if let Some(c) = self.foreign.lock().unwrap().get(uri) {
+            if c.mtime == mtime {
+                return Some((c.text.clone(), c.tree.clone()));
+            }
+        }
+        let text = std::fs::read_to_string(&path).ok()?;
+        let tree = Arc::new(tigr::vm::parse_tree(&text));
+        self.foreign.lock().unwrap().insert(
+            uri.clone(),
+            CachedTree { mtime, text: text.clone(), tree: tree.clone() },
+        );
+        Some((text, tree))
+    }
+
+    /// If `receiver` is a *file*-import alias in `program`, load the
+    /// imported module and return its exports with the module's URL and
+    /// text. `None` for stdlib/native receivers (the catalog covers those)
+    /// and for anything that doesn't resolve to a readable file.
+    fn foreign_module(
+        &self,
+        importer: &Url,
+        program: &Block,
+        receiver: &str,
+    ) -> Option<ForeignModule> {
+        let path = analysis::canonical_module(program, receiver);
+        if !analysis::is_file_path(&path) {
+            return None;
+        }
+        let url = resolve_import_url(importer, &path)?;
+        let (text, tree) = self.load_tree(&url)?;
+        Some(ForeignModule { url, text, exports: analysis::module_exports(&tree) })
+    }
+
+    /// Hover for `userMod.member` where `userMod` is a file import: the
+    /// member's signature, its doc comment, and the module file it lives in.
+    fn foreign_member_hover(
+        &self,
+        importer: &Url,
+        program: &Block,
+        offset: usize,
+    ) -> Option<String> {
+        let (receiver, member) = analysis::member_at(program, offset)?;
+        let fm = self.foreign_module(importer, program, &receiver)?;
+        let m = fm.exports.iter().find(|e| e.name == member)?;
+        Some(render_foreign_member(&receiver, m, &fm))
+    }
+
+    /// Every occurrence of the exported member under `offset`, across the
+    /// workspace: each `alias.member` access in every file that imports the
+    /// same module, plus the member's key in the module's export object.
+    /// `None` unless the cursor is on a `userMod.member` access of a file
+    /// import. The result drives cross-file references and rename.
+    fn member_occurrences(
+        &self,
+        importer: &Url,
+        program: &Block,
+        offset: usize,
+    ) -> Option<MemberRefs> {
+        let (receiver, member) = analysis::member_at(program, offset)?;
+        let path = analysis::canonical_module(program, &receiver);
+        if !analysis::is_file_path(&path) {
+            return None;
+        }
+        let module_url = resolve_import_url(importer, &path)?;
+        let enc = self.encoding.lock().unwrap().clone();
+
+        // Scan every workspace `.tg` file, plus the importer and module
+        // themselves in case they sit outside the configured roots.
+        let mut files = self.workspace_tg_files();
+        for u in [importer.clone(), module_url.clone()] {
+            if !files.contains(&u) {
+                files.push(u);
+            }
+        }
+
+        let mut occurrences = Vec::new();
+        let mut decl = None;
+        for uri in files {
+            let Some((text, tree)) = self.load_tree(&uri) else {
+                continue;
+            };
+            // Member accesses through any alias that imports this module.
+            for (alias, p) in analysis::import_alias_pairs(&tree) {
+                if !analysis::is_file_path(&p)
+                    || resolve_import_url(&uri, &p).as_ref() != Some(&module_url)
+                {
+                    continue;
+                }
+                for span in analysis::member_access_spans(&tree, &alias, &member) {
+                    occurrences.push(Location { uri: uri.clone(), range: span_to_range(&text, span, &enc) });
+                }
+            }
+            // The export key in the module's own object literal.
+            if uri == module_url {
+                if let Some(obj_span) = analysis::export_object_span(&tree) {
+                    if let Some(key_span) = find_object_key_span(&text, obj_span, &member) {
+                        let loc = Location { uri: uri.clone(), range: span_to_range(&text, key_span, &enc) };
+                        occurrences.push(loc.clone());
+                        decl = Some(loc);
+                    }
+                }
+            }
+        }
+        if occurrences.is_empty() {
+            return None;
+        }
+        Some(MemberRefs { occurrences, decl })
+    }
+
+    /// Every `.tg` file under the workspace roots, as URLs. Used by
+    /// `workspace/symbol` and the cross-file reference/rename scan.
+    fn workspace_tg_files(&self) -> Vec<Url> {
+        let roots = self.roots.lock().unwrap().clone();
+        let mut out = Vec::new();
+        for root in roots {
+            collect_tg_files(&root, &mut out);
+        }
+        out
+    }
+
+    /// Resolve a cross-file go-to-definition. If `offset` sits on an import
+    /// target — the path string of an `import`, or `alias.member` of a file
+    /// import — return a `Location` in the imported file: the member's
+    /// declaration when known, otherwise the file head.
+    fn import_definition(
+        &self,
+        importer: &Url,
+        program: &Block,
+        offset: usize,
+    ) -> Option<Location> {
+        let (path, member) = match analysis::import_target(program, offset)? {
+            analysis::ImportTarget::Module { path } => (path, None),
+            analysis::ImportTarget::Member { path, member } => (path, Some(member)),
+        };
+        let target_uri = resolve_import_url(importer, &path)?;
+        let (text, tree) = self.load_tree(&target_uri)?;
+        // The member's definition span, defaulting to the file head (so a
+        // member we can't pinpoint still opens the right file).
+        let range = member
+            .and_then(|m| analysis::module_member_def(&tree, &m))
+            .map(|span| {
+                let enc = self.encoding.lock().unwrap().clone();
+                span_to_range(&text, span, &enc)
+            })
+            .unwrap_or_default();
+        Some(Location { uri: target_uri, range })
+    }
+
     /// Recompile `text` and publish the resulting diagnostics for `uri`.
     async fn publish(&self, uri: Url, text: &str, version: Option<i32>) {
         let enc = self.encoding.lock().unwrap().clone();
@@ -104,6 +278,22 @@ impl LanguageServer for Backend {
             })
             .unwrap_or(PositionEncodingKind::UTF16);
         *self.encoding.lock().unwrap() = encoding.clone();
+
+        // Capture the workspace roots for cross-file search. Prefer the
+        // (possibly multi-root) `workspace_folders`; fall back to the
+        // deprecated `root_uri` for older clients.
+        let mut roots: Vec<PathBuf> = params
+            .workspace_folders
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f.uri.to_file_path().ok())
+            .collect();
+        if roots.is_empty() {
+            if let Some(p) = params.root_uri.and_then(|u| u.to_file_path().ok()) {
+                roots.push(p);
+            }
+        }
+        *self.roots.lock().unwrap() = roots;
 
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
@@ -134,6 +324,7 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     // We support prepare-rename so the editor can validate
@@ -204,23 +395,27 @@ impl LanguageServer for Backend {
         let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        let Some(span) = analysis::definition(&program, offset) else {
-            return Ok(None);
-        };
-        let enc = self.encoding.lock().unwrap().clone();
-        let range = Range {
-            start: offset_to_position(&text, span.start, &enc),
-            end: offset_to_position(&text, span.end, &enc),
-        };
-        Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })))
+        // A local binding wins: jump within this file.
+        if let Some(span) = analysis::definition(&program, offset) {
+            let enc = self.encoding.lock().unwrap().clone();
+            let range = span_to_range(&text, span, &enc);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+        }
+        // Otherwise, the cursor may sit on a cross-file import target.
+        if let Some(loc) = self.import_definition(&uri, &program, offset) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        Ok(None)
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let p = params.text_document_position_params;
-        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
+        let uri = p.text_document.uri;
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
         let markdown = analysis::hover(&program, offset, &self.catalog)
+            .or_else(|| self.foreign_member_hover(&uri, &program, offset))
             .or_else(|| keyword_hover(&text, offset, &self.catalog));
         let Some(markdown) = markdown else {
             return Ok(None);
@@ -239,9 +434,31 @@ impl LanguageServer for Backend {
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {
         let p = params.text_document_position;
-        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
+        let uri = p.text_document.uri;
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
+        // A `userMod.` receiver that's a file import → offer its exports.
+        if let Some(receiver) = member_trigger(&text, offset) {
+            if let Some(fm) = self.foreign_module(&uri, &program, &receiver) {
+                let items = fm
+                    .exports
+                    .iter()
+                    .map(|m| CompletionItem {
+                        label: m.name.clone(),
+                        kind: Some(if m.is_function {
+                            CompletionItemKind::FUNCTION
+                        } else {
+                            CompletionItemKind::VARIABLE
+                        }),
+                        detail: Some(format!("{receiver}.{}", m.signature)),
+                        documentation: doc_markup(&doc_comment_above(&fm.text, m.def_span.start)),
+                        ..Default::default()
+                    })
+                    .collect();
+                return Ok(Some(CompletionResponse::Array(items)));
+            }
+        }
         let items = completion_items(&text, offset, &program, &self.catalog);
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -251,10 +468,29 @@ impl LanguageServer for Backend {
         params: SignatureHelpParams,
     ) -> Result<Option<SignatureHelp>> {
         let p = params.text_document_position_params;
-        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
+        let uri = p.text_document.uri;
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        Ok(signature_help(&text, offset, &program, &self.catalog))
+        if let Some(sh) = signature_help(&text, offset, &program, &self.catalog) {
+            return Ok(Some(sh));
+        }
+        // Cross-file: a call on a member of a user file import.
+        if let Some((open_paren, active)) = call_context(&text, offset) {
+            if let Some(Callee::Member(receiver, member)) = callee_before(&text, open_paren) {
+                if let Some(fm) = self.foreign_module(&uri, &program, &receiver) {
+                    if let Some(m) = fm.exports.iter().find(|e| e.name == member) {
+                        let doc = doc_comment_above(&fm.text, m.def_span.start);
+                        return Ok(build_signature_help(
+                            &format!("{receiver}.{}", m.signature),
+                            active,
+                            opt_doc(&doc),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn document_symbol(
@@ -273,6 +509,24 @@ impl LanguageServer for Backend {
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let enc = self.encoding.lock().unwrap().clone();
+        let mut out = Vec::new();
+        for uri in self.workspace_tg_files() {
+            let Some((text, tree)) = self.load_tree(&uri) else {
+                continue;
+            };
+            for node in analysis::document_symbols(&tree) {
+                collect_workspace_symbols(&node, None, &uri, &text, &enc, &query, &mut out);
+            }
+        }
+        Ok(Some(out))
+    }
+
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let p = params.text_document_position;
         let uri = p.text_document.uri;
@@ -280,26 +534,38 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let mut spans = analysis::references(&program, offset);
-        if spans.is_empty() {
-            return Ok(None);
-        }
-        // `includeDeclaration: false` drops the declaration occurrence.
-        // The resolver makes the declaration the binding's identity, so
-        // we recover it from a prepare-style lookup and filter it out.
-        if !params.context.include_declaration {
-            if let Some(target) = analysis::rename_spans(&program, offset) {
-                spans.retain(|s| s.start != target.def.start);
+        if !spans.is_empty() {
+            // Local binding. `includeDeclaration: false` drops the
+            // declaration occurrence; the resolver makes the declaration the
+            // binding's identity, recovered here and filtered out.
+            if !params.context.include_declaration {
+                if let Some(target) = analysis::rename_spans(&program, offset) {
+                    spans.retain(|s| s.start != target.def.start);
+                }
             }
+            let enc = self.encoding.lock().unwrap().clone();
+            let locations = spans
+                .into_iter()
+                .map(|span| Location {
+                    uri: uri.clone(),
+                    range: span_to_range(&text, span, &enc),
+                })
+                .collect();
+            return Ok(Some(locations));
         }
-        let enc = self.encoding.lock().unwrap().clone();
-        let locations = spans
-            .into_iter()
-            .map(|span| Location {
-                uri: uri.clone(),
-                range: span_to_range(&text, span, &enc),
-            })
-            .collect();
-        Ok(Some(locations))
+        // Cross-file: references to an exported member of a file import.
+        if let Some(refs) = self.member_occurrences(&uri, &program, offset) {
+            let decl = (!params.context.include_declaration)
+                .then_some(refs.decl)
+                .flatten();
+            let locations = refs
+                .occurrences
+                .into_iter()
+                .filter(|loc| decl.as_ref() != Some(loc))
+                .collect();
+            return Ok(Some(locations));
+        }
+        Ok(None)
     }
 
     async fn prepare_rename(
@@ -310,21 +576,34 @@ impl LanguageServer for Backend {
         else {
             return Ok(None);
         };
-        // A rename is only offered if the cursor is on a locatable binding.
-        let Some(target) = analysis::rename_spans(&program, offset) else {
-            return Ok(None);
-        };
-        // Highlight the occurrence under the cursor as the rename range.
-        let here = target
-            .spans
-            .iter()
-            .copied()
-            .find(|s| s.start <= offset && offset <= s.end)
-            .unwrap_or(target.def);
-        let enc = self.encoding.lock().unwrap().clone();
-        Ok(Some(PrepareRenameResponse::Range(span_to_range(
-            &text, here, &enc,
-        ))))
+        // A local binding: highlight the occurrence under the cursor.
+        if let Some(target) = analysis::rename_spans(&program, offset) {
+            let here = target
+                .spans
+                .iter()
+                .copied()
+                .find(|s| s.start <= offset && offset <= s.end)
+                .unwrap_or(target.def);
+            let enc = self.encoding.lock().unwrap().clone();
+            return Ok(Some(PrepareRenameResponse::Range(span_to_range(
+                &text, here, &enc,
+            ))));
+        }
+        // An exported-member access of a file import is renamable too.
+        if let Some((receiver, member)) = analysis::member_at(&program, offset) {
+            if analysis::is_file_path(&analysis::canonical_module(&program, &receiver)) {
+                if let Some(span) = analysis::member_access_spans(&program, &receiver, &member)
+                    .into_iter()
+                    .find(|s| s.start <= offset && offset <= s.end)
+                {
+                    let enc = self.encoding.lock().unwrap().clone();
+                    return Ok(Some(PrepareRenameResponse::Range(span_to_range(
+                        &text, span, &enc,
+                    ))));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -340,29 +619,197 @@ impl LanguageServer for Backend {
                 "new name is not a valid identifier",
             ));
         }
-        let Some(target) = analysis::rename_spans(&program, offset) else {
-            return Ok(None);
-        };
-        let enc = self.encoding.lock().unwrap().clone();
-        let edits: Vec<TextEdit> = target
-            .spans
-            .into_iter()
-            .map(|span| TextEdit {
-                range: span_to_range(&text, span, &enc),
-                new_text: params.new_name.clone(),
-            })
-            .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri, edits);
-        Ok(Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }))
+        // Local binding rename — a single-file edit.
+        if let Some(target) = analysis::rename_spans(&program, offset) {
+            let enc = self.encoding.lock().unwrap().clone();
+            let edits: Vec<TextEdit> = target
+                .spans
+                .into_iter()
+                .map(|span| TextEdit {
+                    range: span_to_range(&text, span, &enc),
+                    new_text: params.new_name.clone(),
+                })
+                .collect();
+            let mut changes = HashMap::new();
+            changes.insert(uri, edits);
+            return Ok(Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }));
+        }
+        // Cross-file exported-member rename — edits the export key and every
+        // `alias.member` access across importing files.
+        if let Some(refs) = self.member_occurrences(&uri, &program, offset) {
+            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+            for loc in refs.occurrences {
+                changes.entry(loc.uri).or_default().push(TextEdit {
+                    range: loc.range,
+                    new_text: params.new_name.clone(),
+                });
+            }
+            return Ok(Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }));
+        }
+        Ok(None)
     }
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Resolve an import path written in `importer` to the imported file's
+/// URL, mirroring the VM: relative to the importing file's directory, with
+/// `.tg` appended when the path carries no extension. `None` if `importer`
+/// is not a `file:` URL (so it has no directory to resolve against).
+fn resolve_import_url(importer: &Url, path: &str) -> Option<Url> {
+    let importer_path = importer.to_file_path().ok()?;
+    let base = importer_path.parent()?;
+    let mut resolved = normalize_path(&base.join(path));
+    if resolved.extension().is_none() {
+        resolved.set_extension("tg");
+    }
+    Url::from_file_path(resolved).ok()
+}
+
+/// The cross-file occurrences of an exported member: every access site and
+/// the export-object key. `decl` is the export key (a subset of
+/// `occurrences`), so `references` can honour `includeDeclaration`.
+struct MemberRefs {
+    occurrences: Vec<Location>,
+    decl: Option<Location>,
+}
+
+/// The span of the key `member` inside an object literal occupying
+/// `obj_span` of `text`. A key is an identifier (or quoted string) followed
+/// by `:`; matching the `:` distinguishes a key from a same-named value
+/// (`${ resolve: resolve }` finds the first `resolve`). The object key has
+/// no AST span, so this text scan stands in. `None` if not found.
+fn find_object_key_span(
+    text: &str,
+    obj_span: tigr::vm::token::Span,
+    member: &str,
+) -> Option<tigr::vm::token::Span> {
+    let end = obj_span.end.min(text.len());
+    let region = text.get(obj_span.start..end)?;
+    let bytes = region.as_bytes();
+    let mlen = member.len();
+    let mut i = 0;
+    while i + mlen <= bytes.len() {
+        // A word-boundary match of `member`.
+        let matches = &region[i..i + mlen] == member
+            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+            && (i + mlen == bytes.len() || !is_ident_byte(bytes[i + mlen]));
+        if matches {
+            // The next non-whitespace byte must be `:` (a key, not a value).
+            let mut j = i + mlen;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b':' {
+                let start = obj_span.start + i;
+                return Some(tigr::vm::token::Span::new(start, start + mlen, obj_span.line));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A user file import resolved to its module: where it lives, its source
+/// text (for doc comments and ranges), and its exported members.
+struct ForeignModule {
+    url: Url,
+    text: String,
+    exports: Vec<analysis::ExportedMember>,
+}
+
+/// Markdown hover for an exported member: its signature qualified with the
+/// receiver, the member's doc comment if any, and the module file's name.
+fn render_foreign_member(
+    receiver: &str,
+    m: &analysis::ExportedMember,
+    fm: &ForeignModule,
+) -> String {
+    let mut out = format!("```tigr\n{receiver}.{}\n```", m.signature);
+    let doc = doc_comment_above(&fm.text, m.def_span.start);
+    if !doc.is_empty() {
+        out.push_str(&format!("\n\n{doc}"));
+    }
+    if let Some(file) = fm.url.path_segments().and_then(|mut s| s.next_back()) {
+        out.push_str(&format!("\n\n*exported by `{file}`*"));
+    }
+    out
+}
+
+/// The contiguous block of `//` line comments immediately above the line
+/// containing byte `offset`, joined with newlines and stripped of the
+/// leading `//`. Empty if there is no such comment. A lightweight stand-in
+/// for doc comments, which the lexer discards before the AST.
+fn doc_comment_above(text: &str, offset: usize) -> String {
+    let offset = offset.min(text.len());
+    // Walk back to the start of the line `offset` sits on.
+    let line_start = text[..offset].rfind('\n').map_or(0, |n| n + 1);
+    let mut lines: Vec<&str> = Vec::new();
+    let mut cursor = line_start;
+    // Collect preceding `//` lines, nearest last, then reverse.
+    while cursor > 0 {
+        let prev_end = cursor - 1; // the '\n' before this line
+        let prev_start = text[..prev_end].rfind('\n').map_or(0, |n| n + 1);
+        let line = text[prev_start..prev_end].trim();
+        if let Some(comment) = line.strip_prefix("//") {
+            lines.push(comment.trim());
+            cursor = prev_start;
+        } else {
+            break;
+        }
+    }
+    lines.reverse();
+    lines.join("\n")
+}
+
+/// Recursively collect `.tg` files under `dir` as URLs. Skips hidden
+/// directories and the usual build/dependency dumps so a large `target/`
+/// doesn't dominate the workspace scan.
+fn collect_tg_files(dir: &Path, out: &mut Vec<Url>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            collect_tg_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "tg") {
+            if let Ok(url) = Url::from_file_path(&path) {
+                out.push(url);
+            }
+        }
+    }
+}
+
+/// Collapse `.` and `..` components of a path lexically, without touching
+/// the filesystem (the target may not exist yet, and we only need a stable
+/// URL). Mirrors how `path.join("./dns")` would otherwise leave a `.`
+/// component that breaks `Url::from_file_path`.
+fn normalize_path(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// A tigr span projected onto an LSP [`Range`] in the negotiated encoding.
@@ -418,6 +865,42 @@ fn to_document_symbol(
     }
 }
 
+/// Flatten a [`analysis::SymbolNode`] tree into `SymbolInformation`s whose
+/// name matches `query` (case-insensitive substring; an empty query matches
+/// all). Each child carries its parent's name as `container_name`.
+#[allow(deprecated)] // `SymbolInformation::deprecated` is a required field
+fn collect_workspace_symbols(
+    node: &analysis::SymbolNode,
+    container: Option<&str>,
+    uri: &Url,
+    text: &str,
+    enc: &PositionEncodingKind,
+    query: &str,
+    out: &mut Vec<SymbolInformation>,
+) {
+    if query.is_empty() || node.name.to_lowercase().contains(query) {
+        let kind = match node.category {
+            analysis::SymbolCategory::Function => SymbolKind::FUNCTION,
+            analysis::SymbolCategory::Variable => SymbolKind::VARIABLE,
+            analysis::SymbolCategory::Module => SymbolKind::MODULE,
+        };
+        out.push(SymbolInformation {
+            name: node.name.clone(),
+            kind,
+            tags: None,
+            deprecated: None,
+            location: Location {
+                uri: uri.clone(),
+                range: span_to_range(text, node.selection, enc),
+            },
+            container_name: container.map(str::to_string),
+        });
+    }
+    for child in &node.children {
+        collect_workspace_symbols(child, Some(&node.name), uri, text, enc, query, out);
+    }
+}
+
 /// A call's callee as recovered from the text before its `(`.
 enum Callee {
     /// A bare name: a builtin or a local function.
@@ -437,15 +920,24 @@ fn signature_help(
     let (open_paren, active) = call_context(text, offset)?;
     let callee = callee_before(text, open_paren)?;
     let (signature, doc) = resolve_callee(program, catalog, &callee, offset)?;
+    build_signature_help(&signature, active, doc)
+}
 
-    let params = parse_params(&signature);
+/// Build the `SignatureHelp` popup for `signature` with `active` as the
+/// highlighted parameter (clamped onto the last parameter so an extra arg
+/// to a variadic still shows). `None` when the signature has no parameters
+/// to highlight (a constant, or `f()`). Shared by the catalog/local path
+/// and the cross-file member path.
+fn build_signature_help(
+    signature: &str,
+    active: usize,
+    doc: Option<String>,
+) -> Option<SignatureHelp> {
+    let params = parse_params(signature);
     if params.is_empty() {
-        return None; // nothing to highlight (constant, or `f()`)
+        return None;
     }
-    // Clamp past-the-end (e.g. extra args to a variadic) onto the last
-    // parameter rather than dropping the popup.
     let active = (active.min(params.len() - 1)) as u32;
-
     let parameters = params
         .into_iter()
         .map(|label| ParameterInformation {
@@ -459,10 +951,9 @@ fn signature_help(
             value: d,
         })
     });
-
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
-            label: signature,
+            label: signature.to_string(),
             documentation,
             parameters: Some(parameters),
             active_parameter: Some(active),
@@ -1040,6 +1531,42 @@ mod tests {
     }
 
     #[test]
+    fn find_object_key_span_locates_the_key_not_a_value() {
+        // The key `resolve` precedes the colon; the value `_resolve` and the
+        // value-position `resolve` (in `x: resolve`) must not match.
+        let text = "${ x: resolve, resolve: _resolve }";
+        let span = tigr::vm::token::Span::new(0, text.len(), 1);
+        let key = find_object_key_span(text, span, "resolve").expect("key span");
+        assert_eq!(&text[key.start..key.end], "resolve");
+        // It is the key occurrence (followed by `:`), not the value one.
+        assert_eq!(text[key.end..].trim_start().as_bytes()[0], b':');
+    }
+
+    #[test]
+    fn doc_comment_above_collects_contiguous_line_comments() {
+        let text = "x := 1;\n// first line\n// second line\nresolve := fn() {};";
+        let off = text.find("resolve").unwrap();
+        assert_eq!(doc_comment_above(text, off), "first line\nsecond line");
+        // No comment above → empty.
+        assert_eq!(doc_comment_above(text, text.find("x :=").unwrap()), "");
+    }
+
+    #[test]
+    fn resolve_import_url_appends_tg_and_normalizes() {
+        let importer = Url::from_file_path("/proj/dns/main.tg").unwrap();
+        // `./dns` resolves beside the importer, with `.tg` appended and the
+        // `.` component collapsed.
+        let target = resolve_import_url(&importer, "./dns").unwrap();
+        assert_eq!(target.to_file_path().unwrap(), PathBuf::from("/proj/dns/dns.tg"));
+        // A `..` climbs out of the importing directory.
+        let up = resolve_import_url(&importer, "../lib/util").unwrap();
+        assert_eq!(up.to_file_path().unwrap(), PathBuf::from("/proj/lib/util.tg"));
+        // An explicit extension is kept.
+        let kept = resolve_import_url(&importer, "./dns.tg").unwrap();
+        assert_eq!(kept.to_file_path().unwrap(), PathBuf::from("/proj/dns/dns.tg"));
+    }
+
+    #[test]
     fn no_signature_help_outside_a_call() {
         let cat = Catalog::load();
         let (text, off) = cursor("x := 1|;");
@@ -1055,6 +1582,8 @@ async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         docs: Mutex::new(HashMap::new()),
+        foreign: Mutex::new(HashMap::new()),
+        roots: Mutex::new(Vec::new()),
         encoding: Mutex::new(PositionEncodingKind::UTF16),
         catalog: Catalog::load(),
     });

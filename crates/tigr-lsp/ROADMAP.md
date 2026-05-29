@@ -33,6 +33,11 @@ forward-looking.
 - Parse-tree caching: the recovered AST is parsed once per document and
   reused across requests, invalidated on `did_change`. See
   "Parse-tree caching, as built".
+- Phase 5: cross-file and workspace. 5a go-to-definition, 5b
+  multi-document lifecycle (mtime-cached `load_tree` + workspace roots),
+  5c `workspace/symbol`, 5d cross-file hover/completion/signature-help
+  for user-module members, 5e cross-file references + rename. See the
+  "Phase 5x, as built" sections.
 
 ## Guiding principles (unchanged)
 
@@ -261,12 +266,131 @@ rather than a text hash, since full-sync already hands us the whole text.
 
 ## Phase 5: cross-file and workspace
 
-- Import resolution. `import 'Foo'` resolves to `Foo.tg` relative to the
-  file (and the stdlib path). Enables go-to-definition into imported
-  modules and cross-file references.
-- Workspace symbol search (`workspace/symbol`).
-- Multi-document lifecycle: resolve and cache trees for files reached
-  through imports, not just open buffers.
+### Phase 5a, as built — cross-file go-to-definition
+
+Go-to-definition now follows a path-shaped `import` into the imported
+file. `analysis::import_target` decides whether the cursor sits on a
+cross-file target:
+
+- the path string of an `import '<path>'` → `ImportTarget::Module`,
+- the `member` of `alias.member` where `alias := import '<path>'` is a
+  *file* import → `ImportTarget::Member { path, member }`.
+
+Only path-shaped strings count (`is_file_path`: contains `/`, `\`, or
+`.`), mirroring the VM — bare names are stdlib/native modules with no
+on-disk location, and the catalog already covers them for hover.
+
+`main.rs::import_definition` resolves the target: `resolve_import_url`
+mirrors the VM's path rules (relative to the importing file's directory,
+`.tg` appended when absent, `.`/`..` collapsed lexically by
+`normalize_path` so `Url::from_file_path` accepts it). `load_tree` reads
+the target — from the open-document cache if it is open (honouring
+unsaved edits), else from the mtime-keyed foreign cache (see Phase 5b).
+For a `Member`, `analysis::module_member_def` finds the definition in the
+imported tree: it takes the module's final value (its export), and if
+that is an object literal with a `member:` field, follows a bare-ident
+value (`resolve: _resolve`) through to the top-level declaration it names
+— otherwise it jumps to the field value, or falls back to a top-level
+declaration named `member`. The whole resolution defaults to the file
+head when the member can't be pinpointed, so it always opens the right
+file.
+
+Note the **local binding wins**: `goto_definition` tries the in-file
+`analysis::definition` first, so jumping on the *receiver* `alias` lands
+on its local `alias := import …` line (consistent with any local). The
+cross-file path fires only when there is no local binding under the
+cursor — the member, and the import path string.
+
+Verified end-to-end over stdio against `examples/dns/` (`main.tg`
+imports `./dns`): `DNS.resolve` → the `_resolve` decl in `dns.tg`;
+`import './dns'` → `dns.tg` head; the `DNS` receiver → the local import
+line in `main.tg`.
+
+### Phase 5b, as built — multi-document lifecycle
+
+`Backend::load_tree(uri)` is the single entry point for any file's text +
+recovered AST. It tries, in order: the open-document cache (`tree_and_text`,
+so unsaved edits win); a `foreign: HashMap<Url, CachedTree>` keyed by URI
+and validated by mtime (a `CachedTree` stores the mtime it was read at, so
+a later read re-parses only when the file changed on disk); otherwise it
+reads + parses + caches. `initialize` captures the workspace roots
+(`workspace_folders`, falling back to the deprecated `root_uri`), and
+`workspace_tg_files` walks them for `.tg` files (skipping hidden dirs,
+`target`, `node_modules`). This replaces 5a's parse-on-demand loader and
+backs every cross-file feature below.
+
+### Phase 5c, as built — workspace symbol search
+
+`workspace/symbol`: walk `workspace_tg_files`, `load_tree` each, run the
+existing `analysis::document_symbols`, and flatten the node tree to
+`SymbolInformation`s (`collect_workspace_symbols`, parent name →
+`container_name`) whose name contains the query (case-insensitive; empty
+query → all). `selection`-range locations, so the client jumps to the
+name.
+
+### Phase 5d, as built — cross-file member intelligence
+
+Hover, completion, and signature help now understand members of a *user
+file* import, not just stdlib. The shared piece is
+`analysis::module_exports(tree) -> Vec<ExportedMember>`: it reads the
+module's final object literal and, for each `key: value` field, builds a
+signature (`key(params)` when the value is — or re-exports — a `fn`,
+following a bare-ident re-export to its top-level decl) plus the jump
+span. `Backend::foreign_module(importer, program, receiver)` resolves a
+receiver alias to a file import (`canonical_module` + `is_file_path`),
+loads it, and returns its exports with the module URL and text.
+
+- **Hover** (`foreign_member_hover`): the member's signature qualified
+  with the receiver, a doc comment (`doc_comment_above` text-scans the
+  contiguous `//` lines above the definition — the lexer drops comments,
+  so the AST can't carry them), and the module file name.
+- **Completion** after `userMod.`: the module's exported members, with
+  signatures and doc comments. (The catalog path is unchanged for stdlib.)
+- **Signature help** inside `userMod.member(`: the member's signature,
+  via the `build_signature_help` helper factored out of the catalog path.
+
+### Phase 5e, as built — cross-file references and rename
+
+`Backend::member_occurrences(importer, program, offset)` powers both. When
+the cursor is on a `userMod.member` access of a file import, it resolves
+the module URL, then scans every workspace file (plus the importer and
+module themselves, in case they sit outside the roots): for each alias in
+that file that imports the same module (`import_alias_pairs` +
+`resolve_import_url` comparison), it collects the spans of every
+`alias.member` access (`member_access_spans`), and in the module file it
+adds the export-object key. The key has no AST span (an
+`ObjectMember::Pair` key is a bare `String`), so `export_object_span`
+gives the object literal's range and `find_object_key_span` text-scans it
+for the key (an identifier followed by `:`, which distinguishes a key from
+a same-named value).
+
+- `references` returns every occurrence (honouring `includeDeclaration` by
+  filtering the export key); falls through to this only when there is no
+  local binding under the cursor (so the receiver alias still gets local
+  references).
+- `rename` builds a multi-file `WorkspaceEdit`: the export key plus every
+  `alias.member` access across importing files, all set to the new name
+  (validated by `is_identifier`). The private implementation name (the
+  re-export's value, e.g. `_resolve`) is deliberately untouched.
+  `prepare_rename` offers the member key as a rename target too.
+
+Verified end-to-end over stdio against `examples/dns/`: `workspace/symbol`
+finds `_resolve`; hover/completion/signature-help on `DNS.resolve` show
+`DNS.resolve(name, qtype?, server?)` and the other exports with their doc
+comments; references return the `main.tg` access plus the `dns.tg` export
+key; rename `resolve → lookup` edits both files (export key + access),
+leaving `_resolve` alone.
+
+### Phase 5, remaining (deferred polish)
+
+- References/rename **triggered from the export-key site** in the module
+  file (today they trigger from an access site; the key isn't an AST node,
+  so the cursor there resolves to nothing).
+- Go-to-definition / references into **bare stdlib** source modules
+  (`Array`, `Math`, …): they're embedded, not on the user's disk, so there
+  is no file to open.
+- A **file-watcher**-driven index instead of the mtime re-stat on access
+  (fine for the small projects tigr targets; revisit if it feels slow).
 
 ## Cross-cutting infrastructure
 
@@ -315,5 +439,10 @@ rather than a text hash, since full-sync already hands us the whole text.
    and "Match-arm binding spans, as built".
 5. ~~Parse-tree caching once requests multiply.~~ **Done.** See
    "Parse-tree caching, as built".
-6. Cross-file/workspace (Phase 5).
+6. ~~Cross-file/workspace (Phase 5).~~ **Done** — 5a go-to-def, 5b
+   multi-document lifecycle, 5c `workspace/symbol`, 5d cross-file
+   hover/completion/signature-help, 5e cross-file references + rename.
+   See the "Phase 5x, as built" sections. Only deferred polish remains
+   (export-site-triggered rename, stdlib-source navigation, a
+   file-watcher index).
 7. Distribution and Tier-2/3 recovery as polish.

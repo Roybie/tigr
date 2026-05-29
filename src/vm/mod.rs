@@ -182,6 +182,18 @@ pub fn compile_source_with_id(
     Ok(main)
 }
 
+/// Parse a source into its (recovered) AST for tooling that walks the
+/// tree — go-to-definition, hover. Returns an empty program if the
+/// source can't even be lexed (the LSP gets lex errors via
+/// [`check_source`]). The tree is deliberately NOT constant-folded, so
+/// every identifier and span survives for position lookups.
+pub fn parse_tree(source: &str) -> self::ast::Block {
+    match Lexer::new(source).tokenize() {
+        Ok(tokens) => parser::parse_recover(tokens).0,
+        Err(_) => self::ast::Block { stmts: Vec::new(), tail: None },
+    }
+}
+
 /// Collect every diagnostic for a source without running it. Lexes, then
 /// parses with recovery so multiple syntax errors surface at once; only
 /// when parsing is clean does it compile (the compiler is still

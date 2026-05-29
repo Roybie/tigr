@@ -11,6 +11,8 @@
 //! thread-local GC heap, so each compile and the drop of its result must
 //! stay pinned to one thread.
 
+mod analysis;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -35,6 +37,16 @@ struct Backend {
 }
 
 impl Backend {
+    /// Fetch a document's text and convert an LSP position into a byte
+    /// offset into it, using the negotiated encoding. `None` if the
+    /// document isn't open.
+    fn locate(&self, uri: &Url, pos: Position) -> Option<(String, usize)> {
+        let text = self.docs.lock().unwrap().get(uri).cloned()?;
+        let enc = self.encoding.lock().unwrap().clone();
+        let offset = position_to_offset(&text, pos, &enc);
+        Some((text, offset))
+    }
+
     /// Recompile `text` and publish the resulting diagnostics for `uri`.
     async fn publish(&self, uri: Url, text: &str, version: Option<i32>) {
         let enc = self.encoding.lock().unwrap().clone();
@@ -74,6 +86,8 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -125,6 +139,45 @@ impl LanguageServer for Backend {
         // Clear diagnostics for a closed file so stale squiggles don't
         // linger in the client.
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let p = params.text_document_position_params;
+        let uri = p.text_document.uri;
+        let Some((text, offset)) = self.locate(&uri, p.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        let Some(span) = analysis::definition(&program, offset) else {
+            return Ok(None);
+        };
+        let enc = self.encoding.lock().unwrap().clone();
+        let range = Range {
+            start: offset_to_position(&text, span.start, &enc),
+            end: offset_to_position(&text, span.end, &enc),
+        };
+        Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let p = params.text_document_position_params;
+        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        let Some(markdown) = analysis::hover(&program, offset) else {
+            return Ok(None);
+        };
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: markdown,
+            }),
+            range: None,
+        }))
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -210,6 +263,46 @@ fn offset_to_position(
         prefix.chars().map(|c| c.len_utf16() as u32).sum()
     };
     Position { line, character }
+}
+
+/// Inverse of [`offset_to_position`]: an LSP position back to a byte
+/// offset, counting `character` in the negotiated unit. Clamps to the
+/// line's end so an out-of-range column lands on the newline rather than
+/// spilling into the next line.
+fn position_to_offset(text: &str, pos: Position, enc: &PositionEncodingKind) -> usize {
+    // Byte offset of the start of `pos.line`.
+    let mut line_start = 0usize;
+    let mut line = 0u32;
+    for (i, b) in text.as_bytes().iter().enumerate() {
+        if line == pos.line {
+            break;
+        }
+        if *b == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    if line < pos.line {
+        return text.len(); // line beyond EOF
+    }
+    let line_end = text[line_start..]
+        .find('\n')
+        .map_or(text.len(), |n| line_start + n);
+    let line_text = &text[line_start..line_end];
+    let want = pos.character as usize;
+    if *enc == PositionEncodingKind::UTF8 {
+        line_start + want.min(line_text.len())
+    } else {
+        // Advance UTF-16 code units across the line.
+        let mut units = 0usize;
+        for (byte_idx, ch) in line_text.char_indices() {
+            if units >= want {
+                return line_start + byte_idx;
+            }
+            units += ch.len_utf16();
+        }
+        line_end
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]

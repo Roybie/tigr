@@ -38,6 +38,9 @@ forward-looking.
   5c `workspace/symbol`, 5d cross-file hover/completion/signature-help
   for user-module members, 5e cross-file references + rename. See the
   "Phase 5x, as built" sections.
+- Tier-2 / Tier-3 error recovery: the lexer and compiler now recover too,
+  so every stage reports all of its errors at once. See "Tier-2/3
+  recovery, as built".
 
 ## Guiding principles (unchanged)
 
@@ -392,6 +395,48 @@ leaving `_resolve` alone.
 - A **file-watcher**-driven index instead of the mtime re-stat on access
   (fine for the small projects tigr targets; revisit if it feels slow).
 
+## Tier-2/3 recovery, as built
+
+Before this, only parse errors came in multiples: the lexer and compiler
+were fail-fast, so a single bad character or a single undeclared variable
+masked everything after it. Now each stage recovers, so `check_source`
+reports *all* of one stage's errors at once. The three kinds are still
+never mixed — earliest non-empty stage wins (lex → parse → compile),
+because a partial token stream or partial tree would spawn spurious
+downstream errors.
+
+- **Tier-2 — lexer recovery.** `Lexer::tokenize_recover() ->
+  (Vec<SpannedToken>, Vec<LexError>)` skips the offending input on a bad
+  token and keeps scanning. Every scanner already consumes past what it
+  rejects before returning the error, so progress is guaranteed; no token
+  is emitted for the bad region. `tokenize()` now delegates to it and
+  returns the first error (the run path's unchanged contract).
+  `vm::parse_tree` lexes with recovery too, so a stray bad character no
+  longer wipes out the whole AST the resolver walks.
+- **Tier-3 — compiler error accumulation.** The compiler carries a
+  `Vec<CompileError>`. The common, recoverable user errors —
+  `UndeclaredVariable`, `UndeclaredAssign`, `AssignToBuiltin`,
+  `DuplicateDeclaration`, `BreakOutsideLoop`, `ContinueOutsideLoop`,
+  `SpreadInInvalidPosition` — are `record`ed and compilation continues
+  with a **stack-neutral fallback** (push a `null` where a value is
+  expected, `Pop` where one is consumed, declare-anyway for a duplicate).
+  Keeping the `stack_height` tracker balanced is what lets compilation
+  press on without cascading internal panics. Internal-limit errors
+  (`TooManyConstants/Locals/Upvalues`, `JumpTooFar`) and the structural
+  `InvalidMatchPattern` stay **fatal** (propagate via `?`): the chunk is
+  unusable after them and they aren't multi-error situations anyway.
+- **Two entry points off one body.** `compile_main` does the work;
+  `compile_with_source` (run path) reduces it to the first error via
+  `into_run_result` — and the first *recorded* error is also the first in
+  compilation order, since we only ever continue *past* recoverables, so
+  the run path's behavior and every existing error test are unchanged.
+  `compile_check` (LSP path) returns every error via `into_check_errors`
+  (a fatal abort, if any, appended last). The REPL path keeps its
+  first-error contract through `into_run_result_tuple`.
+- Tests: `src/tests/mod.rs::multi_error` covers multiple lex errors,
+  multiple undeclared variables, mixed recoverable compile errors,
+  duplicate-decl recovery, and the no-stage-mixing invariant.
+
 ## Cross-cutting infrastructure
 
 - **AST spans on patterns and params (core change). DONE.** `Pattern`,
@@ -409,16 +454,25 @@ leaving `_resolve` alone.
   help, references, and rename reuse one cached recovered AST per
   document, invalidated on `did_change`. See "Parse-tree caching, as
   built".
-- **Tier-2 and Tier-3 error recovery.** The lexer and compiler are still
-  fail-fast, so only parse errors come in multiples. Lexer recovery
-  (emit an error token, continue) and compiler error accumulation would
-  surface multiple lex and semantic errors.
+- **Tier-2 and Tier-3 error recovery. DONE.** See "Tier-2/3 recovery, as
+  built" below.
 - **Incremental document sync.** Currently full-document sync, which is
   fine for now; revisit only if large files feel slow.
-- **Distribution.** The nvim config points at a local debug build. To
-  ship it, add `--bin tigr-lsp` plus a tarball to `release.yml`, and let
-  `install.sh` (or a flag) place it on PATH; then simplify the nvim `cmd`
-  to `{ "tigr-lsp" }`.
+- **Distribution. DONE.** `release.yml` now builds `tigr-lsp` alongside
+  `tigr` (a second `cargo build -p tigr-lsp --bin tigr-lsp` step — the
+  binary is in a non-default workspace member, so it needs `-p`) and tars
+  *both* binaries into the existing `tigr-<target>.tar.gz`. They ship as
+  one archive on purpose: `tigr-lsp` embeds the `tigr` frontend via a path
+  dep, so bundling guarantees a user's runtime and language server are the
+  same build and their diagnostics can't drift from the interpreter. No
+  separate asset, no flag — `install.sh` extracts both and places
+  `tigr-lsp` on PATH next to `tigr` (guarded by `-f` so an older archive
+  without it still installs). The release matrix was already correct: it
+  excludes Windows, which matches `tigr-lsp`'s constraints since it
+  depends on the unix-only Net/Os `tigr` lib. Downstream step left to the
+  user: once a release is installed, simplify the nvim `cmd` from the
+  local `target/debug/tigr-lsp` to `{ "tigr-lsp" }`. Left their live dev
+  config pointing at the debug build so iteration isn't broken.
 - **Tests.** `catalog.rs` and `analysis::hover` now have Rust unit tests
   (catalog parsing per module, plus the hover paths). Still wanted: tests
   for the resolver's go-to-definition/scoping, and a small in-process LSP
@@ -445,4 +499,8 @@ leaving `_resolve` alone.
    See the "Phase 5x, as built" sections. Only deferred polish remains
    (export-site-triggered rename, stdlib-source navigation, a
    file-watcher index).
-7. Distribution and Tier-2/3 recovery as polish.
+7. ~~Tier-2/3 recovery.~~ **Done** — see "Tier-2/3 recovery, as built".
+8. ~~Distribution (ship the `tigr-lsp` binary via releases).~~ **Done** —
+   `release.yml` + `install.sh` ship both binaries in one archive. See
+   "Distribution. DONE." under Cross-cutting infrastructure. This was the
+   last core roadmap item.

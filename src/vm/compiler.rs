@@ -195,6 +195,16 @@ pub struct Compiler {
     /// `Decl` handler; consumed (taken) by `compile_fn` so only the
     /// outermost `fn` of the initialiser is named.
     fn_name_hint: Option<String>,
+    /// Recoverable semantic errors collected during compilation. The
+    /// common user errors — undeclared variable/assignment, assign to a
+    /// built-in, duplicate declaration, `break`/`continue` outside a
+    /// loop, a stray spread — are recorded here and compilation
+    /// continues with a stack-neutral fallback, so the language server
+    /// sees every such error at once. The run path still reports only
+    /// the first (see `into_run_result`); internal-limit errors
+    /// (`TooManyConstants`, …) stay fail-fast since the chunk is then
+    /// unusable anyway.
+    errors: Vec<CompileError>,
 }
 
 impl Compiler {
@@ -225,48 +235,119 @@ impl Compiler {
         base_dir: Option<PathBuf>,
         source: SourceId,
     ) -> Result<Function, CompileError> {
-        (|| {
-            let mut c = Compiler {
-                funcs: Vec::new(),
-                globals: stdlib::names().to_vec(),
-                base_dir,
-                source,
-                fn_name_hint: None,
-            };
-            c.push_function(0, Some("<main>".to_string()));
-            // slot 0 = main closure placeholder. The frame is set up so
-            // that the VM has placed *something* at base_slot before we
-            // start running — bump the tracker by 1 to match.
-            c.current_mut().stack_height = 1;
-            c.declare_local("", Span::new(0, 0, 1))?;
+        let mut c = Compiler::new(base_dir, source);
+        let result = c.compile_main(program);
+        c.into_run_result(result)
+    }
 
-            // Hoist nested `:=` declarations at the top-level scope (the
-            // implicit `<main>` body). Top-level Decls keep their existing
-            // declare-after-init semantics; only nested ones get a stable
-            // slot here.
-            let mut hoisted = Vec::new();
-            c.visit_block_for_hoist(program, &mut hoisted);
-            c.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
+    /// Compile for diagnostics only, accumulating *all* recoverable
+    /// semantic errors instead of stopping at the first. Returns every
+    /// error found (a fatal internal-limit error, if hit, is appended
+    /// last); an empty vec means the program is semantically clean. The
+    /// produced bytecode is discarded — this is the language server's
+    /// path, never the run path.
+    pub fn compile_check(
+        program: &Block,
+        base_dir: Option<PathBuf>,
+        source: SourceId,
+    ) -> Vec<CompileError> {
+        let mut c = Compiler::new(base_dir, source);
+        let result = c.compile_main(program);
+        c.into_check_errors(result)
+    }
 
-            c.compile_block_value(program, false)?;
-            let last_line = c.current_chunk().lines.last().copied().unwrap_or(1);
-            c.current_chunk_mut().write_op(OpCode::Return, last_line);
+    fn new(base_dir: Option<PathBuf>, source: SourceId) -> Self {
+        Compiler {
+            funcs: Vec::new(),
+            globals: stdlib::names().to_vec(),
+            base_dir,
+            source,
+            fn_name_hint: None,
+            errors: Vec::new(),
+        }
+    }
 
-            let mut fc = c.funcs.pop().expect("main function compiler popped");
-            fc.chunk.thread_jumps();
-            Ok(Function {
-                arity: 0,
-                has_rest: false,
-                chunk: fc.chunk,
-                upvalues: fc.upvalues,
-                name: fc.name,
-                is_generator: false,
-            })
-        })()
-        .map_err(|mut e: CompileError| {
-            if e.source.is_unknown() { e.source = source; }
-            e
+    /// Compile the top-level program into the "main" function. Fatal
+    /// errors propagate via `?`; recoverable ones are collected in
+    /// `self.errors`.
+    fn compile_main(&mut self, program: &Block) -> Result<Function, CompileError> {
+        self.push_function(0, Some("<main>".to_string()));
+        // slot 0 = main closure placeholder. The frame is set up so
+        // that the VM has placed *something* at base_slot before we
+        // start running — bump the tracker by 1 to match.
+        self.current_mut().stack_height = 1;
+        self.declare_local("", Span::new(0, 0, 1))?;
+
+        // Hoist nested `:=` declarations at the top-level scope (the
+        // implicit `<main>` body). Top-level Decls keep their existing
+        // declare-after-init semantics; only nested ones get a stable
+        // slot here.
+        let mut hoisted = Vec::new();
+        self.visit_block_for_hoist(program, &mut hoisted);
+        self.emit_hoist_prologue(hoisted, Span::new(0, 0, 1))?;
+
+        self.compile_block_value(program, false)?;
+        let last_line = self.current_chunk().lines.last().copied().unwrap_or(1);
+        self.current_chunk_mut().write_op(OpCode::Return, last_line);
+
+        let mut fc = self.funcs.pop().expect("main function compiler popped");
+        fc.chunk.thread_jumps();
+        Ok(Function {
+            arity: 0,
+            has_rest: false,
+            chunk: fc.chunk,
+            upvalues: fc.upvalues,
+            name: fc.name,
+            is_generator: false,
         })
+    }
+
+    /// Record a recoverable semantic error and keep compiling. The
+    /// caller emits a stack-neutral fallback so later code still
+    /// compiles (and surfaces its own errors).
+    fn record(&mut self, mut e: CompileError) {
+        if e.source.is_unknown() {
+            e.source = self.source;
+        }
+        self.errors.push(e);
+    }
+
+    /// Reduce a compile to the run path's single-error contract: the
+    /// first recorded recoverable error (which is also the first error in
+    /// compilation order, since we only continue *past* recoverables)
+    /// wins; otherwise a fatal abort; otherwise the function.
+    fn into_run_result(
+        self,
+        result: Result<Function, CompileError>,
+    ) -> Result<Function, CompileError> {
+        let source = self.source;
+        let stamp = |mut e: CompileError| {
+            if e.source.is_unknown() {
+                e.source = source;
+            }
+            e
+        };
+        if let Some(e) = self.errors.into_iter().next() {
+            return Err(stamp(e));
+        }
+        result.map_err(stamp)
+    }
+
+    /// Reduce a compile to every error found, for diagnostics. A fatal
+    /// abort is appended after the recoverable errors collected before
+    /// it.
+    fn into_check_errors(self, result: Result<Function, CompileError>) -> Vec<CompileError> {
+        let source = self.source;
+        let mut errs = self.errors;
+        if let Err(fatal) = result {
+            errs.push(fatal);
+        }
+        for e in &mut errs {
+            if e.source.is_unknown() {
+                e.source = source;
+            }
+        }
+        errs
     }
 
     /// Compile one REPL line.
@@ -295,14 +376,8 @@ impl Compiler {
         existing_locals: &[(String, u8)],
         source: SourceId,
     ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
-        (|| {
-        let mut c = Compiler {
-            funcs: Vec::new(),
-            globals: stdlib::names().to_vec(),
-            base_dir: None,
-            source,
-            fn_name_hint: None,
-        };
+        let mut c = Compiler::new(None, source);
+        let result = (|| {
         c.push_function(0, Some("<repl>".to_string()));
         // Slot 0 = closure placeholder (the REPL frame holds the
         // line's closure here).
@@ -364,11 +439,30 @@ impl Compiler {
             },
             new_locals,
         ))
-        })()
-        .map_err(|mut e: CompileError| {
-            if e.source.is_unknown() { e.source = source; }
+        })();
+        // Recoverable errors win first (matching the old fail-fast
+        // first-error), then a fatal abort. The REPL caller discards the
+        // line on any error.
+        c.into_run_result_tuple(result)
+    }
+
+    /// Like [`into_run_result`] but for the REPL's `(Function, locals)`
+    /// payload.
+    fn into_run_result_tuple(
+        self,
+        result: Result<(Function, Vec<(String, u8)>), CompileError>,
+    ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
+        let source = self.source;
+        let stamp = |mut e: CompileError| {
+            if e.source.is_unknown() {
+                e.source = source;
+            }
             e
-        })
+        };
+        if let Some(e) = self.errors.into_iter().next() {
+            return Err(stamp(e));
+        }
+        result.map_err(stamp)
     }
 
     // -- function compiler stack helpers ------------------------------
@@ -536,7 +630,11 @@ impl Compiler {
         if !name.is_empty() && !name.starts_with('$')
             && self.current().locals.iter().any(|l| l.name == name && l.depth == depth)
         {
-            return Err(CompileError::new(
+            // Recoverable: record and declare anyway (the later binding
+            // shadows). The duplicate `:=` genuinely pushed its own stack
+            // slot, so registering a second local keeps `end_scope`'s
+            // slot accounting balanced.
+            self.record(CompileError::new(
                 CompileErrorKind::DuplicateDeclaration(name.to_string()),
                 span,
             ));
@@ -929,13 +1027,18 @@ impl Compiler {
             Expr::Null => self.emit_op(OpCode::PushNull, line),
 
             Expr::Ident(name) => {
-                let r = self.resolve(name, e.span)?.ok_or_else(|| {
-                    CompileError::new(
-                        CompileErrorKind::UndeclaredVariable(name.clone()),
-                        e.span,
-                    )
-                })?;
-                self.emit_load(r, line);
+                match self.resolve(name, e.span)? {
+                    Some(r) => self.emit_load(r, line),
+                    None => {
+                        // Recoverable: record and push a null so the
+                        // expression still leaves a value on the stack.
+                        self.record(CompileError::new(
+                            CompileErrorKind::UndeclaredVariable(name.clone()),
+                            e.span,
+                        ));
+                        self.emit_op(OpCode::PushNull, line);
+                    }
+                }
             }
 
             Expr::BinOp(op, lhs, rhs) => self.compile_binop(*op, lhs, rhs, line)?,
@@ -1104,26 +1207,40 @@ impl Compiler {
             }
 
             Expr::Assign(name, op, value) => {
-                let r = self.resolve(name, e.span)?.ok_or_else(|| {
-                    CompileError::new(
-                        CompileErrorKind::UndeclaredAssign(name.name.clone()),
-                        e.span,
-                    )
-                })?;
-                if let Resolved::Global(_) = r {
-                    return Err(CompileError::new(
-                        CompileErrorKind::AssignToBuiltin(name.name.clone()),
-                        e.span,
-                    ));
+                // Recoverable on a bad target: record, then compile the
+                // value alone so it becomes the expression's result (net
+                // +1, same as a real assignment) and its sub-expressions
+                // still get checked.
+                let target = match self.resolve(name, e.span)? {
+                    None => {
+                        self.record(CompileError::new(
+                            CompileErrorKind::UndeclaredAssign(name.name.clone()),
+                            e.span,
+                        ));
+                        None
+                    }
+                    Some(Resolved::Global(_)) => {
+                        self.record(CompileError::new(
+                            CompileErrorKind::AssignToBuiltin(name.name.clone()),
+                            e.span,
+                        ));
+                        None
+                    }
+                    Some(r) => Some(r),
+                };
+                match target {
+                    Some(r) => {
+                        if let Some(op) = op {
+                            self.emit_load(r, line);
+                            self.compile_expr(value)?;
+                            self.emit_op(compound_to_opcode(*op), line);
+                        } else {
+                            self.compile_expr(value)?;
+                        }
+                        self.emit_store(r, line);
+                    }
+                    None => self.compile_expr(value)?,
                 }
-                if let Some(op) = op {
-                    self.emit_load(r, line);
-                    self.compile_expr(value)?;
-                    self.emit_op(compound_to_opcode(*op), line);
-                } else {
-                    self.compile_expr(value)?;
-                }
-                self.emit_store(r, line);
             }
 
             Expr::AssignPattern(pat, value) => {
@@ -1220,11 +1337,13 @@ impl Compiler {
             Expr::Spread(_) => {
                 // Spread only valid as a direct child of Array / Call
                 // / ObjectMember. Reaching here means it appeared in a
-                // free expression position.
-                return Err(CompileError::new(
+                // free expression position. Recoverable: record and push
+                // a null in its place.
+                self.record(CompileError::new(
                     CompileErrorKind::SpreadInInvalidPosition,
                     e.span,
                 ));
+                self.emit_op(OpCode::PushNull, line);
             }
 
             Expr::Template(parts) => {
@@ -2037,14 +2156,14 @@ impl Compiler {
         span: Span,
     ) -> Result<(), CompileError> {
         let entry_height = self.current().stack_height;
-        let target = self
-            .current()
-            .loop_stack
-            .iter()
-            .rposition(|lc| !lc.skip)
-            .ok_or_else(|| {
-                CompileError::new(CompileErrorKind::BreakOutsideLoop, span)
-            })?;
+        let Some(target) = self.current().loop_stack.iter().rposition(|lc| !lc.skip)
+        else {
+            // Recoverable: record and push a null so the expression
+            // still yields a value (matching `compile_expr`'s +1).
+            self.record(CompileError::new(CompileErrorKind::BreakOutsideLoop, span));
+            self.emit_op(OpCode::PushNull, line);
+            return Ok(());
+        };
 
         // Read `is_array_form` up front: a bare `break` in an array
         // loop must emit nothing at all (it appends no item), so we
@@ -2104,14 +2223,14 @@ impl Compiler {
     /// is the condition re-evaluation.
     fn compile_continue(&mut self, line: u32, span: Span) -> Result<(), CompileError> {
         let entry_height = self.current().stack_height;
-        let target = self
-            .current()
-            .loop_stack
-            .iter()
-            .rposition(|lc| !lc.skip)
-            .ok_or_else(|| {
-                CompileError::new(CompileErrorKind::ContinueOutsideLoop, span)
-            })?;
+        let Some(target) = self.current().loop_stack.iter().rposition(|lc| !lc.skip)
+        else {
+            // Recoverable: record and push a null (matching
+            // `compile_expr`'s +1 convention).
+            self.record(CompileError::new(CompileErrorKind::ContinueOutsideLoop, span));
+            self.emit_op(OpCode::PushNull, line);
+            return Ok(());
+        };
 
         let ctx = &self.current().loop_stack[target];
         let result_slot = ctx.result_slot;
@@ -2395,20 +2514,28 @@ impl Compiler {
                 self.emit_op(OpCode::Pop, line);
             }
             Pattern::Ident(name) => {
-                let r = self.resolve(name, span)?.ok_or_else(|| {
-                    CompileError::new(
-                        CompileErrorKind::UndeclaredAssign(name.name.clone()),
-                        span,
-                    )
-                })?;
-                if let Resolved::Global(_) = r {
-                    return Err(CompileError::new(
-                        CompileErrorKind::AssignToBuiltin(name.name.clone()),
-                        span,
-                    ));
+                // Recoverable on a bad target: record and just pop the
+                // source (net -1, as a real store+pop would be).
+                match self.resolve(name, span)? {
+                    Some(Resolved::Global(_)) => {
+                        self.record(CompileError::new(
+                            CompileErrorKind::AssignToBuiltin(name.name.clone()),
+                            span,
+                        ));
+                        self.emit_op(OpCode::Pop, line);
+                    }
+                    None => {
+                        self.record(CompileError::new(
+                            CompileErrorKind::UndeclaredAssign(name.name.clone()),
+                            span,
+                        ));
+                        self.emit_op(OpCode::Pop, line);
+                    }
+                    Some(r) => {
+                        self.emit_store(r, line);
+                        self.emit_op(OpCode::Pop, line);
+                    }
                 }
-                self.emit_store(r, line);
-                self.emit_op(OpCode::Pop, line);
             }
             Pattern::Array { items, rest } => {
                 // Stash source as anonymous local so we can index into
@@ -2489,20 +2616,28 @@ impl Compiler {
         line: u32,
         span: Span,
     ) -> Result<(), CompileError> {
-        let r = self.resolve(name, span)?.ok_or_else(|| {
-            CompileError::new(
-                CompileErrorKind::UndeclaredAssign(name.to_string()),
-                span,
-            )
-        })?;
-        if let Resolved::Global(_) = r {
-            return Err(CompileError::new(
-                CompileErrorKind::AssignToBuiltin(name.to_string()),
-                span,
-            ));
+        // Recoverable on a bad target: record and just pop the source
+        // (net -1, as a real store+pop would be).
+        match self.resolve(name, span)? {
+            Some(Resolved::Global(_)) => {
+                self.record(CompileError::new(
+                    CompileErrorKind::AssignToBuiltin(name.to_string()),
+                    span,
+                ));
+                self.emit_op(OpCode::Pop, line);
+            }
+            None => {
+                self.record(CompileError::new(
+                    CompileErrorKind::UndeclaredAssign(name.to_string()),
+                    span,
+                ));
+                self.emit_op(OpCode::Pop, line);
+            }
+            Some(r) => {
+                self.emit_store(r, line);
+                self.emit_op(OpCode::Pop, line);
+            }
         }
-        self.emit_store(r, line);
-        self.emit_op(OpCode::Pop, line);
         Ok(())
     }
 

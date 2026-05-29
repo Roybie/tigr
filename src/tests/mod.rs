@@ -5865,3 +5865,87 @@ fn limit_interpolation_still_capped() {
     let err = run_err(&src);
     assert!(err.contains("too many constants"), "got: {err}");
 }
+
+// ---- multi-error recovery (LSP diagnostics path) ----
+//
+// `check_source` recovers within each stage so the language server gets
+// *all* of a stage's errors at once. The three stages are still reported
+// separately (lex, then parse, then compile), earliest non-empty first.
+
+mod multi_error {
+    use crate::vm::check_source;
+    use crate::vm::error::Error;
+    use crate::vm::source_map::SourceId;
+
+    fn check(src: &str) -> Vec<Error> {
+        check_source(src, None, SourceId::UNKNOWN)
+    }
+
+    /// Tier-2: two stray characters both surface, instead of the lexer
+    /// dying at the first.
+    #[test]
+    fn multiple_lex_errors() {
+        let errs = check("a := @1; b := `2; a + b");
+        assert_eq!(errs.len(), 2, "got: {errs:?}");
+        assert!(errs.iter().all(|e| matches!(e, Error::Lex(_))), "got: {errs:?}");
+    }
+
+    /// A lex error does not crash the whole check; later valid tokens
+    /// are still scanned.
+    #[test]
+    fn lex_error_is_not_fatal_to_the_rest() {
+        let errs = check("ok := 1; bad := 0xZZ; alsook := 2");
+        assert!(!errs.is_empty(), "expected a lex error");
+        assert!(errs.iter().all(|e| matches!(e, Error::Lex(_))), "got: {errs:?}");
+    }
+
+    /// Tier-3: two undeclared variables both surface.
+    #[test]
+    fn multiple_undeclared_variables() {
+        let errs = check("foo + bar");
+        assert_eq!(errs.len(), 2, "got: {errs:?}");
+        assert!(errs.iter().all(|e| matches!(e, Error::Compile(_))), "got: {errs:?}");
+    }
+
+    /// Recoverable semantic errors of mixed kinds accumulate: an
+    /// undeclared variable, a `break` outside any loop, and an
+    /// assignment to an undeclared name.
+    #[test]
+    fn mixed_compile_errors_accumulate() {
+        let errs = check("x; break; y = 1");
+        assert_eq!(errs.len(), 3, "got: {errs:?}");
+        assert!(errs.iter().all(|e| matches!(e, Error::Compile(_))), "got: {errs:?}");
+    }
+
+    /// `continue` outside a loop plus a later undeclared use.
+    #[test]
+    fn continue_outside_loop_recovers() {
+        let errs = check("continue; nope");
+        assert_eq!(errs.len(), 2, "got: {errs:?}");
+    }
+
+    /// A duplicate declaration is recoverable and does not hide a later
+    /// error.
+    #[test]
+    fn duplicate_decl_then_undeclared() {
+        let errs = check("a := 1; a := 2; missing");
+        assert_eq!(errs.len(), 2, "got: {errs:?}");
+        assert!(errs.iter().all(|e| matches!(e, Error::Compile(_))), "got: {errs:?}");
+    }
+
+    /// Stages don't mix: a parse error suppresses the compile pass
+    /// (which would otherwise spawn spurious errors from the partial
+    /// tree). Two parse errors still come together.
+    #[test]
+    fn parse_errors_reported_without_compile_noise() {
+        let errs = check("a := (; b := );");
+        assert!(!errs.is_empty(), "expected parse errors");
+        assert!(errs.iter().all(|e| matches!(e, Error::Parse(_))), "got: {errs:?}");
+    }
+
+    /// A clean program yields no diagnostics.
+    #[test]
+    fn clean_source_has_no_errors() {
+        assert!(check("x := 1; y := x + 1; y").is_empty());
+    }
+}

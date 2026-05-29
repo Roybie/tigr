@@ -183,39 +183,44 @@ pub fn compile_source_with_id(
 }
 
 /// Parse a source into its (recovered) AST for tooling that walks the
-/// tree — go-to-definition, hover. Returns an empty program if the
-/// source can't even be lexed (the LSP gets lex errors via
-/// [`check_source`]). The tree is deliberately NOT constant-folded, so
-/// every identifier and span survives for position lookups.
+/// tree — go-to-definition, hover. Lexes with recovery, so a stray bad
+/// character no longer wipes out the whole tree (the LSP gets the lex
+/// errors themselves via [`check_source`]). The tree is deliberately
+/// NOT constant-folded, so every identifier and span survives for
+/// position lookups.
 pub fn parse_tree(source: &str) -> self::ast::Block {
-    match Lexer::new(source).tokenize() {
-        Ok(tokens) => parser::parse_recover(tokens).0,
-        Err(_) => self::ast::Block { stmts: Vec::new(), tail: None },
-    }
+    let (tokens, _lex_errors) = Lexer::new(source).tokenize_recover();
+    parser::parse_recover(tokens).0
 }
 
-/// Collect every diagnostic for a source without running it. Lexes, then
-/// parses with recovery so multiple syntax errors surface at once; only
-/// when parsing is clean does it compile (the compiler is still
-/// fail-fast, so at most one compile error). Errors are stamped with
+/// Collect every diagnostic for a source without running it. Each stage
+/// recovers so it reports *all* of its errors at once: the lexer skips
+/// bad characters (multiple lex errors), the parser resyncs at statement
+/// boundaries (multiple parse errors), and the compiler accumulates
+/// semantic errors (multiple compile errors). Errors are stamped with
 /// `sid`. Used by the language server.
 ///
-/// Parse and compile errors are not mixed in one pass on purpose: a
-/// partial tree from a failed parse would spawn spurious compile errors
-/// (undeclared variables from dropped declarations, etc.), so we report
-/// the syntax errors alone and let the next edit reveal the rest.
+/// The three kinds are never mixed in one report: each stage's errors
+/// are returned alone, earliest non-empty stage first. A partial token
+/// stream or partial tree from a failed earlier stage would spawn
+/// spurious downstream errors (undeclared variables from dropped
+/// declarations, etc.), so we surface one stage's errors and let the
+/// next edit reveal the rest.
 pub fn check_source(
     source: &str,
     base_dir: Option<PathBuf>,
     sid: SourceId,
 ) -> Vec<Error> {
-    let tokens = match Lexer::new(source).tokenize() {
-        Ok(t) => t,
-        Err(mut e) => {
-            e.source = sid;
-            return vec![Error::from(e)];
-        }
-    };
+    let (tokens, lex_errors) = Lexer::new(source).tokenize_recover();
+    if !lex_errors.is_empty() {
+        return lex_errors
+            .into_iter()
+            .map(|mut e| {
+                e.source = sid;
+                Error::from(e)
+            })
+            .collect();
+    }
     let (mut program, parse_errors) = parser::parse_recover(tokens);
     if !parse_errors.is_empty() {
         return parse_errors
@@ -227,8 +232,8 @@ pub fn check_source(
             .collect();
     }
     fold::fold_program(&mut program);
-    match Compiler::compile_with_source(&program, base_dir, sid) {
-        Ok(_) => Vec::new(),
-        Err(e) => vec![Error::from(e)],
-    }
+    Compiler::compile_check(&program, base_dir, sid)
+        .into_iter()
+        .map(Error::from)
+        .collect()
 }

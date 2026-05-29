@@ -39,21 +39,51 @@ impl<'src> Lexer<'src> {
     }
 
     /// Tokenize the entire source. Returns a `Vec<SpannedToken>` ending
-    /// in `Token::Eof`. For Phase 1 we tokenize eagerly; if this becomes
-    /// a memory issue later we can switch to a streaming `Iterator`.
-    pub fn tokenize(mut self) -> Result<Vec<SpannedToken>, LexError> {
+    /// in `Token::Eof`, or the first lex error. This is the run path's
+    /// contract: a source with any lex error can't execute, so the first
+    /// error is all the caller needs.
+    pub fn tokenize(self) -> Result<Vec<SpannedToken>, LexError> {
+        let (tokens, mut errors) = self.tokenize_recover();
+        if errors.is_empty() {
+            Ok(tokens)
+        } else {
+            Err(errors.remove(0))
+        }
+    }
+
+    /// Tokenize the entire source, recovering past lex errors. On a bad
+    /// token the offending input is skipped — every scanner advances past
+    /// what it rejected before returning the error, so progress is
+    /// guaranteed — and lexing continues with no token emitted for the
+    /// bad region. Returns the recovered token stream (ending in
+    /// `Token::Eof`) plus every error found. Used by tooling (the LSP) so
+    /// multiple lex errors surface at once.
+    pub fn tokenize_recover(mut self) -> (Vec<SpannedToken>, Vec<LexError>) {
         let mut out = Vec::new();
+        let mut errors = Vec::new();
         loop {
             self.skip_whitespace_and_comments();
             let start = self.pos;
             let line = self.line;
             let Some(c) = self.peek() else {
                 out.push(SpannedToken::new(Token::Eof, Span::new(start, start, line)));
-                return Ok(out);
+                return (out, errors);
             };
-            let token = self.scan_one(c)?;
-            let end = self.pos;
-            out.push(SpannedToken::new(token, Span::new(start, end, line)));
+            match self.scan_one(c) {
+                Ok(token) => {
+                    let end = self.pos;
+                    out.push(SpannedToken::new(token, Span::new(start, end, line)));
+                }
+                Err(e) => {
+                    // The scanners always consume past the offending
+                    // input, so `pos` has moved; belt-and-braces, force a
+                    // step if somehow stuck so the loop can't spin.
+                    if self.pos == start {
+                        self.advance();
+                    }
+                    errors.push(e);
+                }
+            }
         }
     }
 

@@ -90,8 +90,18 @@ main() {
 	mkdir -p "$BIN_DIR"
 	mv "$tmp/tigr" "$BIN_DIR/tigr"
 	chmod +x "$BIN_DIR/tigr"
-
 	echo "Installed tigr to $BIN_DIR/tigr"
+
+	# The language server ships in the same archive (same build as the
+	# runtime, so its diagnostics can't drift from the interpreter). The
+	# `-f` guard lets an older archive without it install cleanly. Editors
+	# point their LSP `cmd` at this on-PATH binary.
+	if [ -f "$tmp/tigr-lsp" ]; then
+		mv "$tmp/tigr-lsp" "$BIN_DIR/tigr-lsp"
+		chmod +x "$BIN_DIR/tigr-lsp"
+		echo "Installed tigr-lsp to $BIN_DIR/tigr-lsp"
+	fi
+
 	ensure_path
 	echo "Run 'tigr --version' to verify."
 }

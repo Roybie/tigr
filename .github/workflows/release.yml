@@ -62,8 +62,17 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # Both binaries are built and shipped together so a user's `tigr`
+      # and `tigr-lsp` are always the same build: the language server
+      # embeds the `tigr` frontend (lexer/parser/compiler) via a path
+      # dependency, so a version skew between the two could make the LSP's
+      # diagnostics diverge from what the runtime actually does. `tigr-lsp`
+      # lives in a non-default workspace member, so it needs `-p` to
+      # resolve — hence the separate invocation.
       - name: Build
-        run: cargo build --release --locked --bin tigr --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked --bin tigr --target ${{ matrix.target }}
+          cargo build --release --locked -p tigr-lsp --bin tigr-lsp --target ${{ matrix.target }}
 
       # Asset names are unversioned so install.sh can fetch them via the
       # releases/latest/download/<asset> endpoint without resolving a version.
@@ -71,7 +80,7 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr
+          tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr tigr-lsp
 
       # softprops/action-gh-release creates the release for the pushed tag
       # on first upload and appends assets on subsequent matrix jobs.

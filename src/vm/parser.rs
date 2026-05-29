@@ -36,7 +36,7 @@
 //! ```
 
 use crate::vm::ast::{
-    expr_to_pattern, BinOp, Block, Expr, LiteralPat, MatchArm, MatchField,
+    expr_to_pattern, BinOp, Binder, Block, Expr, LiteralPat, MatchArm, MatchField,
     MatchPattern, ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
 };
 use crate::vm::error::{ParseError, ParseErrorKind};
@@ -258,7 +258,7 @@ impl Parser {
             }
             AssignKind::Assign(op) => match left.expr {
                 Expr::Ident(name) => Ok(SpannedExpr::new(
-                    Expr::Assign(name, op, Box::new(right)),
+                    Expr::Assign(Binder::new(name, left.span), op, Box::new(right)),
                     span,
                 )),
                 Expr::Index(obj, key) => Ok(SpannedExpr::new(
@@ -666,7 +666,7 @@ impl Parser {
         let body = self.parse_logic_and()?;
         let (catch, end_span) = if self.matches(&Token::Catch) {
             self.expect(&Token::LParen)?;
-            let param = self.parse_ident_token()?;
+            let param = self.parse_ident_binder()?;
             self.expect(&Token::RParen)?;
             let handler = self.parse_scope()?;
             let span = handler.span;
@@ -857,12 +857,12 @@ impl Parser {
         let _ = self.parse_array_form_marker()?;
         self.expect(&Token::LParen)?;
 
-        let first_var = self.parse_ident_token()?;
+        let first_var = self.parse_ident_binder()?;
         self.expect(&Token::Comma)?;
         let next_expr = self.parse_expr()?;
         let (vars, iter) = if self.matches(&Token::Comma) {
             let second = match next_expr.expr {
-                Expr::Ident(n) => n,
+                Expr::Ident(n) => Binder::new(n, next_expr.span),
                 _ => {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidAssignTarget,
@@ -898,7 +898,7 @@ impl Parser {
             body: Box::new(spawn_actor),
         });
         let decl = s(Expr::Decl(
-            Pattern::Ident("$parallel_tasks".to_string()),
+            Pattern::Ident(Binder::new("$parallel_tasks", span)),
             Box::new(collect),
         ));
 
@@ -909,7 +909,7 @@ impl Parser {
         ));
         let join_all = s(Expr::For {
             is_array: true,
-            vars: vec!["$parallel_t".to_string()],
+            vars: vec![Binder::new("$parallel_t", span)],
             iter: Box::new(s(Expr::Ident("$parallel_tasks".to_string()))),
             body: Box::new(join_call),
         });
@@ -1098,13 +1098,13 @@ impl Parser {
         self.expect(&Token::LParen)?;
         let mut params: Vec<Pattern> = Vec::new();
         let mut defaults: Vec<Option<Box<SpannedExpr>>> = Vec::new();
-        let mut rest: Option<String> = None;
+        let mut rest: Option<Binder> = None;
         if !self.check(&Token::RParen) {
             loop {
                 if matches!(self.peek(), Token::Ellipsis) {
                     let ellipsis_span = self.peek_span();
                     self.advance();
-                    let name = self.parse_ident_token()?;
+                    let name = self.parse_ident_binder()?;
                     rest = Some(name);
                     // rest must be the LAST param (spec §10.3)
                     if !self.check(&Token::RParen) {
@@ -1347,7 +1347,7 @@ impl Parser {
         let is_array = self.parse_array_form_marker()?;
         self.expect(&Token::LParen)?;
 
-        let first_var = self.parse_ident_token()?;
+        let first_var = self.parse_ident_binder()?;
         self.expect(&Token::Comma)?;
 
         // Parse next as a generic expression. If a comma follows, it was
@@ -1356,7 +1356,7 @@ impl Parser {
         let next_expr = self.parse_expr()?;
         let (vars, iter) = if self.matches(&Token::Comma) {
             let second = match next_expr.expr {
-                Expr::Ident(n) => n,
+                Expr::Ident(n) => Binder::new(n, next_expr.span),
                 _ => {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidAssignTarget,
@@ -1470,6 +1470,15 @@ impl Parser {
             }
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
         }
+    }
+
+    /// Like [`parse_ident_token`] but records the name's span as a
+    /// [`Binder`], for binding positions (params, `...rest`, loop vars,
+    /// the `catch` parameter) the tooling needs to locate.
+    fn parse_ident_binder(&mut self) -> Result<Binder, ParseError> {
+        let span = self.peek_span();
+        let name = self.parse_ident_token()?;
+        Ok(Binder::new(name, span))
     }
 }
 

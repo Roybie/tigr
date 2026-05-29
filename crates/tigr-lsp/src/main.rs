@@ -111,6 +111,13 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    // We support prepare-rename so the editor can validate
+                    // the cursor target (and seed the rename box) first.
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 ..Default::default()
             },
         })
@@ -247,9 +254,117 @@ impl LanguageServer for Backend {
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let p = params.text_document_position;
+        let uri = p.text_document.uri;
+        let Some((text, offset)) = self.locate(&uri, p.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        let mut spans = analysis::references(&program, offset);
+        if spans.is_empty() {
+            return Ok(None);
+        }
+        // `includeDeclaration: false` drops the declaration occurrence.
+        // The resolver makes the declaration the binding's identity, so
+        // we recover it from a prepare-style lookup and filter it out.
+        if !params.context.include_declaration {
+            if let Some(target) = analysis::rename_spans(&program, offset) {
+                spans.retain(|s| s.start != target.def.start);
+            }
+        }
+        let enc = self.encoding.lock().unwrap().clone();
+        let locations = spans
+            .into_iter()
+            .map(|span| Location {
+                uri: uri.clone(),
+                range: span_to_range(&text, span, &enc),
+            })
+            .collect();
+        Ok(Some(locations))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let Some((text, offset)) = self.locate(&params.text_document.uri, params.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        // A rename is only offered if the cursor is on a locatable binding.
+        let Some(target) = analysis::rename_spans(&program, offset) else {
+            return Ok(None);
+        };
+        // Highlight the occurrence under the cursor as the rename range.
+        let here = target
+            .spans
+            .iter()
+            .copied()
+            .find(|s| s.start <= offset && offset <= s.end)
+            .unwrap_or(target.def);
+        let enc = self.encoding.lock().unwrap().clone();
+        Ok(Some(PrepareRenameResponse::Range(span_to_range(
+            &text, here, &enc,
+        ))))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let p = params.text_document_position;
+        let uri = p.text_document.uri;
+        let Some((text, offset)) = self.locate(&uri, p.position) else {
+            return Ok(None);
+        };
+        // Reject a new name that isn't a valid tigr identifier, so a typo
+        // can't produce broken source.
+        if !is_identifier(&params.new_name) {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(
+                "new name is not a valid identifier",
+            ));
+        }
+        let program = tigr::vm::parse_tree(&text);
+        let Some(target) = analysis::rename_spans(&program, offset) else {
+            return Ok(None);
+        };
+        let enc = self.encoding.lock().unwrap().clone();
+        let edits: Vec<TextEdit> = target
+            .spans
+            .into_iter()
+            .map(|span| TextEdit {
+                range: span_to_range(&text, span, &enc),
+                new_text: params.new_name.clone(),
+            })
+            .collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri, edits);
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// A tigr span projected onto an LSP [`Range`] in the negotiated encoding.
+fn span_to_range(text: &str, span: tigr::vm::token::Span, enc: &PositionEncodingKind) -> Range {
+    Range {
+        start: offset_to_position(text, span.start, enc),
+        end: offset_to_position(text, span.end, enc),
+    }
+}
+
+/// Whether `s` is a valid tigr identifier: a non-digit leader then
+/// alphanumerics/underscores. Guards rename against invalid new names.
+fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Project an [`analysis::SymbolNode`] onto the LSP [`DocumentSymbol`],

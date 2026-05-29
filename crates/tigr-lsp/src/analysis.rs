@@ -1,20 +1,22 @@
-//! Lexical analysis over the tigr AST for go-to-definition and hover.
+//! Lexical analysis over the tigr AST for go-to-definition, hover,
+//! references, and rename.
 //!
-//! tigr stores binding *names* as plain strings inside `Pattern` /
-//! `Assign` / params — only `Expr::Ident` carries a span, and it only
-//! ever appears as a *reference*. So: find the `Ident` under the cursor,
-//! rebuild the scope chain active at that point, and resolve the name
-//! innermost-first.
+//! Every binding name carries a span: references are `Expr::Ident`, and
+//! declarations are `ast::Binder`s (pattern leaves and `...rest`, params,
+//! loop variables, the `catch` parameter, and `=` assignment targets).
+//! So: find the name under the cursor, rebuild the scope chain active at
+//! that point, and resolve innermost-first. A binding's *identity* is its
+//! definition span, which lets references and rename group every
+//! occurrence — the declaration plus all uses — that resolves to it.
 //!
-//! Definition spans exist only for the common `name := …` form, whose
-//! decl span starts exactly at the name. Destructured names, params, and
-//! loop variables have no span in the AST, so they are still resolved
-//! (for correct shadowing) but report no jump target — better than
-//! jumping to the wrong outer binding.
+//! The one exception is `match`-arm bindings, which the core AST still
+//! stores as bare strings (no span). They resolve for shadowing but
+//! report `def: None`, so references/rename decline them rather than act
+//! on an unlocatable binding.
 
 use std::collections::HashMap;
 
-use tigr::vm::ast::{Block, Expr, ObjectMember, Pattern, SpannedExpr, TemplatePart};
+use tigr::vm::ast::{Binder, Block, Expr, ObjectMember, Pattern, SpannedExpr, TemplatePart};
 use tigr::vm::token::Span;
 
 use crate::catalog::{Catalog, Member};
@@ -118,7 +120,7 @@ fn import_aliases(program: &Block) -> HashMap<String, String> {
         if let Expr::Decl(Pattern::Ident(alias), init) = &se.expr {
             if let Expr::Import(arg) = &init.expr {
                 if let Expr::Str(name) = &arg.expr {
-                    map.insert(alias.clone(), name.clone());
+                    map.insert(alias.name.clone(), name.clone());
                 }
             }
         }
@@ -201,7 +203,7 @@ fn fn_signature(
 /// A parameter pattern as it reads in a signature.
 fn pattern_str(p: &Pattern) -> String {
     match p {
-        Pattern::Ident(n) => n.clone(),
+        Pattern::Ident(n) => n.name.clone(),
         Pattern::Wildcard => "_".to_string(),
         Pattern::Array { .. } => "[...]".to_string(),
         Pattern::Object { .. } => "${...}".to_string(),
@@ -262,6 +264,157 @@ pub fn canonical_module(program: &Block, name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Look up `name` in the scope chain active at `offset`, innermost first.
+fn binding_of(program: &Block, name: &str, offset: usize) -> Option<Binding> {
+    scopes_at(program, offset)
+        .iter()
+        .rev()
+        .find_map(|s| s.bindings.get(name).cloned())
+}
+
+// ---------------- references and rename ----------------
+
+/// Whether a name occurrence introduces a binding or refers to one.
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    /// A declaration site: a decl/param/loop/catch binder. Its identity
+    /// is its own span.
+    Def,
+    /// A use of an existing binding: an `Expr::Ident`, an `=` assignment
+    /// target, or a destructuring-assignment leaf. Its identity is the
+    /// def span of whatever binding it resolves to.
+    Ref,
+}
+
+/// One occurrence of a binding name in the source.
+struct Occurrence {
+    name: String,
+    span: Span,
+    role: Role,
+}
+
+/// The binding identity an occurrence belongs to: a `Def` is its own
+/// definition span; a `Ref` resolves to the binding visible at its
+/// position. `None` means it ties to no locatable binding — a builtin, a
+/// stdlib module, or an unspanned `match` binding — so it is never
+/// grouped or renamed. Compiler-internal `$`-names are excluded too.
+fn identity(occ: &Occurrence, program: &Block) -> Option<Span> {
+    if occ.name.starts_with('$') {
+        return None;
+    }
+    match occ.role {
+        Role::Def => Some(occ.span),
+        Role::Ref => binding_of(program, &occ.name, occ.span.start).and_then(|b| b.def),
+    }
+}
+
+/// Every binding-name occurrence in `program`, declarations and uses.
+fn collect_occurrences(program: &Block) -> Vec<Occurrence> {
+    let mut out = Vec::new();
+    walk_block(program, &mut |se| match &se.expr {
+        Expr::Ident(name) => out.push(Occurrence {
+            name: name.clone(),
+            span: se.span,
+            role: Role::Ref,
+        }),
+        // `x = …` / `x += …` — the target refers to an existing binding.
+        Expr::Assign(target, _, _) => out.push(Occurrence {
+            name: target.name.clone(),
+            span: target.span,
+            role: Role::Ref,
+        }),
+        // `pat := …` declares; `pat = …` writes existing bindings.
+        Expr::Decl(pat, _) => collect_pattern_occurrences(pat, Role::Def, &mut out),
+        Expr::AssignPattern(pat, _) => collect_pattern_occurrences(pat, Role::Ref, &mut out),
+        Expr::Fn { params, rest, .. } => {
+            for p in params {
+                collect_pattern_occurrences(p, Role::Def, &mut out);
+            }
+            if let Some(r) = rest {
+                out.push(binder_occ(r, Role::Def));
+            }
+        }
+        Expr::For { vars, .. } => {
+            for v in vars {
+                out.push(binder_occ(v, Role::Def));
+            }
+        }
+        Expr::Try { catch: Some((param, _)), .. } => out.push(binder_occ(param, Role::Def)),
+        _ => {}
+    });
+    out
+}
+
+fn binder_occ(b: &Binder, role: Role) -> Occurrence {
+    Occurrence { name: b.name.clone(), span: b.span, role }
+}
+
+/// Push an occurrence for every binder in a pattern, all with `role`.
+fn collect_pattern_occurrences(pat: &Pattern, role: Role, out: &mut Vec<Occurrence>) {
+    let mut binders = Vec::new();
+    pattern_binders(pat, &mut binders);
+    for b in binders {
+        out.push(binder_occ(b, role));
+    }
+}
+
+/// All occurrence spans of the binding at `offset` — its declaration plus
+/// every use — sorted by position. `None` when the cursor is not on a
+/// locatable binding (a builtin, stdlib module, `match` binding, or
+/// nothing). Powers both references and rename.
+fn binding_occurrences(program: &Block, offset: usize) -> Option<Vec<Span>> {
+    let occs = collect_occurrences(program);
+    // The occurrence under the cursor: the tightest span containing it.
+    let target = occs
+        .iter()
+        .filter(|o| contains(o.span, offset))
+        .min_by_key(|o| span_len(o.span))?;
+    let target_id = identity(target, program)?;
+
+    let mut spans: Vec<Span> = occs
+        .iter()
+        .filter(|o| identity(o, program) == Some(target_id))
+        .map(|o| o.span)
+        .collect();
+    spans.sort_by_key(|s| s.start);
+    spans.dedup_by_key(|s| s.start);
+    Some(spans)
+}
+
+/// Spans of every reference to the binding at `offset` (declaration
+/// included). Empty if the cursor is not on a locatable binding.
+pub fn references(program: &Block, offset: usize) -> Vec<Span> {
+    binding_occurrences(program, offset).unwrap_or_default()
+}
+
+/// The set of spans a rename should rewrite, and the definition span among
+/// them. `None` when the target cannot be renamed (a builtin, stdlib
+/// module, `match` binding, or nothing under the cursor).
+pub fn rename_spans(program: &Block, offset: usize) -> Option<RenameTarget> {
+    let occs = collect_occurrences(program);
+    let target = occs
+        .iter()
+        .filter(|o| contains(o.span, offset))
+        .min_by_key(|o| span_len(o.span))?;
+    let def = identity(target, program)?;
+    let mut spans: Vec<Span> = occs
+        .iter()
+        .filter(|o| identity(o, program) == Some(def))
+        .map(|o| o.span)
+        .collect();
+    spans.sort_by_key(|s| s.start);
+    spans.dedup_by_key(|s| s.start);
+    Some(RenameTarget { def, spans })
+}
+
+/// The result of resolving a rename request.
+pub struct RenameTarget {
+    /// The declaration span (one of `spans`); useful for prepare-rename.
+    pub def: Span,
+    /// Every span to rewrite, sorted by position.
+    pub spans: Vec<Span>,
+}
+
 // ---------------- document symbols (outline) ----------------
 
 /// What kind of entity a [`SymbolNode`] is, kept independent of the LSP
@@ -314,15 +467,15 @@ fn decl_symbols(pat: &Pattern, decl_span: Span, init: &SpannedExpr, out: &mut Ve
         Pattern::Ident(name) => out.push(ident_decl_symbol(name, decl_span, init)),
         Pattern::Wildcard => {}
         Pattern::Array { .. } | Pattern::Object { .. } => {
-            let mut names = Vec::new();
-            pattern_names(pat, &mut names);
-            for name in names {
+            let mut binders = Vec::new();
+            pattern_binders(pat, &mut binders);
+            for b in binders {
                 out.push(SymbolNode {
-                    name,
+                    name: b.name.clone(),
                     detail: None,
                     category: SymbolCategory::Variable,
                     range: decl_span,
-                    selection: decl_span,
+                    selection: b.span,
                     children: Vec::new(),
                 });
             }
@@ -333,8 +486,9 @@ fn decl_symbols(pat: &Pattern, decl_span: Span, init: &SpannedExpr, out: &mut Ve
 /// A `name := …` declaration. A `fn` initialiser becomes a Function (with
 /// its signature and nested locals); an `import` becomes a Module; anything
 /// else a Variable.
-fn ident_decl_symbol(name: &str, decl_span: Span, init: &SpannedExpr) -> SymbolNode {
-    let selection = Span::new(decl_span.start, decl_span.start + name.len(), decl_span.line);
+fn ident_decl_symbol(binder: &Binder, decl_span: Span, init: &SpannedExpr) -> SymbolNode {
+    let name = &binder.name;
+    let selection = binder.span;
     match &init.expr {
         Expr::Fn { params, defaults, rest, body, .. } => {
             let mut children = Vec::new();
@@ -375,25 +529,26 @@ fn ident_decl_symbol(name: &str, decl_span: Span, init: &SpannedExpr) -> SymbolN
     }
 }
 
-/// Every name bound by a (possibly nested) destructuring pattern.
-fn pattern_names(pat: &Pattern, out: &mut Vec<String>) {
+/// Every binder of a (possibly nested) destructuring pattern, in source
+/// order, each with its own span.
+fn pattern_binders<'a>(pat: &'a Pattern, out: &mut Vec<&'a Binder>) {
     match pat {
         Pattern::Wildcard => {}
-        Pattern::Ident(name) => out.push(name.clone()),
+        Pattern::Ident(b) => out.push(b),
         Pattern::Array { items, rest } => {
             for it in items {
-                pattern_names(it, out);
+                pattern_binders(it, out);
             }
             if let Some(r) = rest {
-                out.push(r.clone());
+                out.push(r);
             }
         }
         Pattern::Object { fields, rest } => {
             for fld in fields {
-                pattern_names(&fld.pattern, out);
+                pattern_binders(&fld.pattern, out);
             }
             if let Some(r) = rest {
-                out.push(r.clone());
+                out.push(r);
             }
         }
     }
@@ -454,12 +609,12 @@ fn hoist_block(block: &Block, scope: &mut Scope) {
 fn hoist_expr(se: &SpannedExpr, scope: &mut Scope) {
     match &se.expr {
         Expr::Decl(pat, init) => {
-            add_pattern(pat, Some(se.span), BindingKind::Decl, scope);
+            add_pattern(pat, BindingKind::Decl, scope);
             // `name := fn(...)` — remember the signature for hover.
             if let (Pattern::Ident(name), Expr::Fn { params, defaults, rest, .. }) =
                 (pat, &init.expr)
             {
-                if let Some(b) = scope.bindings.get_mut(name) {
+                if let Some(b) = scope.bindings.get_mut(name.name.as_str()) {
                     b.sig = Some(fn_signature(name, params, defaults, rest.as_deref()));
                 }
             }
@@ -482,36 +637,38 @@ fn hoist_expr(se: &SpannedExpr, scope: &mut Scope) {
     }
 }
 
-/// Insert the names a pattern binds. A precise span is recorded only for
-/// a bare top-level `Ident` (the decl span starts at the name); every
-/// other leaf is in scope but unlocatable.
-fn add_pattern(pat: &Pattern, decl_span: Option<Span>, kind: BindingKind, scope: &mut Scope) {
+/// Insert the names a pattern binds, each located at its own `Binder`
+/// span (so destructured leaves and `...rest` are jumpable too).
+fn add_pattern(pat: &Pattern, kind: BindingKind, scope: &mut Scope) {
     match pat {
         Pattern::Wildcard => {}
-        Pattern::Ident(name) => {
-            let def = decl_span
-                .map(|s| Span::new(s.start, s.start + name.len(), s.line));
-            scope.bindings.insert(name.clone(), Binding::new(def, kind));
-        }
+        Pattern::Ident(b) => bind_binder(scope, b, kind),
         Pattern::Array { items, rest } => {
             for it in items {
-                add_pattern(it, None, kind, scope);
+                add_pattern(it, kind, scope);
             }
             if let Some(r) = rest {
-                scope.bindings.insert(r.clone(), Binding::new(None, kind));
+                bind_binder(scope, r, kind);
             }
         }
         Pattern::Object { fields, rest } => {
             for fld in fields {
-                add_pattern(&fld.pattern, None, kind, scope);
+                add_pattern(&fld.pattern, kind, scope);
             }
             if let Some(r) = rest {
-                scope.bindings.insert(r.clone(), Binding::new(None, kind));
+                bind_binder(scope, r, kind);
             }
         }
     }
 }
 
+/// Bind a spanned name: its definition span is the binder's own span.
+fn bind_binder(scope: &mut Scope, b: &Binder, kind: BindingKind) {
+    scope.bindings.insert(b.name.clone(), Binding::new(Some(b.span), kind));
+}
+
+/// Bind an unspanned name (a `match`-arm binding, which the AST keeps as
+/// a bare string). In scope for shadowing, but with no jump target.
 fn bind_name(scope: &mut Scope, name: &str, kind: BindingKind) {
     scope.bindings.insert(name.to_string(), Binding::new(None, kind));
 }
@@ -542,10 +699,10 @@ fn descend_expr(se: &SpannedExpr, offset: usize, scopes: &mut Vec<Scope>) {
         Expr::Fn { params, defaults, rest, body, .. } => {
             let mut s = Scope::default();
             for p in params {
-                add_pattern(p, None, BindingKind::Param, &mut s);
+                add_pattern(p, BindingKind::Param, &mut s);
             }
             if let Some(r) = rest {
-                bind_name(&mut s, r, BindingKind::Param);
+                bind_binder(&mut s, r, BindingKind::Param);
             }
             scopes.push(s);
             for d in defaults.iter().flatten() {
@@ -567,7 +724,7 @@ fn descend_expr(se: &SpannedExpr, offset: usize, scopes: &mut Vec<Scope>) {
             if contains(body.span, offset) {
                 let mut s = Scope::default();
                 for v in vars {
-                    bind_name(&mut s, v, BindingKind::LoopVar);
+                    bind_binder(&mut s, v, BindingKind::LoopVar);
                 }
                 scopes.push(s);
                 descend_expr(body, offset, scopes);
@@ -604,7 +761,7 @@ fn descend_expr(se: &SpannedExpr, offset: usize, scopes: &mut Vec<Scope>) {
             if let Some((param, handler)) = catch {
                 if contains(handler.span, offset) {
                     let mut s = Scope::default();
-                    bind_name(&mut s, param, BindingKind::CatchParam);
+                    bind_binder(&mut s, param, BindingKind::CatchParam);
                     scopes.push(s);
                     descend_expr(handler, offset, scopes);
                 }
@@ -900,6 +1057,74 @@ mod tests {
         let helper = outer.children.iter().find(|s| s.name == "helper").unwrap();
         assert!(helper.category == SymbolCategory::Function);
         assert_eq!(helper.detail.as_deref(), Some("helper(q)"));
+    }
+
+    /// The substrings `src[span]` for each reference span at the cursor
+    /// just inside the first occurrence of `needle`, plus the count.
+    fn refs_at(src: &str, needle: &str) -> Vec<(usize, String)> {
+        let off = at(src, needle);
+        references(&parse_tree(src), off)
+            .into_iter()
+            .map(|s| (s.start, src[s.start..s.end].to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn references_find_decl_and_all_uses() {
+        let src = "x := 1;\ny := x + x;\nx = 3;";
+        let refs = refs_at(src, "x :=");
+        // decl + two reads + the `x = 3` write = 4 occurrences.
+        assert_eq!(refs.len(), 4, "got {refs:?}");
+        assert!(refs.iter().all(|(_, t)| t == "x"));
+    }
+
+    #[test]
+    fn references_work_from_a_use_site_and_respect_shadowing() {
+        // Two distinct `n`: the param and the outer decl. A reference
+        // inside the function must group only with the param.
+        let src = "n := 99;\nf := fn(n) { n + n };\nn + 1;";
+        // Cursor on the first `n` inside the body.
+        let body_n = src.find("n + n").unwrap();
+        let refs: Vec<Span> = references(&parse_tree(src), body_n);
+        // param decl + two body uses = 3; the outer `n` decl/use excluded.
+        assert_eq!(refs.len(), 3, "got {refs:?}");
+        // None of them is the outer decl at offset 0.
+        assert!(refs.iter().all(|s| s.start >= src.find("fn(n)").unwrap()));
+    }
+
+    #[test]
+    fn references_cover_loop_variables() {
+        let src = "for (i, 0..3) { print(i); }";
+        let refs = refs_at(src, "i, 0");
+        assert_eq!(refs.len(), 2, "loop var decl + use, got {refs:?}");
+    }
+
+    #[test]
+    fn no_references_for_a_builtin() {
+        let src = "print(1);";
+        assert!(references(&parse_tree(src), at(src, "print")).is_empty());
+    }
+
+    #[test]
+    fn rename_collects_every_occurrence_including_the_decl() {
+        let src = "count := 0;\ncount = count + 1;";
+        let off = at(src, "count :=");
+        let target = rename_spans(&parse_tree(src), off).expect("renameable");
+        assert_eq!(target.spans.len(), 3, "got {:?}", target.spans);
+        // The declaration is the first occurrence.
+        assert_eq!(target.def.start, 0);
+        assert_eq!(target.spans[0].start, 0);
+    }
+
+    #[test]
+    fn rename_declines_builtins_and_match_bindings() {
+        // A builtin cannot be renamed.
+        let b = "print(1);";
+        assert!(rename_spans(&parse_tree(b), at(b, "print")).is_none());
+        // A match binding has no span in the AST, so rename declines it.
+        let m = "match x { y => y };";
+        let y = m.rfind('y').unwrap();
+        assert!(rename_spans(&parse_tree(m), y).is_none());
     }
 
     #[test]

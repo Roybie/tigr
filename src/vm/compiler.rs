@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::vm::ast::{
-    BinOp, Block, Expr, LiteralPat, MatchArm, MatchPattern,
+    BinOp, Binder, Block, Expr, LiteralPat, MatchArm, MatchPattern,
     ObjectMember, Pattern, SpannedExpr, TemplatePart, UnOp,
 };
 use std::path::PathBuf;
@@ -1024,7 +1024,7 @@ impl Compiler {
                         // takes the hint; harmless if `init` is not a
                         // bare `fn` literal.
                         if matches!(init.expr, Expr::Fn { .. }) {
-                            self.fn_name_hint = Some(name.clone());
+                            self.fn_name_hint = Some(name.name.clone());
                         }
                         if let Some(slot) = self.lookup_hoisted(name) {
                             // Hoisted: the local was pre-declared at
@@ -1106,13 +1106,13 @@ impl Compiler {
             Expr::Assign(name, op, value) => {
                 let r = self.resolve(name, e.span)?.ok_or_else(|| {
                     CompileError::new(
-                        CompileErrorKind::UndeclaredAssign(name.clone()),
+                        CompileErrorKind::UndeclaredAssign(name.name.clone()),
                         e.span,
                     )
                 })?;
                 if let Resolved::Global(_) = r {
                     return Err(CompileError::new(
-                        CompileErrorKind::AssignToBuiltin(name.clone()),
+                        CompileErrorKind::AssignToBuiltin(name.name.clone()),
                         e.span,
                     ));
                 }
@@ -1908,7 +1908,7 @@ impl Compiler {
     fn compile_for(
         &mut self,
         is_array: bool,
-        vars: &[String],
+        vars: &[Binder],
         iter: &SpannedExpr,
         body: &SpannedExpr,
         line: u32,
@@ -2160,7 +2160,7 @@ impl Compiler {
     fn compile_try(
         &mut self,
         body: &SpannedExpr,
-        catch: Option<&(String, Box<SpannedExpr>)>,
+        catch: Option<&(Binder, Box<SpannedExpr>)>,
         line: u32,
         span: Span,
     ) -> Result<(), CompileError> {
@@ -2397,13 +2397,13 @@ impl Compiler {
             Pattern::Ident(name) => {
                 let r = self.resolve(name, span)?.ok_or_else(|| {
                     CompileError::new(
-                        CompileErrorKind::UndeclaredAssign(name.clone()),
+                        CompileErrorKind::UndeclaredAssign(name.name.clone()),
                         span,
                     )
                 })?;
                 if let Resolved::Global(_) = r {
                     return Err(CompileError::new(
-                        CompileErrorKind::AssignToBuiltin(name.clone()),
+                        CompileErrorKind::AssignToBuiltin(name.name.clone()),
                         span,
                     ));
                 }

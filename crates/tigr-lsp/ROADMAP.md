@@ -20,6 +20,12 @@ forward-looking.
 - Phase 3c: signature help (active-parameter popup inside a call).
 - Phase 4a: document symbols (outline of top-level declarations, with a
   function's nested declarations beneath it). See "Phase 4a, as built".
+- AST binder spans: `ast::Binder { name, span }` now carries the span of
+  every binding-name occurrence (pattern leaves, `...rest`, params, loop
+  vars, the `catch` param, `=` targets). The prerequisite for 4b/4c.
+- Phase 4b: references (`textDocument/references`).
+- Phase 4c: rename (`textDocument/rename` + prepare-rename).
+  See "Phase 4b/4c, as built".
 
 ## Guiding principles (unchanged)
 
@@ -179,14 +185,38 @@ Original plan: Outline of top-level declarations and nested functions.
 Small, high value (powers breadcrumbs, telescope symbol search, the
 outline view). Only needs decl spans, which exist.
 
-4b. References (`textDocument/references`). Find every `Ident` that
-resolves to the same binding as the one under the cursor. Reuses the
-resolver. Needs the AST span work below to be complete for params and
-loop variables.
+### Phase 4b/4c, as built
 
-4c. Rename (`textDocument/rename`). Rename a binding across its scope.
-Depends on references plus precise binding spans, so it follows the AST
-span work.
+The AST-span prerequisite (see "Cross-cutting") landed first:
+`ast::Binder { name, span }` replaces the bare `String` at every binding
+site. It `Deref`s to `str`, so the compiler/fold keep reading just the
+name; the parser fills in each binder's span. This made go-to-definition
+work for params, loop vars, destructured names, and the `catch` param
+too (previously `def: None`).
+
+References and rename share one engine in `analysis.rs`:
+`collect_occurrences` walks the tree once and records every name
+occurrence as `(name, span, role)`. A `Role::Def` (a decl/param/loop/
+catch binder) has identity = its own span; a `Role::Ref` (an
+`Expr::Ident`, an `=` target, or a destructuring-assignment leaf) has
+identity = the def span of the binding it resolves to (via `binding_of`,
+which reuses the scope walk). Two occurrences belong together iff their
+identities match — def-span identity distinguishes shadowed bindings of
+the same name. Compiler-internal `$`-names and unspanned `match` bindings
+(identity `None`) are never grouped or renamed.
+
+- `references` (`main.rs::references`) returns every occurrence's
+  location; honours `includeDeclaration`.
+- `rename_spans` returns the def span plus all occurrence spans;
+  `main.rs::rename` turns them into a single-file `WorkspaceEdit` after
+  validating the new name with `is_identifier`. `prepare_rename`
+  validates the cursor target up front (returns the range under the
+  cursor, or nothing when the target can't be renamed).
+
+Limitation: `match`-arm bindings still store a bare string in the core
+AST, so they resolve for shadowing but report `def: None`; references
+and rename decline them. Adding a span there is the remaining piece.
+Cross-file rename waits on Phase 5.
 
 ## Phase 5: cross-file and workspace
 
@@ -199,14 +229,16 @@ span work.
 
 ## Cross-cutting infrastructure
 
-- **AST spans on patterns and params (core change).** Today `Pattern`,
-  `Assign` targets, and `Fn`/`For` binders store a bare `String` with no
-  span, which is why go-to-definition only works for `name := ...` and
-  why params and loop vars cannot be jumped to, found, or renamed. Adding
-  a span beside each binding name in the AST (recorded by the parser,
-  ignored by the compiler) is the single biggest enabler. Do it before
-  references and rename. It ripples through `ast.rs`, `parser.rs`, and
-  the exhaustive matches in `compiler.rs`/`fold.rs`.
+- **AST spans on patterns and params (core change). DONE.** `Pattern`,
+  `Assign` targets, and `Fn`/`For`/`Try` binders now hold an
+  `ast::Binder { name, span }` instead of a bare `String`. `Binder`
+  `Deref`s to `str`, so `compiler.rs`/`fold.rs` were almost untouched
+  (only sites that needed a `String` — `fn_name_hint`, a couple of error
+  variants — changed to `.name.clone()`; `compile_for`/`compile_try`
+  signatures took `&[Binder]`/`&(Binder, _)`). The parser records each
+  span via `parse_ident_binder`. This was the prerequisite for 4b/4c and
+  also made params/loop-vars/destructured-names jumpable. The one
+  remaining gap is `MatchPattern` bindings, still bare strings.
 - **Parse-tree caching.** Hover, definition, and completion each call
   `vm::parse_tree`, so the file is re-parsed per request. Cache one tree
   per document, keyed on the text (or version), and invalidate on change.
@@ -235,7 +267,8 @@ span work.
    `name := fn(...)` signatures the resolver records.
 3. ~~Document symbols (4a).~~ **Done.** A decl-tree outline reusing the
    recovered AST and `fn_signature`; functions nest their inner decls.
-4. AST spans for patterns/params, then references (4b) and rename (4c).
+4. ~~AST spans for patterns/params, then references (4b) and rename
+   (4c).~~ **Done** (except `match`-binding spans). See "Phase 4b/4c".
 5. Parse-tree caching once requests multiply.
 6. Cross-file/workspace (Phase 5).
 7. Distribution and Tier-2/3 recovery as polish.

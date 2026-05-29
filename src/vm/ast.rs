@@ -5,6 +5,8 @@
 //! Later phases extend `Expr` with additional variants; this enum will
 //! grow but existing variants stay stable.
 
+use std::ops::Deref;
+
 use crate::vm::token::Span;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,6 +18,31 @@ pub struct SpannedExpr {
 impl SpannedExpr {
     pub fn new(expr: Expr, span: Span) -> Self {
         SpannedExpr { expr, span }
+    }
+}
+
+/// A binding-name occurrence in the source: the name plus the span where
+/// it is written. Used wherever the AST introduces (or, for `=`, targets)
+/// a binding — pattern leaves, `...rest`, params, loop variables, the
+/// `catch` parameter, and assignment targets. The compiler reads only the
+/// name (via `Deref<str>`); the span exists for tooling that needs to
+/// locate the declaration itself (the LSP's references and rename).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Binder {
+    pub name: String,
+    pub span: Span,
+}
+
+impl Binder {
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
+        Binder { name: name.into(), span }
+    }
+}
+
+impl Deref for Binder {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.name
     }
 }
 
@@ -37,7 +64,7 @@ impl SpannedExpr {
 pub fn expr_to_pattern(e: &SpannedExpr) -> Result<Pattern, PatternError> {
     match &e.expr {
         Expr::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
-        Expr::Ident(name) => Ok(Pattern::Ident(name.clone())),
+        Expr::Ident(name) => Ok(Pattern::Ident(Binder::new(name.clone(), e.span))),
         Expr::Array(items) => {
             let mut out_items = Vec::with_capacity(items.len());
             let mut rest = None;
@@ -47,7 +74,7 @@ pub fn expr_to_pattern(e: &SpannedExpr) -> Result<Pattern, PatternError> {
                         return Err(PatternError::RestNotLast(item.span));
                     }
                     match &inner.expr {
-                        Expr::Ident(n) => rest = Some(n.clone()),
+                        Expr::Ident(n) => rest = Some(Binder::new(n.clone(), inner.span)),
                         _ => return Err(PatternError::RestNotIdent(inner.span)),
                     }
                 } else {
@@ -72,7 +99,7 @@ pub fn expr_to_pattern(e: &SpannedExpr) -> Result<Pattern, PatternError> {
                             return Err(PatternError::RestNotLast(inner.span));
                         }
                         match &inner.expr {
-                            Expr::Ident(n) => rest = Some(n.clone()),
+                            Expr::Ident(n) => rest = Some(Binder::new(n.clone(), inner.span)),
                             _ => return Err(PatternError::RestNotIdent(inner.span)),
                         }
                     }
@@ -132,14 +159,14 @@ pub enum Pattern {
     /// `_` — discard the value at this slot.
     Wildcard,
     /// A bare name. Binds the value to `name`.
-    Ident(String),
+    Ident(Binder),
     /// `[p1, p2, ..., ...rest?]` — array destructuring. Missing
     /// elements bind to `null`.
-    Array { items: Vec<Pattern>, rest: Option<String> },
+    Array { items: Vec<Pattern>, rest: Option<Binder> },
     /// `${k1, k2: alias, ..., ...rest?}` — object destructuring.
     /// Missing keys bind to `null`. `rest` collects all unconsumed
     /// keys into a new object (insertion order preserved).
-    Object { fields: Vec<ObjectField>, rest: Option<String> },
+    Object { fields: Vec<ObjectField>, rest: Option<Binder> },
 }
 
 impl Pattern {
@@ -149,14 +176,14 @@ impl Pattern {
     pub fn leaf_names(&self, out: &mut Vec<String>) {
         match self {
             Pattern::Wildcard => {}
-            Pattern::Ident(name) => out.push(name.clone()),
+            Pattern::Ident(name) => out.push(name.name.clone()),
             Pattern::Array { items, rest } => {
                 for it in items { it.leaf_names(out); }
-                if let Some(r) = rest { out.push(r.clone()); }
+                if let Some(r) = rest { out.push(r.name.clone()); }
             }
             Pattern::Object { fields, rest } => {
                 for f in fields { f.pattern.leaf_names(out); }
-                if let Some(r) = rest { out.push(r.clone()); }
+                if let Some(r) = rest { out.push(r.name.clone()); }
             }
         }
     }
@@ -266,8 +293,10 @@ pub enum Expr {
     Decl(Pattern, Box<SpannedExpr>),
 
     // `x = expr` (op = None) or `x op= expr` (op = Some(BinOp)).
-    // Assigns to an existing binding (error if absent).
-    Assign(String, Option<BinOp>, Box<SpannedExpr>),
+    // Assigns to an existing binding (error if absent). The `Binder` is
+    // a *reference* to that binding (its name + the span where it is
+    // written), not a new declaration.
+    Assign(Binder, Option<BinOp>, Box<SpannedExpr>),
 
     // `[a, b] = rhs` / `${k1, k2: alias} = rhs` — destructure rhs into
     // EXISTING bindings. Spec §11 says patterns work on both `:=` and
@@ -298,7 +327,7 @@ pub enum Expr {
     // `for[]` array-collecting form per spec §7.4 / §9.3.
     For {
         is_array: bool,
-        vars: Vec<String>,
+        vars: Vec<Binder>,
         iter: Box<SpannedExpr>,
         body: Box<SpannedExpr>,
     },
@@ -369,7 +398,7 @@ pub enum Expr {
     Fn {
         params: Vec<Pattern>,
         defaults: Vec<Option<Box<SpannedExpr>>>,
-        rest: Option<String>,
+        rest: Option<Binder>,
         body: Box<SpannedExpr>,
         is_generator: bool,
     },
@@ -391,7 +420,7 @@ pub enum Expr {
     // always a `Scope` per grammar.
     Try {
         body: Box<SpannedExpr>,
-        catch: Option<(String, Box<SpannedExpr>)>,
+        catch: Option<(Binder, Box<SpannedExpr>)>,
     },
 
     // `raise expr` — raises a string error (the value is coerced via

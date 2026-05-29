@@ -110,6 +110,7 @@ impl LanguageServer for Backend {
                     retrigger_characters: Some(vec![",".to_string()]),
                     ..Default::default()
                 }),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
         })
@@ -229,8 +230,59 @@ impl LanguageServer for Backend {
         Ok(signature_help(&text, offset, &program, &self.catalog))
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let Some(text) = self.docs.lock().unwrap().get(&uri).cloned() else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        let enc = self.encoding.lock().unwrap().clone();
+        let symbols = analysis::document_symbols(&program)
+            .into_iter()
+            .map(|node| to_document_symbol(node, &text, &enc))
+            .collect();
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Project an [`analysis::SymbolNode`] onto the LSP [`DocumentSymbol`],
+/// converting its byte-offset spans to ranges in the negotiated encoding.
+#[allow(deprecated)] // `DocumentSymbol::deprecated` is a required struct field
+fn to_document_symbol(
+    node: analysis::SymbolNode,
+    text: &str,
+    enc: &PositionEncodingKind,
+) -> DocumentSymbol {
+    let range = |span: tigr::vm::token::Span| Range {
+        start: offset_to_position(text, span.start, enc),
+        end: offset_to_position(text, span.end, enc),
+    };
+    let kind = match node.category {
+        analysis::SymbolCategory::Function => SymbolKind::FUNCTION,
+        analysis::SymbolCategory::Variable => SymbolKind::VARIABLE,
+        analysis::SymbolCategory::Module => SymbolKind::MODULE,
+    };
+    let children: Vec<DocumentSymbol> = node
+        .children
+        .into_iter()
+        .map(|child| to_document_symbol(child, text, enc))
+        .collect();
+    DocumentSymbol {
+        name: node.name,
+        detail: node.detail,
+        kind,
+        tags: None,
+        deprecated: None,
+        range: range(node.range),
+        selection_range: range(node.selection),
+        children: (!children.is_empty()).then_some(children),
     }
 }
 

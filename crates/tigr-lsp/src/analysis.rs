@@ -262,6 +262,143 @@ pub fn canonical_module(program: &Block, name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+// ---------------- document symbols (outline) ----------------
+
+/// What kind of entity a [`SymbolNode`] is, kept independent of the LSP
+/// `SymbolKind` so this module stays free of `tower_lsp`. The caller maps
+/// it onto the protocol type.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SymbolCategory {
+    Function,
+    Variable,
+    Module,
+}
+
+/// One node in the document outline. Spans are byte offsets into the
+/// source; the caller projects them onto LSP ranges. `range` covers the
+/// whole declaration, `selection` just the name.
+pub struct SymbolNode {
+    pub name: String,
+    /// A function's signature, or an import's `'name'`; `None` otherwise.
+    pub detail: Option<String>,
+    pub category: SymbolCategory,
+    pub range: Span,
+    pub selection: Span,
+    /// Nested declarations inside a function body.
+    pub children: Vec<SymbolNode>,
+}
+
+/// The outline of `program`: top-level declarations, with the locals of a
+/// `name := fn(...)` nested beneath it. Only `:=` declarations surface;
+/// every other statement is skipped.
+pub fn document_symbols(program: &Block) -> Vec<SymbolNode> {
+    let mut out = Vec::new();
+    symbols_in_block(program, &mut out);
+    out
+}
+
+fn symbols_in_block(block: &Block, out: &mut Vec<SymbolNode>) {
+    for se in block.stmts.iter().chain(block.tail.as_deref()) {
+        if let Expr::Decl(pat, init) = &se.expr {
+            decl_symbols(pat, se.span, init, out);
+        }
+    }
+}
+
+/// Emit the symbol(s) for one declaration. A bare `Ident` becomes a single
+/// precisely-located node; a destructuring pattern becomes one node per
+/// bound name, all sharing the declaration's span (the AST keeps no span
+/// for individual destructured names).
+fn decl_symbols(pat: &Pattern, decl_span: Span, init: &SpannedExpr, out: &mut Vec<SymbolNode>) {
+    match pat {
+        Pattern::Ident(name) => out.push(ident_decl_symbol(name, decl_span, init)),
+        Pattern::Wildcard => {}
+        Pattern::Array { .. } | Pattern::Object { .. } => {
+            let mut names = Vec::new();
+            pattern_names(pat, &mut names);
+            for name in names {
+                out.push(SymbolNode {
+                    name,
+                    detail: None,
+                    category: SymbolCategory::Variable,
+                    range: decl_span,
+                    selection: decl_span,
+                    children: Vec::new(),
+                });
+            }
+        }
+    }
+}
+
+/// A `name := …` declaration. A `fn` initialiser becomes a Function (with
+/// its signature and nested locals); an `import` becomes a Module; anything
+/// else a Variable.
+fn ident_decl_symbol(name: &str, decl_span: Span, init: &SpannedExpr) -> SymbolNode {
+    let selection = Span::new(decl_span.start, decl_span.start + name.len(), decl_span.line);
+    match &init.expr {
+        Expr::Fn { params, defaults, rest, body, .. } => {
+            let mut children = Vec::new();
+            if let Expr::Scope(b) | Expr::Block(b) = &body.expr {
+                symbols_in_block(b, &mut children);
+            }
+            SymbolNode {
+                name: name.to_string(),
+                detail: Some(fn_signature(name, params, defaults, rest.as_deref())),
+                category: SymbolCategory::Function,
+                range: decl_span,
+                selection,
+                children,
+            }
+        }
+        Expr::Import(arg) => {
+            let detail = match &arg.expr {
+                Expr::Str(module) => Some(format!("import '{module}'")),
+                _ => None,
+            };
+            SymbolNode {
+                name: name.to_string(),
+                detail,
+                category: SymbolCategory::Module,
+                range: decl_span,
+                selection,
+                children: Vec::new(),
+            }
+        }
+        _ => SymbolNode {
+            name: name.to_string(),
+            detail: None,
+            category: SymbolCategory::Variable,
+            range: decl_span,
+            selection,
+            children: Vec::new(),
+        },
+    }
+}
+
+/// Every name bound by a (possibly nested) destructuring pattern.
+fn pattern_names(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Wildcard => {}
+        Pattern::Ident(name) => out.push(name.clone()),
+        Pattern::Array { items, rest } => {
+            for it in items {
+                pattern_names(it, out);
+            }
+            if let Some(r) = rest {
+                out.push(r.clone());
+            }
+        }
+        Pattern::Object { fields, rest } => {
+            for fld in fields {
+                pattern_names(&fld.pattern, out);
+            }
+            if let Some(r) = rest {
+                out.push(r.clone());
+            }
+        }
+    }
+}
+
 fn contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
 }
@@ -732,5 +869,44 @@ mod tests {
         let prog = parse_tree("M := import 'Math';");
         assert_eq!(canonical_module(&prog, "M"), "Math");
         assert_eq!(canonical_module(&prog, "Other"), "Other");
+    }
+
+    #[test]
+    fn document_symbols_categorise_top_level_decls() {
+        let src = "Math := import 'Math';\nx := 41;\nadd := fn(a, b) { a + b };";
+        let syms = document_symbols(&parse_tree(src));
+        let by_name = |n: &str| syms.iter().find(|s| s.name == n).unwrap();
+
+        let m = by_name("Math");
+        assert!(m.category == SymbolCategory::Module);
+        assert_eq!(m.detail.as_deref(), Some("import 'Math'"));
+
+        let x = by_name("x");
+        assert!(x.category == SymbolCategory::Variable);
+
+        let add = by_name("add");
+        assert!(add.category == SymbolCategory::Function);
+        assert_eq!(add.detail.as_deref(), Some("add(a, b)"));
+        // The selection range covers just the name, not the whole decl.
+        assert_eq!(span_len(add.selection), "add".len());
+    }
+
+    #[test]
+    fn document_symbols_nest_locals_under_a_function() {
+        let src = "outer := fn(p) { helper := fn(q) { q }; p };";
+        let syms = document_symbols(&parse_tree(src));
+        assert_eq!(syms.len(), 1);
+        let outer = &syms[0];
+        let helper = outer.children.iter().find(|s| s.name == "helper").unwrap();
+        assert!(helper.category == SymbolCategory::Function);
+        assert_eq!(helper.detail.as_deref(), Some("helper(q)"));
+    }
+
+    #[test]
+    fn document_symbols_expand_destructuring_decls() {
+        let src = "[a, b] := [1, 2];";
+        let syms = document_symbols(&parse_tree(src));
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"a") && names.contains(&"b"), "got {names:?}");
     }
 }

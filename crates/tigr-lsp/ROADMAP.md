@@ -18,6 +18,8 @@ forward-looking.
   parameter list). See "Phase 3a, as built" below.
 - Phase 3b: completion (member-after-dot + identifier completion).
 - Phase 3c: signature help (active-parameter popup inside a call).
+- Phase 4a: document symbols (outline of top-level declarations, with a
+  function's nested declarations beneath it). See "Phase 4a, as built".
 
 ## Guiding principles (unchanged)
 
@@ -151,10 +153,31 @@ Signature help (`textDocument/signatureHelp`, `signature_help` in
 
 ## Phase 4: navigation and editing
 
-4a. Document symbols (`textDocument/documentSymbol`). Outline of
-top-level declarations and nested functions. Small, high value (powers
-breadcrumbs, telescope symbol search, the outline view). Only needs decl
-spans, which exist.
+### Phase 4a, as built
+
+Document symbols (`textDocument/documentSymbol`,
+`analysis::document_symbols` + `to_document_symbol` in `main.rs`). Walks
+the recovered tree for top-level `:=` declarations and emits a nested
+`DocumentSymbol` tree:
+- A `name := fn(...)` is a `FUNCTION` whose `detail` is the signature
+  (reusing `fn_signature`); its body block is walked recursively so
+  nested declarations appear as children.
+- A `name := import 'Mod'` is a `MODULE` with `detail` `import 'Mod'`.
+- Any other `name := …` is a `VARIABLE`.
+- Destructuring decls (`[a, b] := …`, `${x} := …`) expand to one
+  `VARIABLE` per bound name; since the AST keeps no per-name span, they
+  share the declaration's range (the same span limitation as go-to-def).
+The `range` covers the whole declaration; the `selection_range` covers
+just the name (`decl_span.start .. start + name.len()`, the same
+name-at-start fact go-to-def relies on). Only declarations surface —
+other statements are skipped — and only function bodies are descended
+into, so the outline stays a clean decl tree rather than every block.
+`analysis` stays free of `tower_lsp`: it returns a `SymbolNode` tree with
+a local `SymbolCategory`, which `main.rs` maps to the LSP types.
+
+Original plan: Outline of top-level declarations and nested functions.
+Small, high value (powers breadcrumbs, telescope symbol search, the
+outline view). Only needs decl spans, which exist.
 
 4b. References (`textDocument/references`). Find every `Ident` that
 resolves to the same binding as the one under the cursor. Reuses the
@@ -210,7 +233,8 @@ span work.
 2. ~~Completion (3b), then signature help (3c).~~ **Done.** Both reuse
    `catalog.rs`; 3b/3c also reuse `analysis::locals_in_scope` and the
    `name := fn(...)` signatures the resolver records.
-3. Document symbols (4a). Cheap and useful.
+3. ~~Document symbols (4a).~~ **Done.** A decl-tree outline reusing the
+   recovered AST and `fn_signature`; functions nest their inner decls.
 4. AST spans for patterns/params, then references (4b) and rename (4c).
 5. Parse-tree caching once requests multiply.
 6. Cross-file/workspace (Phase 5).

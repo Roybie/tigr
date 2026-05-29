@@ -30,6 +30,34 @@ print(b[0]);            // => 104
 | [`extend(b, other) -> Bytes`](#extendb-other---bytes) | Appends every byte of `other` to `b`, in place. |
 | [`slice(b, start, end) -> Bytes`](#sliceb-start-end---bytes) | Copies `b[start..end]` into a new buffer. |
 | [`concat(a, b) -> Bytes`](#concata-b---bytes) | Builds a new buffer holding `a` followed by `b`. |
+| [`read_u8(b, offset) -> Int`](#read_u8b-offset---int) | Reads the unsigned 8-bit integer (one byte) at `offset`. |
+| [`read_i8(b, offset) -> Int`](#read_i8b-offset---int) | Reads the signed 8-bit integer (one byte) at `offset`. |
+| [`read_u16_be(b, offset) -> Int`](#read_u16_beb-offset---int) | Reads a big-endian unsigned 16-bit integer at `offset`. |
+| [`read_u16_le(b, offset) -> Int`](#read_u16_leb-offset---int) | Reads a little-endian unsigned 16-bit integer at `offset`. |
+| [`read_i16_be(b, offset) -> Int`](#read_i16_beb-offset---int) | Reads a big-endian signed 16-bit integer at `offset`. |
+| [`read_i16_le(b, offset) -> Int`](#read_i16_leb-offset---int) | Reads a little-endian signed 16-bit integer at `offset`. |
+| [`read_u32_be(b, offset) -> Int`](#read_u32_beb-offset---int) | Reads a big-endian unsigned 32-bit integer at `offset`. |
+| [`read_u32_le(b, offset) -> Int`](#read_u32_leb-offset---int) | Reads a little-endian unsigned 32-bit integer at `offset`. |
+| [`read_i32_be(b, offset) -> Int`](#read_i32_beb-offset---int) | Reads a big-endian signed 32-bit integer at `offset`. |
+| [`read_i32_le(b, offset) -> Int`](#read_i32_leb-offset---int) | Reads a little-endian signed 32-bit integer at `offset`. |
+| [`read_u64_be(b, offset) -> Int`](#read_u64_beb-offset---int) | Reads a big-endian unsigned 64-bit integer at `offset`. |
+| [`read_u64_le(b, offset) -> Int`](#read_u64_leb-offset---int) | Reads a little-endian unsigned 64-bit integer at `offset`. |
+| [`read_i64_be(b, offset) -> Int`](#read_i64_beb-offset---int) | Reads a big-endian signed 64-bit integer at `offset`. |
+| [`read_i64_le(b, offset) -> Int`](#read_i64_leb-offset---int) | Reads a little-endian signed 64-bit integer at `offset`. |
+| [`write_u8(b, offset, value) -> Bytes`](#write_u8b-offset-value---bytes) | Writes `value` as an unsigned 8-bit integer (one byte) at `offset`, in place. |
+| [`write_i8(b, offset, value) -> Bytes`](#write_i8b-offset-value---bytes) | Writes `value` as a signed 8-bit integer (one byte) at `offset`, in place. |
+| [`write_u16_be(b, offset, value) -> Bytes`](#write_u16_beb-offset-value---bytes) | Writes `value` as a big-endian unsigned 16-bit integer at `offset`, in place. |
+| [`write_u16_le(b, offset, value) -> Bytes`](#write_u16_leb-offset-value---bytes) | Writes `value` as a little-endian unsigned 16-bit integer at `offset`, in place. |
+| [`write_i16_be(b, offset, value) -> Bytes`](#write_i16_beb-offset-value---bytes) | Writes `value` as a big-endian signed 16-bit integer at `offset`, in place. |
+| [`write_i16_le(b, offset, value) -> Bytes`](#write_i16_leb-offset-value---bytes) | Writes `value` as a little-endian signed 16-bit integer at `offset`, in place. |
+| [`write_u32_be(b, offset, value) -> Bytes`](#write_u32_beb-offset-value---bytes) | Writes `value` as a big-endian unsigned 32-bit integer at `offset`, in place. |
+| [`write_u32_le(b, offset, value) -> Bytes`](#write_u32_leb-offset-value---bytes) | Writes `value` as a little-endian unsigned 32-bit integer at `offset`, in place. |
+| [`write_i32_be(b, offset, value) -> Bytes`](#write_i32_beb-offset-value---bytes) | Writes `value` as a big-endian signed 32-bit integer at `offset`, in place. |
+| [`write_i32_le(b, offset, value) -> Bytes`](#write_i32_leb-offset-value---bytes) | Writes `value` as a little-endian signed 32-bit integer at `offset`, in place. |
+| [`write_u64_be(b, offset, value) -> Bytes`](#write_u64_beb-offset-value---bytes) | Writes `value` as a big-endian unsigned 64-bit integer at `offset`, in place. |
+| [`write_u64_le(b, offset, value) -> Bytes`](#write_u64_leb-offset-value---bytes) | Writes `value` as a little-endian unsigned 64-bit integer at `offset`, in place. |
+| [`write_i64_be(b, offset, value) -> Bytes`](#write_i64_beb-offset-value---bytes) | Writes `value` as a big-endian signed 64-bit integer at `offset`, in place. |
+| [`write_i64_le(b, offset, value) -> Bytes`](#write_i64_leb-offset-value---bytes) | Writes `value` as a little-endian signed 64-bit integer at `offset`, in place. |
 
 
 ### `new(n, fill?) -> Bytes`
@@ -237,9 +265,7 @@ For binary protocols, the module has a family of fixed-width integer readers and
 
 A reader takes the buffer and a byte offset, and returns the decoded `Int`. A writer takes the buffer, a byte offset, and the value, writes it in place, and returns the buffer. A reader raises a string error if the offset is negative or the field would run off the end of the buffer; `read_u64_*` raises a catchable `overflow` error if the value does not fit a signed 64-bit `Int`. A writer raises a string error if the offset is out of bounds, or if the value does not fit the field (an unsigned writer also rejects a negative value).
 
-The readers are: `read_u8`, `read_i8`, `read_u16_be`, `read_u16_le`, `read_i16_be`, `read_i16_le`, `read_u32_be`, `read_u32_le`, `read_i32_be`, `read_i32_le`, `read_u64_be`, `read_u64_le`, `read_i64_be`, `read_i64_le`. Each has the signature `read_TYPE(b, offset) -> Int`.
-
-The writers are: `write_u8`, `write_i8`, `write_u16_be`, `write_u16_le`, `write_i16_be`, `write_i16_le`, `write_u32_be`, `write_u32_le`, `write_i32_be`, `write_i32_le`, `write_u64_be`, `write_u64_le`, `write_i64_be`, `write_i64_le`. Each has the signature `write_TYPE(b, offset, value) -> Bytes`.
+Every reader has the signature `read_TYPE(b, offset) -> Int`, and every writer has the signature `write_TYPE(b, offset, value) -> Bytes`. The two families are listed function by function below.
 
 ```tigr
 Bytes := import 'Bytes';
@@ -260,6 +286,118 @@ print(Bytes.read_u16_be(pair, 0));              // => 4660
 print(Bytes.read_u16_le(pair, 0));              // => 13330
 print(Bytes.read_i8(Bytes.from_array([255]), 0));   // => -1
 ```
+
+### `read_u8(b, offset) -> Int`
+
+Reads the unsigned 8-bit integer (one byte) at `offset`.
+
+### `read_i8(b, offset) -> Int`
+
+Reads the signed 8-bit integer (one byte) at `offset`.
+
+### `read_u16_be(b, offset) -> Int`
+
+Reads a big-endian unsigned 16-bit integer at `offset`.
+
+### `read_u16_le(b, offset) -> Int`
+
+Reads a little-endian unsigned 16-bit integer at `offset`.
+
+### `read_i16_be(b, offset) -> Int`
+
+Reads a big-endian signed 16-bit integer at `offset`.
+
+### `read_i16_le(b, offset) -> Int`
+
+Reads a little-endian signed 16-bit integer at `offset`.
+
+### `read_u32_be(b, offset) -> Int`
+
+Reads a big-endian unsigned 32-bit integer at `offset`.
+
+### `read_u32_le(b, offset) -> Int`
+
+Reads a little-endian unsigned 32-bit integer at `offset`.
+
+### `read_i32_be(b, offset) -> Int`
+
+Reads a big-endian signed 32-bit integer at `offset`.
+
+### `read_i32_le(b, offset) -> Int`
+
+Reads a little-endian signed 32-bit integer at `offset`.
+
+### `read_u64_be(b, offset) -> Int`
+
+Reads a big-endian unsigned 64-bit integer at `offset`. Raises a catchable `overflow` error if the value does not fit a signed 64-bit `Int`.
+
+### `read_u64_le(b, offset) -> Int`
+
+Reads a little-endian unsigned 64-bit integer at `offset`. Raises a catchable `overflow` error if the value does not fit a signed 64-bit `Int`.
+
+### `read_i64_be(b, offset) -> Int`
+
+Reads a big-endian signed 64-bit integer at `offset`.
+
+### `read_i64_le(b, offset) -> Int`
+
+Reads a little-endian signed 64-bit integer at `offset`.
+
+### `write_u8(b, offset, value) -> Bytes`
+
+Writes `value` as an unsigned 8-bit integer (one byte) at `offset`, in place.
+
+### `write_i8(b, offset, value) -> Bytes`
+
+Writes `value` as a signed 8-bit integer (one byte) at `offset`, in place.
+
+### `write_u16_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian unsigned 16-bit integer at `offset`, in place.
+
+### `write_u16_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian unsigned 16-bit integer at `offset`, in place.
+
+### `write_i16_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian signed 16-bit integer at `offset`, in place.
+
+### `write_i16_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian signed 16-bit integer at `offset`, in place.
+
+### `write_u32_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian unsigned 32-bit integer at `offset`, in place.
+
+### `write_u32_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian unsigned 32-bit integer at `offset`, in place.
+
+### `write_i32_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian signed 32-bit integer at `offset`, in place.
+
+### `write_i32_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian signed 32-bit integer at `offset`, in place.
+
+### `write_u64_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian unsigned 64-bit integer at `offset`, in place.
+
+### `write_u64_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian unsigned 64-bit integer at `offset`, in place.
+
+### `write_i64_be(b, offset, value) -> Bytes`
+
+Writes `value` as a big-endian signed 64-bit integer at `offset`, in place.
+
+### `write_i64_le(b, offset, value) -> Bytes`
+
+Writes `value` as a little-endian signed 64-bit integer at `offset`, in place.
 
 ## See also
 

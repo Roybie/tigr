@@ -48,6 +48,12 @@ use crate::vm::token::{
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// Parse errors collected during recovery. The block loop catches a
+    /// failed statement, records it here, resynchronises to the next `;`
+    /// or block terminator, and keeps going — so one syntax error no
+    /// longer hides every later one. The run path still reports only the
+    /// first (see the free `parse` function); the LSP consumes them all.
+    errors: Vec<ParseError>,
 }
 
 enum AssignKind {
@@ -57,15 +63,14 @@ enum AssignKind {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, errors: Vec::new() }
     }
 
-    pub fn parse_program(&mut self) -> Result<Block, ParseError> {
-        let block = self.parse_block_until(&[Token::Eof])?;
-        if !self.check(&Token::Eof) {
-            return Err(self.err(ParseErrorKind::ExpectedEof(self.peek().clone())));
-        }
-        Ok(block)
+    /// Parse the whole token stream, recovering past errors. Always
+    /// returns a (possibly partial) program plus every error collected.
+    pub fn parse_program_recover(mut self) -> (Block, Vec<ParseError>) {
+        let block = self.parse_block_until(&[Token::Eof]);
+        (block, self.errors)
     }
 
     // -- token-stream helpers ------------------------------------------
@@ -122,42 +127,94 @@ impl Parser {
 
     // -- block ---------------------------------------------------------
 
-    fn parse_block_until(&mut self, terminators: &[Token]) -> Result<Block, ParseError> {
+    /// Parse a `;`-separated block up to one of `terminators` (or EOF).
+    /// Infallible: a statement that fails to parse is recorded in
+    /// `self.errors`, after which we resynchronise to the next statement
+    /// boundary and continue, so later statements still parse.
+    fn parse_block_until(&mut self, terminators: &[Token]) -> Block {
         let mut stmts = Vec::new();
         let mut tail: Option<Box<SpannedExpr>> = None;
 
-        if self.check_any(terminators) {
-            return Ok(Block { stmts, tail });
+        loop {
+            if self.check_any(terminators) || self.check(&Token::Eof) {
+                break;
+            }
+            match self.parse_expr() {
+                Ok(expr) => {
+                    if self.matches(&Token::Semicolon) {
+                        stmts.push(expr);
+                        continue;
+                    } else if self.check_any(terminators) || self.check(&Token::Eof) {
+                        tail = Some(Box::new(expr));
+                        break;
+                    } else {
+                        // Parsed fine, but a second expression starts with
+                        // no `;` between. Record it as a forgotten `;` at
+                        // the end of this expression, then treat this as a
+                        // statement and keep going — don't skip the next
+                        // expression, which a generic resync would.
+                        let prev = self.tokens[self.pos.saturating_sub(1)].span;
+                        self.errors.push(ParseError::new(
+                            ParseErrorKind::MissingSemicolon {
+                                found: self.peek().clone(),
+                            },
+                            Span::new(prev.end, prev.end + 1, prev.line),
+                        ));
+                        stmts.push(expr);
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    self.errors.push(e);
+                    // Resync to the next statement boundary. If that runs
+                    // out the input, stop — the block ends here.
+                    if !self.synchronize(terminators) {
+                        break;
+                    }
+                }
+            }
         }
 
+        Block { stmts, tail }
+    }
+
+    /// Skip tokens after a parse error until we reach a plausible place to
+    /// resume: a `;` (consumed) or one of `terminators`/EOF (left in
+    /// place for the caller). Bracket depth is tracked so a `;` *inside* a
+    /// nested `()`/`[]`/`{}` doesn't end the skip prematurely, and a
+    /// terminator only stops the skip at depth zero. Always advances at
+    /// least one token so the caller's loop can't spin. Returns `false`
+    /// when it reaches EOF (nothing left to parse).
+    fn synchronize(&mut self, terminators: &[Token]) -> bool {
+        let mut depth = 0i32;
         loop {
-            let expr = self.parse_expr()?;
-            if self.matches(&Token::Semicolon) {
-                stmts.push(expr);
-                if self.check_any(terminators) {
-                    // trailing `;` → tail stays None → block value is null
-                    return Ok(Block { stmts, tail });
-                }
-                continue;
-            } else if self.check_any(terminators) {
-                tail = Some(Box::new(expr));
-                return Ok(Block { stmts, tail });
-            } else {
-                // No `;` and the next token isn't a block terminator, so a
-                // second expression is starting where a separator should
-                // be. Report it as a forgotten `;` pointing at the end of
-                // this expression (the last token we consumed) — that's
-                // where the `;` belongs — instead of letting it surface
-                // downstream as a confusing "unexpected token" on the
-                // next line.
-                let prev = self.tokens[self.pos.saturating_sub(1)].span;
-                return Err(ParseError::new(
-                    ParseErrorKind::MissingSemicolon {
-                        found: self.peek().clone(),
-                    },
-                    Span::new(prev.end, prev.end + 1, prev.line),
-                ));
+            if self.check(&Token::Eof) {
+                return false;
             }
+            // A terminator at depth zero ends the enclosing block; leave
+            // it in place for the caller to handle.
+            if depth == 0 && self.check_any(terminators) {
+                return true;
+            }
+            match self.peek() {
+                Token::LParen | Token::LBrack | Token::LBrace => depth += 1,
+                Token::RParen | Token::RBrack | Token::RBrace => {
+                    // Only descend for matched closers; a stray depth-zero
+                    // closer is junk that we consume below to make progress.
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                // A `;` at depth zero is the next statement boundary:
+                // consume it and resume parsing after it.
+                Token::Semicolon if depth == 0 => {
+                    self.advance();
+                    return true;
+                }
+                _ => {}
+            }
+            // Always advance — guarantees the caller's loop makes progress.
+            self.advance();
         }
     }
 
@@ -567,7 +624,7 @@ impl Parser {
             Token::LParen => {
                 let lparen = self.peek_span();
                 self.advance();
-                let block = self.parse_block_until(&[Token::RParen])?;
+                let block = self.parse_block_until(&[Token::RParen]);
                 let rparen = self.expect(&Token::RParen)?;
                 let span = lparen.join(rparen);
                 Ok(SpannedExpr::new(Expr::Block(block), span))
@@ -1240,7 +1297,7 @@ impl Parser {
 
     fn parse_scope(&mut self) -> Result<SpannedExpr, ParseError> {
         let lbrace = self.expect(&Token::LBrace)?;
-        let block = self.parse_block_until(&[Token::RBrace])?;
+        let block = self.parse_block_until(&[Token::RBrace]);
         let rbrace = self.expect(&Token::RBrace)?;
         let span = lbrace.join(rbrace);
         Ok(SpannedExpr::new(Expr::Scope(block), span))
@@ -1416,6 +1473,21 @@ impl Parser {
     }
 }
 
+/// Parse, recovering past errors. Returns a (possibly partial) program
+/// and every parse error found. Used by tooling (the LSP) that wants all
+/// diagnostics at once.
+pub fn parse_recover(tokens: Vec<SpannedToken>) -> (Block, Vec<ParseError>) {
+    Parser::new(tokens).parse_program_recover()
+}
+
+/// Parse, reporting only the first error. This is the run path's
+/// contract: a program with any syntax error can't execute, so the first
+/// error is all the caller needs.
 pub fn parse(tokens: Vec<SpannedToken>) -> Result<Block, ParseError> {
-    Parser::new(tokens).parse_program()
+    let (block, mut errors) = parse_recover(tokens);
+    if errors.is_empty() {
+        Ok(block)
+    } else {
+        Err(errors.remove(0))
+    }
 }

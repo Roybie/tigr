@@ -19,7 +19,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use tigr::vm::compile_source_with_id;
+use tigr::vm::check_source;
 use tigr::vm::error::Error as TigrError;
 use tigr::vm::source_map::SourceId;
 
@@ -148,28 +148,24 @@ fn compute_diagnostics(
 
     // SourceId only matters for the core's own snippet rendering, which we
     // bypass; UNKNOWN is fine since we render from `text` directly.
-    match compile_source_with_id(text, base_dir, SourceId::UNKNOWN) {
-        Ok(_) => Vec::new(),
-        Err(err) => match error_span(&err) {
-            Some((start, end, message)) => {
-                let range = Range {
+    // check_source recovers past syntax errors, so this is every error in
+    // the file, not just the first.
+    check_source(text, base_dir, SourceId::UNKNOWN)
+        .iter()
+        .filter_map(|err| {
+            let (start, end, message) = error_span(err)?;
+            Some(Diagnostic {
+                range: Range {
                     start: offset_to_position(text, start, enc),
                     end: offset_to_position(text, end, enc),
-                };
-                vec![Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("tigr".into()),
-                    message,
-                    ..Default::default()
-                }]
-            }
-            // A runtime error can't surface from compilation alone, so this
-            // arm is unreachable in practice; drop it rather than guess a
-            // span.
-            None => Vec::new(),
-        },
-    }
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("tigr".into()),
+                message,
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 /// Extract `(start_byte, end_byte, message)` from a frontend error.

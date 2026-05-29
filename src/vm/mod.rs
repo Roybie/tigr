@@ -181,3 +181,42 @@ pub fn compile_source_with_id(
     let main = Compiler::compile_with_source(&program, base_dir, sid)?;
     Ok(main)
 }
+
+/// Collect every diagnostic for a source without running it. Lexes, then
+/// parses with recovery so multiple syntax errors surface at once; only
+/// when parsing is clean does it compile (the compiler is still
+/// fail-fast, so at most one compile error). Errors are stamped with
+/// `sid`. Used by the language server.
+///
+/// Parse and compile errors are not mixed in one pass on purpose: a
+/// partial tree from a failed parse would spawn spurious compile errors
+/// (undeclared variables from dropped declarations, etc.), so we report
+/// the syntax errors alone and let the next edit reveal the rest.
+pub fn check_source(
+    source: &str,
+    base_dir: Option<PathBuf>,
+    sid: SourceId,
+) -> Vec<Error> {
+    let tokens = match Lexer::new(source).tokenize() {
+        Ok(t) => t,
+        Err(mut e) => {
+            e.source = sid;
+            return vec![Error::from(e)];
+        }
+    };
+    let (mut program, parse_errors) = parser::parse_recover(tokens);
+    if !parse_errors.is_empty() {
+        return parse_errors
+            .into_iter()
+            .map(|mut e| {
+                e.source = sid;
+                Error::from(e)
+            })
+            .collect();
+    }
+    fold::fold_program(&mut program);
+    match Compiler::compile_with_source(&program, base_dir, sid) {
+        Ok(_) => Vec::new(),
+        Err(e) => vec![Error::from(e)],
+    }
+}

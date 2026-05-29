@@ -12,6 +12,7 @@
 //! stay pinned to one thread.
 
 mod analysis;
+mod catalog;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +24,11 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use tigr::vm::check_source;
 use tigr::vm::error::Error as TigrError;
+use tigr::vm::lexer::Lexer;
 use tigr::vm::source_map::SourceId;
+use tigr::vm::token::Token;
+
+use crate::catalog::Catalog;
 
 struct Backend {
     client: Client,
@@ -34,6 +39,9 @@ struct Backend {
     /// offsets; this decides whether a column counts bytes (UTF-8) or
     /// UTF-16 code units when we project an offset onto an LSP position.
     encoding: Mutex<PositionEncodingKind>,
+    /// Builtins, stdlib members, and keywords with signatures and docs,
+    /// parsed once from the embedded reference docs. Powers hover.
+    catalog: Catalog,
 }
 
 impl Backend {
@@ -168,7 +176,9 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let program = tigr::vm::parse_tree(&text);
-        let Some(markdown) = analysis::hover(&program, offset) else {
+        let markdown = analysis::hover(&program, offset, &self.catalog)
+            .or_else(|| keyword_hover(&text, offset, &self.catalog));
+        let Some(markdown) = markdown else {
             return Ok(None);
         };
         Ok(Some(Hover {
@@ -183,6 +193,49 @@ impl LanguageServer for Backend {
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Hover text for a keyword token under `offset`, if any. Keywords are
+/// syntax, not AST identifiers, so this scans the token stream rather
+/// than the tree.
+fn keyword_hover(text: &str, offset: usize, catalog: &Catalog) -> Option<String> {
+    let tokens = Lexer::new(text).tokenize().ok()?;
+    let st = tokens
+        .iter()
+        .find(|st| st.span.start <= offset && offset < st.span.end.max(st.span.start + 1))?;
+    let kw = keyword_str(&st.token)?;
+    let doc = catalog.keyword(kw)?;
+    Some(format!("**keyword `{kw}`**\n\n{doc}"))
+}
+
+/// The source spelling of a keyword token, or `None` for any non-keyword
+/// token. Kept explicit (rather than `Token::to_string`) so a string or
+/// identifier that happens to read like a keyword can't trigger it.
+fn keyword_str(t: &Token) -> Option<&'static str> {
+    use Token::*;
+    Some(match t {
+        Fn => "fn",
+        If => "if",
+        Else => "else",
+        For => "for",
+        While => "while",
+        Break => "break",
+        Continue => "continue",
+        Return => "return",
+        Import => "import",
+        Try => "try",
+        Catch => "catch",
+        Raise => "raise",
+        Match => "match",
+        Spawn => "spawn",
+        Go => "go",
+        Yield => "yield",
+        Gen => "gen",
+        Null => "null",
+        True => "true",
+        False => "false",
+        _ => return None,
+    })
 }
 
 /// Run the frontend over `text` and return diagnostics. Empty on success.
@@ -313,6 +366,7 @@ async fn main() {
         client,
         docs: Mutex::new(HashMap::new()),
         encoding: Mutex::new(PositionEncodingKind::UTF16),
+        catalog: Catalog::load(),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

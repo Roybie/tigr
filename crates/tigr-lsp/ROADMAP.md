@@ -12,11 +12,10 @@ forward-looking.
   so multiple parse errors surface at once.
 - Phase 2: go-to-definition and hover, via a lexical resolver over the
   recovered AST (`analysis.rs`, `vm::parse_tree`).
-
-Known weak spot driving this plan: **hover is thin.** It only describes
-local bindings (kind plus definition line). It says nothing for the
-things people most want to inspect: builtins, stdlib members like
-`Math.sqrt`, and keywords.
+- Phase 3a: the symbol catalog (`catalog.rs`) and hover enrichment.
+  Hover now covers `Module.member` access (including aliased imports),
+  bare module names, builtins, keywords, and local functions (with their
+  parameter list). See "Phase 3a, as built" below.
 
 ## Guiding principles (unchanged)
 
@@ -60,26 +59,44 @@ How to build it (decision needed at implementation time):
   needs the comments preserved through the lexer, or a light re-scan of
   the raw text.
 
-Recommendation: start with Option B scanning the raw `stdlib/*.tg` text
-(cheapest path to value), move to a generated catalog only if startup
-cost or sync ever bites. Seed the member-name lists from
-`vim-tigr/autoload/tigr.vim` (already curated) to cross-check coverage.
+Recommendation considered: Option B scanning the raw `stdlib/*.tg` text.
+
+**What shipped (Option C — docs-driven).** Neither A nor B: the catalog
+is parsed from the committed reference Markdown under `docs/stdlib/`,
+embedded with `include_str!`. Every module page and `builtins.md` share
+one shape — a `` # `Name` `` header, an intro paragraph, then one
+`` ### `signature` `` detail section per member (functions *and*
+constants like `Math.PI`). Each section's heading gives the signature;
+the prose up to its first code fence is the docstring. This covers *all*
+modules uniformly — source (Array, Math, …) and native (JSON, IO, Path,
+Time, DateTime, Random, Bytes, BigInt, Os, Net) — with no runtime/heap
+coupling, no AST parsing of `.tg`, and no native-table scan. It can't
+drift from a moved binary and stays in sync with the docs the same edit
+already touches. Cost: a member missing a `### ` section (or a new
+module not added to `MODULE_DOCS`) won't appear; the
+`every_module_doc_parses_to_some_members` test guards the gross failure
+mode. Keywords aren't in the docs pages, so they're a hand-written table
+in `catalog.rs` mirroring the lexer's keyword tokens.
 
 ## Phase 3: hover and completion
 
-This is the user-facing priority because of the thin hover.
+### Phase 3a, as built
 
-3a. Hover enrichment.
-- Detect `Module.member` under the cursor. In the AST that is
-  `Index(Ident("Math"), Str("sqrt"))` (dot-access lowers to `Index` with
-  a string key), so look for that shape and query the catalog.
-- For a bare builtin or module name, query the catalog directly.
-- For a keyword token, show its one-line explanation.
-- For a local binding, improve the current output: if the decl is
-  `name := fn(...)`, show "function" plus its parameter list (read from
-  the `Fn` node); otherwise show the binding kind as today.
-- Render as Markdown: a signature line in a tigr code fence, then the
-  doc text.
+Hover (`analysis::hover` + `keyword_hover` in `main.rs`) tries, in order:
+- `Module.member` under the cursor — `Index(Ident(mod), Str(member))`,
+  with the member `Str` carrying the exact name span. Import aliases are
+  resolved first (`import_aliases`), so `M := import 'Math'; M.sqrt`
+  canonicalizes `M` → `Math` before the catalog lookup.
+- A local binding: a `name := fn(...)` decl shows its signature and
+  "function"; any binding that is itself an import of a known module
+  shows the module doc; otherwise the binding kind plus definition line.
+- A bare module name or builtin: queried directly from the catalog.
+- A keyword token: its one-line explanation (token-stream scan, since
+  keywords aren't AST identifiers).
+
+Rendered as Markdown — a signature in a `tigr` code fence, then the doc.
+
+### Remaining Phase 3 work
 
 3b. Completion (`textDocument/completion`).
 - Member completion after `.`: when the cursor follows `Ident("Mod").`,
@@ -144,15 +161,21 @@ span work.
   ship it, add `--bin tigr-lsp` plus a tarball to `release.yml`, and let
   `install.sh` (or a flag) place it on PATH; then simplify the nvim `cmd`
   to `{ "tigr-lsp" }`.
-- **Tests.** `analysis.rs` (the resolver) should get Rust unit tests, and
-  a small in-process LSP harness would replace the ad-hoc Python stdio
-  scripts used to verify behavior so far.
+- **Tests.** `catalog.rs` and `analysis::hover` now have Rust unit tests
+  (catalog parsing per module, plus the hover paths). Still wanted: tests
+  for the resolver's go-to-definition/scoping, and a small in-process LSP
+  harness to replace the ad-hoc Python stdio scripts (the keyword-hover
+  path in `main.rs` is still only covered that way).
 
 ## Suggested order
 
-1. Symbol catalog, then hover enrichment (3a). Directly fixes the thin
-   hover.
-2. Completion (3b), then signature help (3c). Same catalog.
+1. ~~Symbol catalog, then hover enrichment (3a).~~ **Done.** The catalog
+   (`catalog.rs`) and enriched hover have shipped.
+2. Completion (3b), then signature help (3c). Reuse `catalog.rs`: its
+   `module`/`member`/`builtin`/`keyword` lookups already expose every
+   signature and docstring completion and signature help need. 3b also
+   wants the resolver's in-scope locals; 3c wants params from the `Fn`
+   decl a user-function callee resolves to.
 3. Document symbols (4a). Cheap and useful.
 4. AST spans for patterns/params, then references (4b) and rename (4c).
 5. Parse-tree caching once requests multiply.

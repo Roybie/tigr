@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use tigr::vm::ast::{Block, Expr, ObjectMember, Pattern, SpannedExpr, TemplatePart};
 use tigr::vm::token::Span;
 
+use crate::catalog::{Catalog, Member};
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum BindingKind {
     Decl,
@@ -44,6 +46,15 @@ struct Binding {
     /// only). `None` means "in scope but unlocatable".
     def: Option<Span>,
     kind: BindingKind,
+    /// For a `name := fn(...)` declaration, the function's signature
+    /// (`name(p1, p2, ...rest)`) so hover can show its parameters.
+    sig: Option<String>,
+}
+
+impl Binding {
+    fn new(def: Option<Span>, kind: BindingKind) -> Binding {
+        Binding { def, kind, sig: None }
+    }
 }
 
 #[derive(Default)]
@@ -56,16 +67,145 @@ pub fn definition(program: &Block, offset: usize) -> Option<Span> {
     resolve(program, offset)?.1?.def
 }
 
-/// Markdown hover text for the identifier at `offset`, if it resolves to
-/// a known binding.
-pub fn hover(program: &Block, offset: usize) -> Option<String> {
+/// Markdown hover text for the thing at `offset`. Tries, in order: a
+/// `Module.member` access, a local binding, a stdlib module name, and a
+/// builtin. Keyword hover is handled by the caller (it needs the token
+/// stream, not the AST).
+pub fn hover(program: &Block, offset: usize, catalog: &Catalog) -> Option<String> {
+    // Map each `Alias := import 'Canonical'` so `Alias.member` and a bare
+    // `Alias` resolve to the catalog's canonically-named module.
+    let imports = import_aliases(program);
+    let canonical = |name: &str| imports.get(name).cloned().unwrap_or_else(|| name.to_string());
+
+    // `Module.member` — the member key under the cursor.
+    if let Some((alias, member)) = member_at(program, offset) {
+        let module = canonical(&alias);
+        if let Some(m) = catalog.member(&module, &member) {
+            return Some(render_member(&module, m));
+        }
+    }
+    // An identifier reference under the cursor.
     let (name, binding) = resolve(program, offset)?;
-    let binding = binding?;
-    let mut out = format!("**`{name}`** — {}", binding.kind.describe());
-    if let Some(def) = binding.def {
+    if let Some(binding) = binding {
+        // A binding that imports a known module shows the module, not
+        // just "variable" — the common `M := import 'M'` case.
+        if let Some(m) = catalog.module(&canonical(&name)) {
+            return Some(render_module(&canonical(&name), m));
+        }
+        return Some(render_local(&name, &binding));
+    }
+    // Not a local — a stdlib module name, or a global builtin.
+    if let Some(m) = catalog.module(&name) {
+        return Some(render_module(&name, m));
+    }
+    if let Some(b) = catalog.builtin(&name) {
+        return Some(render_member_sig(&b.signature, &b.doc));
+    }
+    None
+}
+
+/// `**Module `Name`**` plus its description.
+fn render_module(name: &str, m: &crate::catalog::Module) -> String {
+    format!("**Module `{name}`**\n\n{}", m.description)
+}
+
+/// Collect every `Alias := import 'Name'` in the program as
+/// `alias -> Name`. A flat walk: module imports are effectively
+/// program-global, and the last binding of a name wins.
+fn import_aliases(program: &Block) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    walk_block(program, &mut |se| {
+        if let Expr::Decl(Pattern::Ident(alias), init) = &se.expr {
+            if let Expr::Import(arg) = &init.expr {
+                if let Expr::Str(name) = &arg.expr {
+                    map.insert(alias.clone(), name.clone());
+                }
+            }
+        }
+    });
+    map
+}
+
+/// Render a stdlib member: its signature qualified with the module name,
+/// then its docstring.
+fn render_member(module: &str, m: &Member) -> String {
+    render_member_sig(&format!("{module}.{}", m.signature), &m.doc)
+}
+
+/// A signature in a tigr code fence followed by doc prose.
+fn render_member_sig(signature: &str, doc: &str) -> String {
+    if doc.is_empty() {
+        format!("```tigr\n{signature}\n```")
+    } else {
+        format!("```tigr\n{signature}\n```\n\n{doc}")
+    }
+}
+
+/// Render a local binding. A `fn` declaration shows its signature; every
+/// other binding shows its kind. Both note the definition line if known.
+fn render_local(name: &str, b: &Binding) -> String {
+    let mut out = match &b.sig {
+        Some(sig) => format!("```tigr\n{sig}\n```\n\n*function*"),
+        None => format!("**`{name}`** — {}", b.kind.describe()),
+    };
+    if let Some(def) = b.def {
         out.push_str(&format!("\n\n*defined on line {}*", def.line));
     }
-    Some(out)
+    out
+}
+
+/// The `Module.member` access whose member key contains `offset`, if any.
+/// Dot-access lowers to `Index(Ident(module), Str(member))`, and the key
+/// `Str` carries the exact span of the member name.
+fn member_at(program: &Block, offset: usize) -> Option<(String, String)> {
+    let mut best: Option<(String, String, Span)> = None;
+    walk_block(program, &mut |se| {
+        if let Expr::Index(obj, key) = &se.expr {
+            if let (Expr::Ident(module), Expr::Str(member)) = (&obj.expr, &key.expr) {
+                if contains(key.span, offset) {
+                    let better = best
+                        .as_ref()
+                        .is_none_or(|(_, _, s)| span_len(key.span) <= span_len(*s));
+                    if better {
+                        best = Some((module.clone(), member.clone(), key.span));
+                    }
+                }
+            }
+        }
+    });
+    best.map(|(m, k, _)| (m, k))
+}
+
+/// Render a function signature `name(p1, p2, ...rest)`. A parameter with
+/// a default is suffixed `?`; destructuring params show their shape.
+fn fn_signature(
+    name: &str,
+    params: &[Pattern],
+    defaults: &[Option<Box<SpannedExpr>>],
+    rest: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        let mut s = pattern_str(p);
+        if defaults.get(i).is_some_and(|d| d.is_some()) {
+            s.push('?');
+        }
+        parts.push(s);
+    }
+    if let Some(r) = rest {
+        parts.push(format!("...{r}"));
+    }
+    format!("{name}({})", parts.join(", "))
+}
+
+/// A parameter pattern as it reads in a signature.
+fn pattern_str(p: &Pattern) -> String {
+    match p {
+        Pattern::Ident(n) => n.clone(),
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Array { .. } => "[...]".to_string(),
+        Pattern::Object { .. } => "${...}".to_string(),
+    }
 }
 
 /// Find the reference at `offset` and resolve it. Returns the name plus
@@ -100,7 +240,7 @@ fn ident_at(program: &Block, offset: usize) -> Option<(String, Span)> {
             if contains(se.span, offset) {
                 let better = best
                     .as_ref()
-                    .map_or(true, |(_, s)| span_len(se.span) <= span_len(*s));
+                    .is_none_or(|(_, s)| span_len(se.span) <= span_len(*s));
                 if better {
                     best = Some((name.clone(), se.span));
                 }
@@ -138,6 +278,14 @@ fn hoist_expr(se: &SpannedExpr, scope: &mut Scope) {
     match &se.expr {
         Expr::Decl(pat, init) => {
             add_pattern(pat, Some(se.span), BindingKind::Decl, scope);
+            // `name := fn(...)` — remember the signature for hover.
+            if let (Pattern::Ident(name), Expr::Fn { params, defaults, rest, .. }) =
+                (pat, &init.expr)
+            {
+                if let Some(b) = scope.bindings.get_mut(name) {
+                    b.sig = Some(fn_signature(name, params, defaults, rest.as_deref()));
+                }
+            }
             // A decl inside the initialiser (e.g. `(y := 1; y)`) shares
             // this scope unless it's behind a scope boundary, which the
             // recursion below stops at.
@@ -166,14 +314,14 @@ fn add_pattern(pat: &Pattern, decl_span: Option<Span>, kind: BindingKind, scope:
         Pattern::Ident(name) => {
             let def = decl_span
                 .map(|s| Span::new(s.start, s.start + name.len(), s.line));
-            scope.bindings.insert(name.clone(), Binding { def, kind });
+            scope.bindings.insert(name.clone(), Binding::new(def, kind));
         }
         Pattern::Array { items, rest } => {
             for it in items {
                 add_pattern(it, None, kind, scope);
             }
             if let Some(r) = rest {
-                scope.bindings.insert(r.clone(), Binding { def: None, kind });
+                scope.bindings.insert(r.clone(), Binding::new(None, kind));
             }
         }
         Pattern::Object { fields, rest } => {
@@ -181,14 +329,14 @@ fn add_pattern(pat: &Pattern, decl_span: Option<Span>, kind: BindingKind, scope:
                 add_pattern(&fld.pattern, None, kind, scope);
             }
             if let Some(r) = rest {
-                scope.bindings.insert(r.clone(), Binding { def: None, kind });
+                scope.bindings.insert(r.clone(), Binding::new(None, kind));
             }
         }
     }
 }
 
 fn bind_name(scope: &mut Scope, name: &str, kind: BindingKind) {
-    scope.bindings.insert(name.to_string(), Binding { def: None, kind });
+    scope.bindings.insert(name.to_string(), Binding::new(None, kind));
 }
 
 /// Walk from `block` toward `offset`, pushing a new `Scope` each time the
@@ -439,4 +587,77 @@ fn child_exprs(se: &SpannedExpr) -> Vec<&SpannedExpr> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tigr::vm::parse_tree;
+
+    /// Byte offset just inside the first occurrence of `needle` (one past
+    /// its start, so the cursor lands on the token, not its boundary).
+    fn at(src: &str, needle: &str) -> usize {
+        src.find(needle).expect("needle present") + 1
+    }
+
+    fn hover_at(src: &str, needle: &str) -> Option<String> {
+        let cat = Catalog::load();
+        hover(&parse_tree(src), at(src, needle), &cat)
+    }
+
+    #[test]
+    fn hovers_a_module_member() {
+        let src = "Math := import 'Math';\nMath.sqrt(2.0);";
+        let h = hover_at(src, "sqrt").expect("hover on sqrt");
+        assert!(h.contains("Math.sqrt(x) -> Float"), "got: {h}");
+        assert!(h.contains("square root"), "got: {h}");
+    }
+
+    #[test]
+    fn resolves_an_aliased_import_for_member_access() {
+        // `M` aliases `Math`; member lookup must canonicalize.
+        let src = "M := import 'Math';\nM.sqrt(2.0);";
+        let h = hover_at(src, "sqrt").expect("hover on aliased sqrt");
+        assert!(h.contains("Math.sqrt(x) -> Float"), "got: {h}");
+    }
+
+    #[test]
+    fn hovers_an_import_alias_as_its_module() {
+        let src = "Math := import 'Math';\nMath.sqrt(2.0);";
+        // The bare `Math` reference on line 2.
+        let off = src.rfind("Math").unwrap() + 1;
+        let h = hover(&parse_tree(src), off, &Catalog::load()).expect("hover on Math");
+        assert!(h.contains("Module `Math`"), "got: {h}");
+    }
+
+    #[test]
+    fn hovers_a_builtin() {
+        let src = "print(42);";
+        let h = hover_at(src, "print").expect("hover on print");
+        assert!(h.contains("print("), "got: {h}");
+    }
+
+    #[test]
+    fn hovers_a_local_function_with_its_signature() {
+        let src = "add := fn(a, b) { a + b };\nadd(1, 2);";
+        // The call site reference, not the declaration.
+        let off = src.rfind("add").unwrap() + 1;
+        let h = hover(&parse_tree(src), off, &Catalog::load()).expect("hover on add");
+        assert!(h.contains("add(a, b)"), "got: {h}");
+        assert!(h.contains("function"), "got: {h}");
+    }
+
+    #[test]
+    fn plain_local_shows_its_kind() {
+        let src = "x := 41;\nx + 1;";
+        let off = src.rfind('x').unwrap();
+        let h = hover(&parse_tree(src), off, &Catalog::load()).expect("hover on x");
+        assert!(h.contains("variable"), "got: {h}");
+    }
+
+    #[test]
+    fn no_hover_for_an_unknown_bare_identifier() {
+        let src = "foo + 1;";
+        assert!(hover_at(src, "foo").is_none());
+    }
 }

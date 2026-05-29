@@ -73,7 +73,7 @@ EXAMPLE_A := Bytes.from_array([
     Test.suite('DNS — build_query', [
         Test.case('encodes the header, QNAME, QTYPE, and QCLASS for various inputs', fn() {
             // example.com, type A, id 0x1234
-            q := Bytes.to_array(DNS.build_query(0x1234, 'example.com', A_RECORD));
+            q := Bytes.to_array(DNS.build_query(0x1234, 'example.com', A_RECORD, 1232, true));
             Test.assert_eq(q, [
                 // header
                 0x12, 0x34,             // ID
@@ -92,7 +92,7 @@ EXAMPLE_A := Bytes.from_array([
             ]);
 
             // www.example.com, type AAAA, id 0x0001
-            q2 := Bytes.to_array(DNS.build_query(0x0001, 'www.example.com', AAAA_RECORD));
+            q2 := Bytes.to_array(DNS.build_query(0x0001, 'www.example.com', AAAA_RECORD, 1232, true));
             Test.assert_eq(q2, [
                 0x00, 0x01,
                 0x01, 0x00,
@@ -110,7 +110,7 @@ EXAMPLE_A := Bytes.from_array([
             ]);
 
             // single-label host
-            q3 := Bytes.to_array(DNS.build_query(0xabcd, 'localhost', A_RECORD));
+            q3 := Bytes.to_array(DNS.build_query(0xabcd, 'localhost', A_RECORD, 1232, true));
             Test.assert_eq(q3, [
                 0xab, 0xcd,
                 0x01, 0x00,
@@ -125,7 +125,7 @@ EXAMPLE_A := Bytes.from_array([
             ]);
 
             // MX query for a deeper subdomain
-            q4 := Bytes.to_array(DNS.build_query(0xffff, 'mail.foo.bar.org', MX_RECORD));
+            q4 := Bytes.to_array(DNS.build_query(0xffff, 'mail.foo.bar.org', MX_RECORD, 1232, true));
             Test.assert_eq(q4, [
                 0xff, 0xff,
                 0x01, 0x00,
@@ -143,7 +143,7 @@ EXAMPLE_A := Bytes.from_array([
             ]);
 
             // ID 0 is a valid edge case
-            q5 := Bytes.to_array(DNS.build_query(0, 'a.b', A_RECORD));
+            q5 := Bytes.to_array(DNS.build_query(0, 'a.b', A_RECORD, 1232, true));
             Test.assert_eq(q5, [
                 0x00, 0x00,
                 0x01, 0x00,

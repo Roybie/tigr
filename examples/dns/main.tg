@@ -6,14 +6,18 @@ TYPE_FROM_STRING := ${
   A: 1,
   AAAA: 28,
   CNAME: 5,
+  TXT: 16,
 };
 
 name     := null;
 qtype    := 'A';
 server   := '1.1.1.1';
 show_ttl := false;
+show_opt := false;
+no_edns  := false;
+bufsize  := 1232;
 
-USAGE := 'usage: tigr main.tg <name> [--type A|AAAA|CNAME] [--server <ip>] [--show-ttl]';
+USAGE := 'usage: tigr main.tg <name> [--type A|AAAA|CNAME|TXT] [--server <ip>] [--show-ttl] [--show-opt] [--no-edns] [--bufsize <n>]';
 
 die := fn(msg) {
   print('error: {msg}');
@@ -39,13 +43,26 @@ while i < #args {
   arg := args[i];
   if arg == '--type' {
     qtype = take_value(arg, i);
-    i = i + 2;
+    i += 2;
   } else if arg == '--server' {
     server = take_value(arg, i);
-    i = i + 2;
+    i += 2;
+  } else if arg == '--bufsize' {
+    v := take_value(arg, i);
+    bufsize = try { int(v) } catch (_) { die('--bufsize must be an integer 0..65535 (got {v})') };
+    if bufsize < 0 || bufsize > 65535 {
+      die('--bufsize must be an integer 0..65535 (got {v})');
+    };
+    i += 2;
   } else if arg == '--show-ttl' {
     show_ttl = true;
-    i = i + 1;
+    i += 1;
+  } else if arg == '--show-opt' {
+    show_opt = true;
+    i += 1;
+  } else if arg == '--no-edns' {
+    no_edns = true;
+    i += 1;
   } else if arg == '--help' || arg == '-h' {
     print(USAGE);
     Os.exit(0);
@@ -55,7 +72,7 @@ while i < #args {
     die('unexpected extra argument: {arg} (already have name "{name}")');
   } else {
     name = arg;
-    i = i + 1;
+    i += 1;
   };
 };
 
@@ -65,11 +82,11 @@ if !name {
 
 qtype_int := TYPE_FROM_STRING[qtype];
 if !qtype_int {
-  die('unknown --type: {qtype} (expected A, AAAA, or CNAME)');
+  die('unknown --type: {qtype} (expected A, AAAA, CNAME, or TXT)');
 };
 
 response := try {
-  DNS.resolve(name, qtype_int, server)
+  DNS.resolve(name, qtype_int, server, bufsize, no_edns)
 } catch (e) {
   if e.kind == 'rcode' {
     print('Error: {match e.value {
@@ -85,6 +102,18 @@ response := try {
   };
   print(e.message);
   Os.exit(1);
+};
+
+if show_opt {
+  if response.opt {
+    o := response.opt;
+    print('EDNS: version {o.version}, udp {o.udp_size}{if o.dnssec_ok { ', do' } else { '' }}');
+    for (op, o.options) {
+      print('  {op.name}: {op.data}');
+    };
+  } else {
+    print('EDNS: no OPT in response');
+  };
 };
 
 if #response.answer == 0 {

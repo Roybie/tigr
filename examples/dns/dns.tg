@@ -11,6 +11,7 @@ _type_to_string := fn(t) {
     1 => 'A',
     28 => 'AAAA',
     5 => 'CNAME',
+    16 => 'TXT',
     _ => 'Unknown'
   }
 };
@@ -25,14 +26,14 @@ _encode_qname := fn(name) {
   Bytes.push(out, 0)
 };
 
-_build_query := fn(id, name, qtype) {
+_build_query := fn(id, name, qtype, bufsize, no_edns) {
   header := Bytes.new(12);
   Bytes.write_u16_be(header, 0, id);      // ID
   Bytes.write_u16_be(header, 2, 0x0100);  // flags RD=1
   Bytes.write_u16_be(header, 4, 1);       // QDCOUNT = 1
   Bytes.write_u16_be(header, 6, 0);       // ANCOUNT
   Bytes.write_u16_be(header, 8, 0);       // NSCOUNT
-  Bytes.write_u16_be(header, 10, 0);      // ARCOUNT
+  Bytes.write_u16_be(header, 10, if no_edns { 0 } else { 1 });      // ARCOUNT = 1 => EDNS(0)
 
   qname := _encode_qname(name);
 
@@ -40,7 +41,19 @@ _build_query := fn(id, name, qtype) {
   Bytes.write_u16_be(tail, 0, qtype);     // QTYPE
   Bytes.write_u16_be(tail, 2, 1);         // QCLASS = IN
 
-  header + qname + tail
+  // Additional record to let server know we accept EDNS format
+  opt := if no_edns {
+    Bytes.new(0)
+  } else {
+    Bytes.new(11)
+      |> Bytes.write_u8(0, 0)
+      |> Bytes.write_u16_be(1, 41)
+      |> Bytes.write_u16_be(3, bufsize)
+      |> Bytes.write_u32_be(5, 0)
+      |> Bytes.write_u16_be(9, 0)
+  };
+
+  header + qname + tail + opt
 };
 
 _format_ipv4 := fn(rdata) {
@@ -51,6 +64,16 @@ _format_ipv6 := fn(rdata) {
   for[] (i,0..16:2) {
     String.format(Bytes.read_u16_be(rdata, i), 'x')
   } |> String.join(':')
+};
+
+_format_txt := fn(rdata) {
+  pos := 0;
+  while[] (pos < #rdata) {
+    len := Bytes.read_u8(rdata, pos);
+    s := Bytes.to_string(Bytes.slice(rdata, pos + 1, pos + 1 + len));
+    pos += 1 + len;
+    s
+  } |> String.join('')
 };
 
 // Decode name beginning at offset
@@ -74,6 +97,55 @@ _read_name := fn(msg, offset) {
 
   if !next { next = offset + 1 };
   [name, next]
+};
+
+_edns_option_name := fn(c) {
+  match c {
+    3  => 'NSID',
+    8  => 'ECS',
+    10 => 'COOKIE',
+    11 => 'KEEPALIVE',
+    12 => 'PADDING',
+    15 => 'EDE',
+    _  => 'OPT-{c}'
+  }
+};
+
+// Read one RR's common fields, return [record, next-offset].
+_read_rr := fn(response, offset) {
+  name := null;
+  [name, offset] = _read_name(response, offset);
+  rtype := Bytes.read_u16_be(response, offset);
+  offset += 2;
+  class := Bytes.read_u16_be(response, offset);
+  offset += 2;
+  ttl := Bytes.read_u32_be(response, offset);
+  offset += 4;
+  rdlen := Bytes.read_u16_be(response, offset);
+  offset += 2;
+  rdata := Bytes.slice(response, offset, offset + rdlen);
+  offset += rdlen;
+  [${ name, 'type': rtype, class, ttl, rdata }, offset]
+};
+
+// OPT overloads CLASS as the UDP size and TTL as ext-rcode/version/flags.
+_decode_opt := fn(rr) {
+  pos := 0;
+  options := while[] (pos < #rr.rdata) {
+    code := Bytes.read_u16_be(rr.rdata, pos);
+    len := Bytes.read_u16_be(rr.rdata, pos + 2);
+    data := Bytes.slice(rr.rdata, pos + 4, pos + 4 + len);
+    pos += 4 + len;
+    ${ code, name: _edns_option_name(code), data: Bytes.to_hex(data) }
+  };
+  ${
+    'type': 41,
+    udp_size: rr.class,
+    ext_rcode: (rr.ttl >> 24) & 0xFF,
+    version: (rr.ttl >> 16) & 0xFF,
+    dnssec_ok: (rr.ttl >> 15) & 1,
+    options
+  }
 };
 
 // parse_response is expected to return a record:
@@ -137,6 +209,7 @@ _parse_response := fn(response, id) {
       1   => _format_ipv4(rdata),
       28  => _format_ipv6(rdata),
       5   => _read_name(response, offset)[0],
+      16  => _format_txt(rdata),
       _   => Bytes.to_hex(rdata),
     };
 
@@ -150,22 +223,32 @@ _parse_response := fn(response, id) {
       rdata
     }
   };
-  authority := [];
-  additional := [];
+  rr := null;
+  authority := for[] (i, 0..header.nscount) {
+    [rr, offset] = _read_rr(response, offset);
+    rr
+  };
+
+  opt := null;
+  additional := for[] (i, 0..header.arcount) {
+    [rr, offset] = _read_rr(response, offset);
+    if rr.type == 41 { opt = _decode_opt(rr); opt } else { rr }
+  };
 
   ${
     header,
     question,
     answer,
     authority,
-    additional
+    additional,
+    opt
   }
 };
 
-_resolve := fn(name, qtype = 1, server = '1.1.1.1') {
+_resolve := fn(name, qtype = 1, server = '1.1.1.1', bufsize = 1232, no_edns = false) {
   id := Random.int(0, 0xffff);
 
-  query := _build_query(id, name, qtype);
+  query := _build_query(id, name, qtype, bufsize, no_edns);
 
   sender    := Net.bind('0.0.0.0', 0);
 

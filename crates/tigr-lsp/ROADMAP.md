@@ -26,6 +26,13 @@ forward-looking.
 - Phase 4b: references (`textDocument/references`).
 - Phase 4c: rename (`textDocument/rename` + prepare-rename).
   See "Phase 4b/4c, as built".
+- `match`-arm binding spans: `MatchPattern::Binding`, the `...rest` of
+  array/object patterns, and the `${name}` object shorthand now carry
+  spans (`Binder`, plus a `MatchField::key_span`). References and rename
+  now work on match bindings too — the last binder-kind gap is closed.
+- Parse-tree caching: the recovered AST is parsed once per document and
+  reused across requests, invalidated on `did_change`. See
+  "Parse-tree caching, as built".
 
 ## Guiding principles (unchanged)
 
@@ -213,10 +220,44 @@ the same name. Compiler-internal `$`-names and unspanned `match` bindings
   validates the cursor target up front (returns the range under the
   cursor, or nothing when the target can't be renamed).
 
-Limitation: `match`-arm bindings still store a bare string in the core
-AST, so they resolve for shadowing but report `def: None`; references
-and rename decline them. Adding a span there is the remaining piece.
-Cross-file rename waits on Phase 5.
+All binder kinds now carry spans (see "Match-arm binding spans" below),
+so references and rename work for every local binding including match
+arms. Cross-file rename waits on Phase 5.
+
+### Match-arm binding spans, as built
+
+The last binder kind that stored a bare `String` in the core AST. Now:
+- `MatchPattern::Binding(Binder)` (was `Binding(String)`),
+- `MatchPattern::Array { rest: Option<Binder> }` and
+  `Object { rest: Option<Binder> }` (were `Option<String>`),
+- `MatchField` gained a `key_span: Span` so the `${name}` *shorthand*
+  binding (where the key *is* the bound name) is locatable; the field
+  `key` itself stays a `String` (the compiler reads it as the object
+  key). The synthetic `select`-desugar fields carry the channel span.
+
+The parser records each span via `peek_span`/`parse_ident_binder`. The
+compiler was untouched beyond the field-type change — it reads names
+through `Binder`'s `Deref<str>` exactly as before. In `analysis.rs`,
+`match_bindings` now binds via `bind_binder` (spanned) instead of the
+removed unspanned `bind_name`, and `collect_occurrences` gained an
+`Expr::Match` arm (`collect_match_pattern_occurrences`) that emits a
+`Def` occurrence per pattern binding. So a match binding is now a
+first-class definition for go-to-def, references, and rename.
+
+### Parse-tree caching, as built
+
+Hover, definition, completion, signature help, references, and rename
+all need the recovered AST; previously each re-ran `vm::parse_tree` per
+request. Now a `Document { text, tree: Option<Arc<Block>> }` (replacing
+the bare `String` in `Backend::docs`) caches the parse. `tree_and_text`
+parses lazily on first use and returns an `Arc` clone; `analyze` layers
+the position→offset conversion on top (the common entry point for
+position-based requests). `did_change` replaces the `Document` with a
+fresh one (`tree: None`), invalidating the cache; `did_open` starts with
+`tree: None`. The parse runs under the `docs` mutex, which is safe
+because no `.await` is held across it and the current-thread runtime
+serialises requests. Keyed on document identity + version-by-replacement
+rather than a text hash, since full-sync already hands us the whole text.
 
 ## Phase 5: cross-file and workspace
 
@@ -238,10 +279,12 @@ Cross-file rename waits on Phase 5.
   signatures took `&[Binder]`/`&(Binder, _)`). The parser records each
   span via `parse_ident_binder`. This was the prerequisite for 4b/4c and
   also made params/loop-vars/destructured-names jumpable. The one
-  remaining gap is `MatchPattern` bindings, still bare strings.
-- **Parse-tree caching.** Hover, definition, and completion each call
-  `vm::parse_tree`, so the file is re-parsed per request. Cache one tree
-  per document, keyed on the text (or version), and invalidate on change.
+  remaining gap was `MatchPattern` bindings — **now closed** (see
+  "Match-arm binding spans, as built"). Every binder kind carries a span.
+- **Parse-tree caching. DONE.** Hover, definition, completion, signature
+  help, references, and rename reuse one cached recovered AST per
+  document, invalidated on `did_change`. See "Parse-tree caching, as
+  built".
 - **Tier-2 and Tier-3 error recovery.** The lexer and compiler are still
   fail-fast, so only parse errors come in multiples. Lexer recovery
   (emit an error token, continue) and compiler error accumulation would
@@ -268,7 +311,9 @@ Cross-file rename waits on Phase 5.
 3. ~~Document symbols (4a).~~ **Done.** A decl-tree outline reusing the
    recovered AST and `fn_signature`; functions nest their inner decls.
 4. ~~AST spans for patterns/params, then references (4b) and rename
-   (4c).~~ **Done** (except `match`-binding spans). See "Phase 4b/4c".
-5. Parse-tree caching once requests multiply.
+   (4c).~~ **Done**, including `match`-binding spans. See "Phase 4b/4c"
+   and "Match-arm binding spans, as built".
+5. ~~Parse-tree caching once requests multiply.~~ **Done.** See
+   "Parse-tree caching, as built".
 6. Cross-file/workspace (Phase 5).
 7. Distribution and Tier-2/3 recovery as polish.

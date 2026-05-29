@@ -3,20 +3,18 @@
 //!
 //! Every binding name carries a span: references are `Expr::Ident`, and
 //! declarations are `ast::Binder`s (pattern leaves and `...rest`, params,
-//! loop variables, the `catch` parameter, and `=` assignment targets).
-//! So: find the name under the cursor, rebuild the scope chain active at
-//! that point, and resolve innermost-first. A binding's *identity* is its
-//! definition span, which lets references and rename group every
-//! occurrence — the declaration plus all uses — that resolves to it.
-//!
-//! The one exception is `match`-arm bindings, which the core AST still
-//! stores as bare strings (no span). They resolve for shadowing but
-//! report `def: None`, so references/rename decline them rather than act
-//! on an unlocatable binding.
+//! loop variables, the `catch` parameter, `=` assignment targets, and
+//! `match`-arm bindings). So: find the name under the cursor, rebuild the
+//! scope chain active at that point, and resolve innermost-first. A
+//! binding's *identity* is its definition span, which lets references and
+//! rename group every occurrence — the declaration plus all uses — that
+//! resolves to it.
 
 use std::collections::HashMap;
 
-use tigr::vm::ast::{Binder, Block, Expr, ObjectMember, Pattern, SpannedExpr, TemplatePart};
+use tigr::vm::ast::{
+    Binder, Block, Expr, MatchPattern, ObjectMember, Pattern, SpannedExpr, TemplatePart,
+};
 use tigr::vm::token::Span;
 
 use crate::catalog::{Catalog, Member};
@@ -295,9 +293,9 @@ struct Occurrence {
 
 /// The binding identity an occurrence belongs to: a `Def` is its own
 /// definition span; a `Ref` resolves to the binding visible at its
-/// position. `None` means it ties to no locatable binding — a builtin, a
-/// stdlib module, or an unspanned `match` binding — so it is never
-/// grouped or renamed. Compiler-internal `$`-names are excluded too.
+/// position. `None` means it ties to no locatable binding — a builtin or
+/// a stdlib module — so it is never grouped or renamed. Compiler-internal
+/// `$`-names are excluded too.
 fn identity(occ: &Occurrence, program: &Block) -> Option<Span> {
     if occ.name.starts_with('$') {
         return None;
@@ -340,9 +338,51 @@ fn collect_occurrences(program: &Block) -> Vec<Occurrence> {
             }
         }
         Expr::Try { catch: Some((param, _)), .. } => out.push(binder_occ(param, Role::Def)),
+        // A `match` arm's pattern introduces bindings, each at its own
+        // span (refs to them inside the body/guard are walked as `Ident`s).
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                collect_match_pattern_occurrences(&arm.pattern, &mut out);
+            }
+        }
         _ => {}
     });
     out
+}
+
+/// Push a `Def` occurrence for every binding in a refutable `match`
+/// pattern, each at its own span.
+fn collect_match_pattern_occurrences(pat: &MatchPattern, out: &mut Vec<Occurrence>) {
+    match pat {
+        MatchPattern::Binding(b) => out.push(binder_occ(b, Role::Def)),
+        MatchPattern::Array { items, rest } => {
+            for it in items {
+                collect_match_pattern_occurrences(it, out);
+            }
+            if let Some(r) = rest {
+                out.push(binder_occ(r, Role::Def));
+            }
+        }
+        MatchPattern::Object { fields, rest } => {
+            for fld in fields {
+                match &fld.pattern {
+                    Some(p) => collect_match_pattern_occurrences(p, out),
+                    // Shorthand `${name}` binds the key, at its span.
+                    None => out.push(binder_occ(
+                        &Binder::new(fld.key.clone(), fld.key_span),
+                        Role::Def,
+                    )),
+                }
+            }
+            if let Some(r) = rest {
+                out.push(binder_occ(r, Role::Def));
+            }
+        }
+        MatchPattern::Literal(_)
+        | MatchPattern::Wildcard
+        | MatchPattern::Range { .. }
+        | MatchPattern::Or(_) => {}
+    }
 }
 
 fn binder_occ(b: &Binder, role: Role) -> Occurrence {
@@ -360,8 +400,8 @@ fn collect_pattern_occurrences(pat: &Pattern, role: Role, out: &mut Vec<Occurren
 
 /// All occurrence spans of the binding at `offset` — its declaration plus
 /// every use — sorted by position. `None` when the cursor is not on a
-/// locatable binding (a builtin, stdlib module, `match` binding, or
-/// nothing). Powers both references and rename.
+/// locatable binding (a builtin, stdlib module, or nothing). Powers both
+/// references and rename.
 fn binding_occurrences(program: &Block, offset: usize) -> Option<Vec<Span>> {
     let occs = collect_occurrences(program);
     // The occurrence under the cursor: the tightest span containing it.
@@ -389,7 +429,7 @@ pub fn references(program: &Block, offset: usize) -> Vec<Span> {
 
 /// The set of spans a rename should rewrite, and the definition span among
 /// them. `None` when the target cannot be renamed (a builtin, stdlib
-/// module, `match` binding, or nothing under the cursor).
+/// module, or nothing under the cursor).
 pub fn rename_spans(program: &Block, offset: usize) -> Option<RenameTarget> {
     let occs = collect_occurrences(program);
     let target = occs
@@ -667,12 +707,6 @@ fn bind_binder(scope: &mut Scope, b: &Binder, kind: BindingKind) {
     scope.bindings.insert(b.name.clone(), Binding::new(Some(b.span), kind));
 }
 
-/// Bind an unspanned name (a `match`-arm binding, which the AST keeps as
-/// a bare string). In scope for shadowing, but with no jump target.
-fn bind_name(scope: &mut Scope, name: &str, kind: BindingKind) {
-    scope.bindings.insert(name.to_string(), Binding::new(None, kind));
-}
-
 /// Walk from `block` toward `offset`, pushing a new `Scope` each time the
 /// path crosses a scope-opening construct.
 fn descend_block(block: &Block, offset: usize, scopes: &mut Vec<Scope>) {
@@ -784,25 +818,30 @@ fn descend_expr(se: &SpannedExpr, offset: usize, scopes: &mut Vec<Scope>) {
 fn match_bindings(pat: &tigr::vm::ast::MatchPattern, scope: &mut Scope) {
     use tigr::vm::ast::MatchPattern as M;
     match pat {
-        M::Binding(name) => bind_name(scope, name, BindingKind::MatchBinding),
+        M::Binding(b) => bind_binder(scope, b, BindingKind::MatchBinding),
         M::Array { items, rest } => {
             for it in items {
                 match_bindings(it, scope);
             }
             if let Some(r) = rest {
-                bind_name(scope, r, BindingKind::MatchBinding);
+                bind_binder(scope, r, BindingKind::MatchBinding);
             }
         }
         M::Object { fields, rest } => {
             for fld in fields {
                 match &fld.pattern {
                     Some(p) => match_bindings(p, scope),
-                    // Shorthand `${name}` binds the key name itself.
-                    None => bind_name(scope, &fld.key, BindingKind::MatchBinding),
+                    // Shorthand `${name}` binds the key name itself, at
+                    // the key's span.
+                    None => bind_binder(
+                        scope,
+                        &Binder::new(fld.key.clone(), fld.key_span),
+                        BindingKind::MatchBinding,
+                    ),
                 }
             }
             if let Some(r) = rest {
-                bind_name(scope, r, BindingKind::MatchBinding);
+                bind_binder(scope, r, BindingKind::MatchBinding);
             }
         }
         // Literals, wildcards, ranges, and or-alternatives bind nothing
@@ -1117,14 +1156,36 @@ mod tests {
     }
 
     #[test]
-    fn rename_declines_builtins_and_match_bindings() {
+    fn rename_declines_builtins() {
         // A builtin cannot be renamed.
         let b = "print(1);";
         assert!(rename_spans(&parse_tree(b), at(b, "print")).is_none());
-        // A match binding has no span in the AST, so rename declines it.
-        let m = "match x { y => y };";
-        let y = m.rfind('y').unwrap();
-        assert!(rename_spans(&parse_tree(m), y).is_none());
+    }
+
+    #[test]
+    fn rename_renames_match_bindings() {
+        // A match-arm binding now carries a span, so its declaration and
+        // every use in the arm body rename together.
+        let m = "match x { y => y + 1 };";
+        let tree = parse_tree(m);
+        // From the body reference...
+        let body_y = m.rfind('y').unwrap();
+        let from_use = rename_spans(&tree, body_y).expect("renameable from use");
+        assert_eq!(from_use.spans.len(), 2, "got {:?}", from_use.spans);
+        // ...and from the binding site, the same set.
+        let bind_y = m.find('y').unwrap();
+        let from_def = rename_spans(&tree, bind_y).expect("renameable from def");
+        assert_eq!(from_def.def.start, bind_y);
+        assert_eq!(from_def.spans.len(), 2, "got {:?}", from_def.spans);
+    }
+
+    #[test]
+    fn references_find_object_shorthand_match_binding() {
+        // `${name}` shorthand binds `name` at the key's span.
+        let m = "match p { ${x} => x + 1 };";
+        let tree = parse_tree(m);
+        let refs = references(&tree, m.rfind('x').unwrap());
+        assert_eq!(refs.len(), 2, "got {refs:?}");
     }
 
     #[test]

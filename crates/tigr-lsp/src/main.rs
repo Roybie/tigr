@@ -16,12 +16,13 @@ mod catalog;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use tigr::vm::ast::Block;
 use tigr::vm::check_source;
 use tigr::vm::error::Error as TigrError;
 use tigr::vm::lexer::Lexer;
@@ -30,11 +31,18 @@ use tigr::vm::token::Token;
 
 use crate::catalog::Catalog;
 
+/// One open document: its full text (full-sync) and a lazily-parsed,
+/// cached recovered AST. The tree is computed on the first request that
+/// needs it and reused until the text changes, when `did_change` drops it.
+struct Document {
+    text: String,
+    tree: Option<Arc<Block>>,
+}
+
 struct Backend {
     client: Client,
-    /// Open documents, keyed by URI. Full-sync, so each entry is the
-    /// complete current text.
-    docs: Mutex<HashMap<Url, String>>,
+    /// Open documents, keyed by URI.
+    docs: Mutex<HashMap<Url, Document>>,
     /// Position encoding negotiated in `initialize`. tigr spans are byte
     /// offsets; this decides whether a column counts bytes (UTF-8) or
     /// UTF-16 code units when we project an offset onto an LSP position.
@@ -45,14 +53,29 @@ struct Backend {
 }
 
 impl Backend {
-    /// Fetch a document's text and convert an LSP position into a byte
-    /// offset into it, using the negotiated encoding. `None` if the
-    /// document isn't open.
-    fn locate(&self, uri: &Url, pos: Position) -> Option<(String, usize)> {
-        let text = self.docs.lock().unwrap().get(uri).cloned()?;
+    /// A document's text and its recovered AST, parsing and caching the
+    /// tree on first use. `None` if the document isn't open. The parse is
+    /// done under the `docs` lock; it holds no `.await`, so requests (which
+    /// the current-thread runtime serialises) never observe a half-built
+    /// cache. Returns an `Arc` clone, so the caller works off a snapshot
+    /// even if a later `did_change` invalidates the entry.
+    fn tree_and_text(&self, uri: &Url) -> Option<(String, Arc<Block>)> {
+        let mut docs = self.docs.lock().unwrap();
+        let doc = docs.get_mut(uri)?;
+        if doc.tree.is_none() {
+            doc.tree = Some(Arc::new(tigr::vm::parse_tree(&doc.text)));
+        }
+        Some((doc.text.clone(), doc.tree.clone().unwrap()))
+    }
+
+    /// Like [`Self::tree_and_text`] but also converts an LSP position into
+    /// a byte offset using the negotiated encoding. The common entry point
+    /// for position-based requests (hover, definition, references, …).
+    fn analyze(&self, uri: &Url, pos: Position) -> Option<(String, usize, Arc<Block>)> {
+        let (text, tree) = self.tree_and_text(uri)?;
         let enc = self.encoding.lock().unwrap().clone();
         let offset = position_to_offset(&text, pos, &enc);
-        Some((text, offset))
+        Some((text, offset, tree))
     }
 
     /// Recompile `text` and publish the resulting diagnostics for `uri`.
@@ -131,10 +154,10 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
-        self.docs
-            .lock()
-            .unwrap()
-            .insert(doc.uri.clone(), doc.text.clone());
+        self.docs.lock().unwrap().insert(
+            doc.uri.clone(),
+            Document { text: doc.text.clone(), tree: None },
+        );
         self.publish(doc.uri, &doc.text, Some(doc.version)).await;
     }
 
@@ -145,10 +168,11 @@ impl LanguageServer for Backend {
         };
         let uri = params.text_document.uri;
         let version = params.text_document.version;
+        // New text → drop the cached tree; it is reparsed on next request.
         self.docs
             .lock()
             .unwrap()
-            .insert(uri.clone(), change.text.clone());
+            .insert(uri.clone(), Document { text: change.text.clone(), tree: None });
         self.publish(uri, &change.text, Some(version)).await;
     }
 
@@ -157,7 +181,7 @@ impl LanguageServer for Backend {
         // Prefer the text the client sent on save; fall back to our cache.
         let text = params
             .text
-            .or_else(|| self.docs.lock().unwrap().get(&uri).cloned());
+            .or_else(|| self.docs.lock().unwrap().get(&uri).map(|d| d.text.clone()));
         if let Some(text) = text {
             self.publish(uri, &text, None).await;
         }
@@ -177,10 +201,9 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let p = params.text_document_position_params;
         let uri = p.text_document.uri;
-        let Some((text, offset)) = self.locate(&uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         let Some(span) = analysis::definition(&program, offset) else {
             return Ok(None);
         };
@@ -194,10 +217,9 @@ impl LanguageServer for Backend {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let p = params.text_document_position_params;
-        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         let markdown = analysis::hover(&program, offset, &self.catalog)
             .or_else(|| keyword_hover(&text, offset, &self.catalog));
         let Some(markdown) = markdown else {
@@ -217,10 +239,9 @@ impl LanguageServer for Backend {
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {
         let p = params.text_document_position;
-        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         let items = completion_items(&text, offset, &program, &self.catalog);
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -230,10 +251,9 @@ impl LanguageServer for Backend {
         params: SignatureHelpParams,
     ) -> Result<Option<SignatureHelp>> {
         let p = params.text_document_position_params;
-        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&p.text_document.uri, p.position) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         Ok(signature_help(&text, offset, &program, &self.catalog))
     }
 
@@ -242,10 +262,9 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let Some(text) = self.docs.lock().unwrap().get(&uri).cloned() else {
+        let Some((text, program)) = self.tree_and_text(&uri) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         let enc = self.encoding.lock().unwrap().clone();
         let symbols = analysis::document_symbols(&program)
             .into_iter()
@@ -257,10 +276,9 @@ impl LanguageServer for Backend {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let p = params.text_document_position;
         let uri = p.text_document.uri;
-        let Some((text, offset)) = self.locate(&uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         let mut spans = analysis::references(&program, offset);
         if spans.is_empty() {
             return Ok(None);
@@ -288,10 +306,10 @@ impl LanguageServer for Backend {
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        let Some((text, offset)) = self.locate(&params.text_document.uri, params.position) else {
+        let Some((text, offset, program)) = self.analyze(&params.text_document.uri, params.position)
+        else {
             return Ok(None);
         };
-        let program = tigr::vm::parse_tree(&text);
         // A rename is only offered if the cursor is on a locatable binding.
         let Some(target) = analysis::rename_spans(&program, offset) else {
             return Ok(None);
@@ -312,7 +330,7 @@ impl LanguageServer for Backend {
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let p = params.text_document_position;
         let uri = p.text_document.uri;
-        let Some((text, offset)) = self.locate(&uri, p.position) else {
+        let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
         // Reject a new name that isn't a valid tigr identifier, so a typo
@@ -322,7 +340,6 @@ impl LanguageServer for Backend {
                 "new name is not a valid identifier",
             ));
         }
-        let program = tigr::vm::parse_tree(&text);
         let Some(target) = analysis::rename_spans(&program, offset) else {
             return Ok(None);
         };

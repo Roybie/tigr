@@ -233,15 +233,16 @@ pub enum LiteralPat {
 pub enum MatchPattern {
     /// Matches if the subject `==` this literal.
     Literal(LiteralPat),
-    /// Bare name — matches anything, binds the subject to `name`.
-    Binding(String),
+    /// Bare name — matches anything, binds the subject to `name`. The
+    /// `Binder` carries the name's span so tooling can locate it.
+    Binding(Binder),
     /// `_` — matches anything, binds nothing.
     Wildcard,
     /// `[p1, p2, ...rest?]` — subject must be an Array of the right
     /// length (exact, or `>= items.len()` when `rest` is present).
-    Array { items: Vec<MatchPattern>, rest: Option<String> },
+    Array { items: Vec<MatchPattern>, rest: Option<Binder> },
     /// `${k: subpat, shorthand, ...rest?}` — subject must be an Object.
-    Object { fields: Vec<MatchField>, rest: Option<String> },
+    Object { fields: Vec<MatchField>, rest: Option<Binder> },
     /// `from..to` / `from..=to` — subject must be a number in range.
     Range { from: LiteralPat, to: LiteralPat, inclusive: bool },
     /// `p1 | p2 | ...` — matches if any alternative matches. By v0.5
@@ -253,6 +254,9 @@ pub enum MatchPattern {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchField {
     pub key: String,
+    /// Span of the `key` token, so a shorthand `${name}` binding (where
+    /// the key *is* the bound name) is locatable by the tooling.
+    pub key_span: Span,
     /// `None` for shorthand `${name}` (binds the value to `name`);
     /// `Some(p)` for `${key: p}`.
     pub pattern: Option<MatchPattern>,

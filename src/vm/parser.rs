@@ -766,18 +766,24 @@ impl Parser {
             self.expect(&Token::FatArrow)?;
             let body = self.parse_expr()?;
             let index = channels.len() as i64;
+            // Synthetic field keys carry the channel span; they are never
+            // bindings (both have a `pattern`), so the span is unused by
+            // tooling but must be present.
+            let chan_span = channel.span;
             channels.push(channel);
             arms.push(MatchArm {
                 pattern: MatchPattern::Object {
                     fields: vec![
                         MatchField {
                             key: "index".to_string(),
+                            key_span: chan_span,
                             pattern: Some(MatchPattern::Literal(
                                 LiteralPat::Int(index),
                             )),
                         },
                         MatchField {
                             key: "value".to_string(),
+                            key_span: chan_span,
                             pattern: Some(bind),
                         },
                     ],
@@ -822,11 +828,12 @@ impl Parser {
     fn parse_select_binding(&mut self) -> Result<MatchPattern, ParseError> {
         match self.peek().clone() {
             Token::Ident(name) => {
+                let span = self.peek_span();
                 self.advance();
                 if name == "_" {
                     Ok(MatchPattern::Wildcard)
                 } else {
-                    Ok(MatchPattern::Binding(name))
+                    Ok(MatchPattern::Binding(Binder::new(name, span)))
                 }
             }
             other => Err(self.err(ParseErrorKind::UnexpectedToken(other))),
@@ -996,11 +1003,12 @@ impl Parser {
                 Ok(MatchPattern::Literal(LiteralPat::Null))
             }
             Token::Ident(name) => {
+                let span = self.peek_span();
                 self.advance();
                 if name == "_" {
                     Ok(MatchPattern::Wildcard)
                 } else {
-                    Ok(MatchPattern::Binding(name))
+                    Ok(MatchPattern::Binding(Binder::new(name, span)))
                 }
             }
             Token::LBrack => self.parse_match_array_pattern(),
@@ -1033,12 +1041,12 @@ impl Parser {
     fn parse_match_array_pattern(&mut self) -> Result<MatchPattern, ParseError> {
         self.expect(&Token::LBrack)?;
         let mut items: Vec<MatchPattern> = Vec::new();
-        let mut rest: Option<String> = None;
+        let mut rest: Option<Binder> = None;
         while !self.check(&Token::RBrack) {
             if matches!(self.peek(), Token::Ellipsis) {
                 let ellipsis_span = self.peek_span();
                 self.advance();
-                rest = Some(self.parse_ident_token()?);
+                rest = Some(self.parse_ident_binder()?);
                 if !self.check(&Token::RBrack) {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidPattern(
@@ -1062,12 +1070,12 @@ impl Parser {
         self.expect(&Token::Dollar)?;
         self.expect(&Token::LBrace)?;
         let mut fields: Vec<MatchField> = Vec::new();
-        let mut rest: Option<String> = None;
+        let mut rest: Option<Binder> = None;
         while !self.check(&Token::RBrace) {
             if matches!(self.peek(), Token::Ellipsis) {
                 let ellipsis_span = self.peek_span();
                 self.advance();
-                rest = Some(self.parse_ident_token()?);
+                rest = Some(self.parse_ident_binder()?);
                 if !self.check(&Token::RBrace) {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidPattern(
@@ -1078,13 +1086,14 @@ impl Parser {
                 }
                 break;
             }
+            let key_span = self.peek_span();
             let key = self.parse_ident_token()?;
             let pattern = if self.matches(&Token::Colon) {
                 Some(self.parse_match_pattern()?)
             } else {
                 None
             };
-            fields.push(MatchField { key, pattern });
+            fields.push(MatchField { key, key_span, pattern });
             if !self.matches(&Token::Comma) {
                 break;
             }

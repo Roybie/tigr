@@ -103,6 +103,13 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec![".".to_string()]),
                     ..Default::default()
                 }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    // `(` opens the arg list; `,` advances to the next
+                    // parameter and re-triggers.
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: Some(vec![",".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         })
@@ -210,8 +217,220 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> Result<Option<SignatureHelp>> {
+        let p = params.text_document_position_params;
+        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        Ok(signature_help(&text, offset, &program, &self.catalog))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// A call's callee as recovered from the text before its `(`.
+enum Callee {
+    /// A bare name: a builtin or a local function.
+    Bare(String),
+    /// `receiver.member` — a stdlib member access.
+    Member(String, String),
+}
+
+/// Signature help for the call enclosing `offset`, if the cursor sits in
+/// a call's argument list and the callee resolves to a known signature.
+fn signature_help(
+    text: &str,
+    offset: usize,
+    program: &tigr::vm::ast::Block,
+    catalog: &Catalog,
+) -> Option<SignatureHelp> {
+    let (open_paren, active) = call_context(text, offset)?;
+    let callee = callee_before(text, open_paren)?;
+    let (signature, doc) = resolve_callee(program, catalog, &callee, offset)?;
+
+    let params = parse_params(&signature);
+    if params.is_empty() {
+        return None; // nothing to highlight (constant, or `f()`)
+    }
+    // Clamp past-the-end (e.g. extra args to a variadic) onto the last
+    // parameter rather than dropping the popup.
+    let active = (active.min(params.len() - 1)) as u32;
+
+    let parameters = params
+        .into_iter()
+        .map(|label| ParameterInformation {
+            label: ParameterLabel::Simple(label),
+            documentation: None,
+        })
+        .collect();
+    let documentation = doc.map(|d| {
+        Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: d,
+        })
+    });
+
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: signature,
+            documentation,
+            parameters: Some(parameters),
+            active_parameter: Some(active),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active),
+    })
+}
+
+/// Scan backward from `offset` for the `(` of the call the cursor is
+/// inside, counting top-level commas to get the active parameter index.
+/// Returns `(open_paren_byte_index, active_param)`. `None` if the cursor
+/// is not directly inside parentheses (e.g. inside an array/object
+/// literal, or at the top level).
+fn call_context(text: &str, offset: usize) -> Option<(usize, usize)> {
+    let b = text.as_bytes();
+    let mut i = offset.min(b.len());
+    let mut depth: i32 = 0; // brackets closed (and not yet reopened) while scanning back
+    let mut commas = 0usize;
+    while i > 0 {
+        i -= 1;
+        match b[i] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    return Some((i, commas));
+                }
+                depth -= 1;
+            }
+            b'[' | b'{' => {
+                if depth == 0 {
+                    return None; // inside an array/object literal, not a call
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The callee immediately before the `(` at `open_paren`: a bare
+/// identifier or a `receiver.member` access. `None` if no identifier
+/// precedes the paren (so it's a grouping paren, not a call).
+fn callee_before(text: &str, open_paren: usize) -> Option<Callee> {
+    let b = text.as_bytes();
+    let mut i = open_paren;
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let end = i;
+    while i > 0 && is_ident_byte(b[i - 1]) {
+        i -= 1;
+    }
+    if i == end {
+        return None; // grouping `(...)`, not a call
+    }
+    let name = text[i..end].to_string();
+
+    // A leading `receiver.` makes it a member call.
+    let mut j = i;
+    while j > 0 && b[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    if j > 0 && b[j - 1] == b'.' {
+        j -= 1;
+        while j > 0 && b[j - 1].is_ascii_whitespace() {
+            j -= 1;
+        }
+        let recv_end = j;
+        while j > 0 && is_ident_byte(b[j - 1]) {
+            j -= 1;
+        }
+        if j < recv_end {
+            return Some(Callee::Member(text[j..recv_end].to_string(), name));
+        }
+    }
+    Some(Callee::Bare(name))
+}
+
+/// Resolve a callee to `(signature, doc)`. Member access goes through the
+/// catalog (alias-canonicalized); a bare name is a local function first
+/// (its decl signature, no doc), then a builtin.
+fn resolve_callee(
+    program: &tigr::vm::ast::Block,
+    catalog: &Catalog,
+    callee: &Callee,
+    offset: usize,
+) -> Option<(String, Option<String>)> {
+    match callee {
+        Callee::Member(recv, member) => {
+            let module = analysis::canonical_module(program, recv);
+            let m = catalog.member(&module, member)?;
+            Some((format!("{module}.{}", m.signature), opt_doc(&m.doc)))
+        }
+        Callee::Bare(name) => {
+            // A local `name := fn(...)` wins over a builtin of the same name.
+            let local_sig = analysis::locals_in_scope(program, offset)
+                .into_iter()
+                .find(|l| &l.name == name)
+                .and_then(|l| l.sig);
+            if let Some(sig) = local_sig {
+                return Some((sig, None));
+            }
+            let b = catalog.builtin(name)?;
+            Some((b.signature.clone(), opt_doc(&b.doc)))
+        }
+    }
+}
+
+fn opt_doc(doc: &str) -> Option<String> {
+    (!doc.is_empty()).then(|| doc.to_string())
+}
+
+/// The parameter labels in a signature: the text between its first `(`
+/// and the matching `)`, split on top-level commas. Empty parameters
+/// (e.g. from `f()`) are dropped.
+fn parse_params(signature: &str) -> Vec<String> {
+    let Some(open) = signature.find('(') else {
+        return Vec::new();
+    };
+    let mut params = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = open + 1;
+    let bytes = signature.as_bytes();
+    let mut idx = open + 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                if depth == 0 {
+                    push_param(&mut params, &signature[start..idx]);
+                    break;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => {
+                push_param(&mut params, &signature[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    params
+}
+
+fn push_param(params: &mut Vec<String>, raw: &str) {
+    let p = raw.trim();
+    if !p.is_empty() {
+        params.push(p.to_string());
     }
 }
 
@@ -567,6 +786,81 @@ mod tests {
         assert!(labels.contains(&"print".to_string()), "builtin missing");
         assert!(labels.contains(&"Math".to_string()), "module missing");
         assert!(labels.contains(&"match".to_string()), "keyword missing");
+    }
+
+    #[test]
+    fn call_context_counts_active_parameter() {
+        let (t1, o1) = cursor("f(a, b|)");
+        assert_eq!(call_context(&t1, o1).map(|(_, a)| a), Some(1));
+        let (t0, o0) = cursor("f(a|, b)");
+        assert_eq!(call_context(&t0, o0).map(|(_, a)| a), Some(0));
+        // Inside a nested call, count resets to the inner arg list.
+        let (tn, on) = cursor("f(g(x, y|), z)");
+        assert_eq!(call_context(&tn, on).map(|(_, a)| a), Some(1));
+    }
+
+    #[test]
+    fn call_context_ignores_array_and_object_literals() {
+        let (t, o) = cursor("[1, 2|]");
+        assert_eq!(call_context(&t, o), None);
+    }
+
+    #[test]
+    fn parse_params_splits_top_level_commas() {
+        assert_eq!(parse_params("clamp(x, lo, hi) -> value"), ["x", "lo", "hi"]);
+        assert_eq!(parse_params("rand() -> Float"), Vec::<String>::new());
+        // A nested signature comma is not a top-level split.
+        assert_eq!(parse_params("f(a, g(b, c)) -> x"), ["a", "g(b, c)"]);
+    }
+
+    #[test]
+    fn signature_help_for_a_stdlib_member() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("Math := import 'Math';\nMath.pow(2.0, |)");
+        let prog = tigr::vm::parse_tree(&text);
+        let sh = signature_help(&text, off, &prog, &cat).expect("signature help");
+        let sig = &sh.signatures[0];
+        assert_eq!(sig.label, "Math.pow(x, y) -> Float");
+        assert_eq!(sh.active_parameter, Some(1));
+        assert_eq!(sig.parameters.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn signature_help_for_an_aliased_member() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("M := import 'Math';\nM.sqrt(|)");
+        let prog = tigr::vm::parse_tree(&text);
+        let sh = signature_help(&text, off, &prog, &cat).expect("signature help");
+        assert_eq!(sh.signatures[0].label, "Math.sqrt(x) -> Float");
+        assert_eq!(sh.active_parameter, Some(0));
+    }
+
+    #[test]
+    fn signature_help_for_a_local_function() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("add := fn(a, b) { a + b };\nadd(1, |)");
+        let prog = tigr::vm::parse_tree(&text);
+        let sh = signature_help(&text, off, &prog, &cat).expect("signature help");
+        assert_eq!(sh.signatures[0].label, "add(a, b)");
+        assert_eq!(sh.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn signature_help_for_a_builtin() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("str(42, |)");
+        let prog = tigr::vm::parse_tree(&text);
+        let sh = signature_help(&text, off, &prog, &cat).expect("signature help");
+        assert!(sh.signatures[0].label.starts_with("str("), "got {}", sh.signatures[0].label);
+        assert_eq!(sh.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn no_signature_help_outside_a_call() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("x := 1|;");
+        let prog = tigr::vm::parse_tree(&text);
+        assert!(signature_help(&text, off, &prog, &cat).is_none());
     }
 }
 

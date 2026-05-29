@@ -16,6 +16,8 @@ forward-looking.
   Hover now covers `Module.member` access (including aliased imports),
   bare module names, builtins, keywords, and local functions (with their
   parameter list). See "Phase 3a, as built" below.
+- Phase 3b: completion (member-after-dot + identifier completion).
+- Phase 3c: signature help (active-parameter popup inside a call).
 
 ## Guiding principles (unchanged)
 
@@ -121,11 +123,31 @@ Not yet done in 3b: completing a partial *member* of a user object/local
 (only catalog modules are offered after `.`); ranking/sorting hints
 (`sortText`); snippet insertion of call parens.
 
-3c. Signature help (`textDocument/signatureHelp`).
-- While typing arguments inside a call, show the callee's parameters and
-  highlight the active one. For builtins and stdlib, use the catalog
-  arity; for user functions, read params from the `Fn` decl the callee
-  resolves to.
+### Phase 3c, as built
+
+Signature help (`textDocument/signatureHelp`, `signature_help` in
+`main.rs`), with `(` and `,` as trigger/retrigger characters:
+- **Call detection is a backward scan** (`call_context`), mirroring 3b:
+  from the cursor, skip balanced brackets to the enclosing unclosed `(`,
+  counting top-level commas as the active-parameter index. A `[`/`{` at
+  depth 0 means the cursor is in an array/object literal, not a call, so
+  it bails. Robust mid-edit (the call usually won't parse yet).
+- **Callee** (`callee_before`): the identifier — or `receiver.member` —
+  immediately before that `(`. A paren with no leading identifier is a
+  grouping paren, not a call.
+- **Resolution** (`resolve_callee`): a member access goes through the
+  catalog (alias-canonicalized); a bare name is a local `fn` first (its
+  recorded decl signature), then a builtin. The signature string is
+  reused as the popup label; `parse_params` splits its parameter list on
+  top-level commas to build the highlightable parameters. The active
+  index is clamped onto the last parameter (so an extra arg to a variadic
+  still shows the popup rather than dropping it).
+
+### Remaining (signature help polish)
+
+- Multiple signatures / overloads: tigr has none, so one signature only.
+- Per-parameter docs (`ParameterInformation.documentation`): not split
+  out of the member docstring yet.
 
 ## Phase 4: navigation and editing
 
@@ -185,11 +207,9 @@ span work.
 
 1. ~~Symbol catalog, then hover enrichment (3a).~~ **Done.** The catalog
    (`catalog.rs`) and enriched hover have shipped.
-2. ~~Completion (3b)~~ **done**, then signature help (3c). 3b reused
-   `catalog.rs` plus `analysis::locals_in_scope`. For 3c, reuse the same
-   catalog lookups for builtins/stdlib arity; read params from the `Fn`
-   decl a user-function callee resolves to (the resolver already records
-   the signature for `name := fn(...)` locals).
+2. ~~Completion (3b), then signature help (3c).~~ **Done.** Both reuse
+   `catalog.rs`; 3b/3c also reuse `analysis::locals_in_scope` and the
+   `name := fn(...)` signatures the resolver records.
 3. Document symbols (4a). Cheap and useful.
 4. AST spans for patterns/params, then references (4b) and rename (4c).
 5. Parse-tree caching once requests multiply.

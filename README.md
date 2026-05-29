@@ -14,15 +14,16 @@ This README is the overview: how to run Tigr and a short tour. For the full refe
 
 ## Installing tigr
 
-On macOS and Linux, the install script downloads a prebuilt binary for your
-platform and puts it on your `PATH`:
+On macOS and Linux, the install script downloads prebuilt binaries for your
+platform (the `tigr` runtime and the `tigr-lsp` language server) and puts them
+on your `PATH`:
 
 ```bash
 curl -fsSL https://roybie.github.io/tigr/install.sh | sh
 ```
 
 It installs to `~/.tigr/bin` by default. Set `TIGR_BIN_DIR` to install
-elsewhere, or `TIGR_VERSION` (e.g. `v0.18.0`) to pin a specific release. Once
+elsewhere, or `TIGR_VERSION` (e.g. `v0.19.0`) to pin a specific release. Once
 installed, `tigr --version` confirms it works.
 
 To build from source instead, you need a Rust toolchain — see below.
@@ -145,7 +146,7 @@ Start here:
 
 ## Status
 
-tigr is feature-complete. 638 Rust tests and 369 tigr tests pass. It runs on a bytecode VM with:
+tigr is feature-complete and covered by a thorough test suite, from Rust unit tests to tigr programs run under `tigr test`. It runs on a bytecode VM with:
 
 - closures with Lox-style upvalues, first-class lazy ranges, destructuring patterns, pipe `|>`, spread `...`, and string interpolation;
 - `try` / `catch` / `raise` with structured errors. `catch` binds the exact raised value, and built-in errors reify to a `${kind, message, line}` object;

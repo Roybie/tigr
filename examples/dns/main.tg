@@ -8,39 +8,64 @@ TYPE_FROM_STRING := ${
   CNAME: 5,
 };
 
+name     := null;
 qtype    := 'A';
 server   := '1.1.1.1';
 show_ttl := false;
 
+USAGE := 'usage: tigr main.tg <name> [--type A|AAAA|CNAME] [--server <ip>] [--show-ttl]';
+
+die := fn(msg) {
+  print('error: {msg}');
+  print(USAGE);
+  Os.exit(1)
+};
+
 args := Os.args;
-name := args[2];
+
+take_value := fn(flag, idx) {
+  if idx + 1 >= #args {
+    die('flag {flag} requires a value');
+  };
+  v := args[idx + 1];
+  if String.starts_with(v, '--') {
+    die('flag {flag} requires a value (got another flag: {v})');
+  };
+  v
+};
 
 i := 2;
 while i < #args {
   arg := args[i];
   if arg == '--type' {
-    qtype = args[i + 1];
+    qtype = take_value(arg, i);
     i = i + 2;
   } else if arg == '--server' {
-    server = args[i + 1];
+    server = take_value(arg, i);
     i = i + 2;
   } else if arg == '--show-ttl' {
     show_ttl = true;
     i = i + 1;
+  } else if arg == '--help' || arg == '-h' {
+    print(USAGE);
+    Os.exit(0);
+  } else if String.starts_with(arg, '--') {
+    die('unknown flag: {arg}');
+  } else if name {
+    die('unexpected extra argument: {arg} (already have name "{name}")');
   } else {
+    name = arg;
     i = i + 1;
   };
 };
 
 if !name {
-  print('usage: tigr main.tg <name> [--type A|AAAA|CNAME] [--server <ip>] [--show-ttl]');
-  Os.exit(1);
+  die('missing <name>');
 };
 
 qtype_int := TYPE_FROM_STRING[qtype];
 if !qtype_int {
-  print('unknown --type: {qtype} (expected A, AAAA, or CNAME)');
-  Os.exit(1);
+  die('unknown --type: {qtype} (expected A, AAAA, or CNAME)');
 };
 
 response := try {

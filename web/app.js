@@ -6,7 +6,7 @@
 // is authored separately and supplies the markup these hooks live on.
 
 import { EXAMPLES } from './examples.js';
-import { createEditor } from './editor.js';
+import { createEditor, setCatalog } from './editor.js';
 
 // The CodeMirror editor instance — created in main() once #editor is
 // bound. Holds the editor-tab program source.
@@ -41,6 +41,14 @@ class VM {
       this.pending.set(id, resolve);
       this.worker.postMessage({ id, ...payload });
     });
+  }
+
+  // Static-check `source` in the worker and return its diagnostics
+  // (`[{ from, to, message }]`, UTF-16 offsets). Returns `[]` if the
+  // worker was killed mid-request (the reject shape has no `diagnostics`).
+  async lint(source) {
+    const res = await this.send({ kind: 'lint', source });
+    return Array.isArray(res?.diagnostics) ? res.diagnostics : [];
   }
 
   // Terminate a stuck run and start over with a clean worker.
@@ -421,7 +429,7 @@ function main() {
     scratchActive = key === 'scratch';
     const seed = scratchActive ? loadScratch() : (EXAMPLES[key] ?? EXAMPLES.expressions);
     setEditorFile(scratchActive ? 'scratch' : (EXAMPLES[key] ? key : 'expressions'));
-    editor = createEditor(ui.editor, seed, () => runProgram(vm), onEditorChange);
+    editor = createEditor(ui.editor, seed, () => runProgram(vm), onEditorChange, (src) => vm.lint(src));
   }
   ui.editor_run?.addEventListener('click', () => runProgram(vm));
   // CodeMirror's Mod-Enter binding is ⌘ on macOS, Ctrl elsewhere — make
@@ -446,6 +454,10 @@ function main() {
       if (ui.version_badge) ui.version_badge.textContent = `v${msg.version}`;
       if (ui.repl_version) ui.repl_version.textContent = `v${msg.version}`;
     }
+    // Hand the stdlib catalog to the editor so `String.` etc. completes to
+    // real members. Static data, sent once; arrives after the editor is
+    // built, so completion is keyword-only until this fires (sub-second).
+    if (msg && msg.catalog) setCatalog(msg.catalog);
   });
 }
 

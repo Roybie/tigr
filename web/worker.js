@@ -8,12 +8,14 @@
 //
 // Protocol:
 //   main -> worker : { id, kind: 'eval' | 'run', source }
+//                    { id, kind: 'lint', source }
 //                    { id, kind: 'reset' }
-//   worker -> main : { kind: 'ready', version }
+//   worker -> main : { kind: 'ready', version, catalog }
 //                    { id, ok, incomplete, value, output, error, ms }
+//                    { id, diagnostics }   (reply to 'lint')
 
-import init, { WasmRepl, run_program, version } from './pkg/tigr.js';
-import { VERSION } from './pkg/meta.js';
+import init, { WasmRepl, run_program, version, catalog_json, diagnostics } from './pkg/tigr.js';
+import { BUILD_ID } from './pkg/meta.js';
 
 let repl = null;
 
@@ -21,16 +23,24 @@ let repl = null;
 // session backs the console tab; the editor tab uses `run_program`,
 // which spins up its own throwaway session per run.
 //
-// The `?v=VERSION` query cache-busts the wasm: GitHub Pages serves it
-// through a CDN that caches each URL independently, so after a release a
-// browser could fetch the new JS glue against a stale `tigr_bg.wasm` and
-// hit "wasm.<export> is not a function". A version-stamped URL the cache
-// has never seen forces a fresh fetch. `import.meta.url` is the worker's
-// own location (web/), so the relative path resolves to web/pkg/.
-init(new URL(`./pkg/tigr_bg.wasm?v=${VERSION}`, import.meta.url))
+// The `?v=BUILD_ID` query cache-busts the wasm: GitHub Pages serves it
+// through a CDN that caches each URL independently, so a browser could
+// fetch the new JS glue against a stale `tigr_bg.wasm` and hit
+// "wasm.<export> is not a function". BUILD_ID embeds a checksum of the
+// wasm (see build.sh), so any rebuild gives a URL the cache has never
+// seen and forces a fresh fetch. `import.meta.url` is the worker's own
+// location (web/), so the relative path resolves to web/pkg/.
+init(new URL(`./pkg/tigr_bg.wasm?v=${BUILD_ID}`, import.meta.url))
   .then(() => {
     repl = new WasmRepl();
-    self.postMessage({ kind: 'ready', version: version() });
+    // The catalog is static (it doesn't depend on user code), so ship it
+    // once now; the main thread builds completions from it synchronously,
+    // with no per-keystroke round-trip.
+    self.postMessage({
+      kind: 'ready',
+      version: version(),
+      catalog: JSON.parse(catalog_json()),
+    });
   })
   .catch((err) => {
     self.postMessage({ kind: 'ready', error: String(err) });
@@ -42,6 +52,20 @@ self.onmessage = (e) => {
   if (msg.kind === 'reset') {
     repl = new WasmRepl();
     self.postMessage({ id: msg.id, ok: true, incomplete: false, value: '', output: '', error: '' });
+    return;
+  }
+
+  // Static-check the source (no execution) and return diagnostics for the
+  // editor's linter. Never throws into the request: a parse hiccup just
+  // yields no diagnostics.
+  if (msg.kind === 'lint') {
+    let diags = [];
+    try {
+      diags = JSON.parse(diagnostics(msg.source));
+    } catch (_err) {
+      diags = [];
+    }
+    self.postMessage({ id: msg.id, diagnostics: diags });
     return;
   }
 

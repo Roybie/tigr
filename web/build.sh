@@ -13,14 +13,19 @@ cd "$(dirname "$0")/.."
 
 wasm-pack build --target web --out-dir web/pkg --no-typescript --no-pack
 
-# Bake the crate version into a tiny module the worker reads BEFORE the
-# wasm loads, so it can cache-bust the wasm URL (tigr_bg.wasm?v=VERSION).
-# The version can't come from the wasm itself (it isn't loaded yet), so
-# read it from Cargo.toml — the same single source the wasm compiles its
-# CARGO_PKG_VERSION in from, so the two can't disagree within a build.
-# Written after wasm-pack so its out-dir clean can't remove it.
+# Bake a cache-bust token into a tiny module the worker reads BEFORE the
+# wasm loads, so it can stamp the wasm URL (tigr_bg.wasm?v=BUILD_ID). The
+# token is the crate version plus a checksum of the built wasm, so it
+# changes whenever the wasm bytes change — not only on a version bump —
+# which matters because GitHub Pages caches each URL independently and a
+# same-version-but-rebuilt wasm at a stale URL is exactly what produced
+# "wasm.<export> is not a function". The token can't come from the wasm
+# itself (it isn't loaded yet). `cksum` is POSIX, so it works on both the
+# macOS dev box and the Linux CI runner. Written after wasm-pack so its
+# out-dir clean can't remove it.
 version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
-printf 'export const VERSION = "%s";\n' "$version" >web/pkg/meta.js
+sum=$(cksum web/pkg/tigr_bg.wasm | cut -d' ' -f1)
+printf 'export const BUILD_ID = "%s-%s";\n' "$version" "$sum" >web/pkg/meta.js
 
 echo
 echo "Playground built. Serve it with, e.g.:"

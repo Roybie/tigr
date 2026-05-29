@@ -47,33 +47,33 @@ pub struct Catalog {
 /// before the `.` in member access, so it is the catalog key.
 const MODULE_DOCS: &[(&str, &str)] = &[
     // Pure-tigr source modules.
-    ("Array", include_str!("../../../docs/stdlib/array.md")),
-    ("Math", include_str!("../../../docs/stdlib/math.md")),
-    ("String", include_str!("../../../docs/stdlib/string.md")),
-    ("Map", include_str!("../../../docs/stdlib/map.md")),
-    ("Set", include_str!("../../../docs/stdlib/set.md")),
-    ("Object", include_str!("../../../docs/stdlib/object.md")),
-    ("Iter", include_str!("../../../docs/stdlib/iter.md")),
-    ("Http", include_str!("../../../docs/stdlib/http.md")),
-    ("Url", include_str!("../../../docs/stdlib/url.md")),
-    ("Channel", include_str!("../../../docs/stdlib/channel.md")),
-    ("LocalChannel", include_str!("../../../docs/stdlib/localchannel.md")),
-    ("Test", include_str!("../../../docs/stdlib/test.md")),
+    ("Array", include_str!("../docs/stdlib/array.md")),
+    ("Math", include_str!("../docs/stdlib/math.md")),
+    ("String", include_str!("../docs/stdlib/string.md")),
+    ("Map", include_str!("../docs/stdlib/map.md")),
+    ("Set", include_str!("../docs/stdlib/set.md")),
+    ("Object", include_str!("../docs/stdlib/object.md")),
+    ("Iter", include_str!("../docs/stdlib/iter.md")),
+    ("Http", include_str!("../docs/stdlib/http.md")),
+    ("Url", include_str!("../docs/stdlib/url.md")),
+    ("Channel", include_str!("../docs/stdlib/channel.md")),
+    ("LocalChannel", include_str!("../docs/stdlib/localchannel.md")),
+    ("Test", include_str!("../docs/stdlib/test.md")),
     // Native (Rust) modules.
-    ("JSON", include_str!("../../../docs/stdlib/json.md")),
-    ("IO", include_str!("../../../docs/stdlib/io.md")),
-    ("Path", include_str!("../../../docs/stdlib/path.md")),
-    ("Time", include_str!("../../../docs/stdlib/time.md")),
-    ("DateTime", include_str!("../../../docs/stdlib/datetime.md")),
-    ("Random", include_str!("../../../docs/stdlib/random.md")),
-    ("Bytes", include_str!("../../../docs/stdlib/bytes.md")),
-    ("BigInt", include_str!("../../../docs/stdlib/bigint.md")),
-    ("Os", include_str!("../../../docs/stdlib/os.md")),
-    ("Net", include_str!("../../../docs/stdlib/net.md")),
+    ("JSON", include_str!("../docs/stdlib/json.md")),
+    ("IO", include_str!("../docs/stdlib/io.md")),
+    ("Path", include_str!("../docs/stdlib/path.md")),
+    ("Time", include_str!("../docs/stdlib/time.md")),
+    ("DateTime", include_str!("../docs/stdlib/datetime.md")),
+    ("Random", include_str!("../docs/stdlib/random.md")),
+    ("Bytes", include_str!("../docs/stdlib/bytes.md")),
+    ("BigInt", include_str!("../docs/stdlib/bigint.md")),
+    ("Os", include_str!("../docs/stdlib/os.md")),
+    ("Net", include_str!("../docs/stdlib/net.md")),
 ];
 
 /// The builtins page has the same `### `sig`` shape but no module name.
-const BUILTINS_DOC: &str = include_str!("../../../docs/stdlib/builtins.md");
+const BUILTINS_DOC: &str = include_str!("../docs/stdlib/builtins.md");
 
 /// Keywords with a one-line explanation. Not in the docs pages, so
 /// hand-maintained; the list mirrors the lexer's keyword tokens.

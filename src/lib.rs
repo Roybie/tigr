@@ -8,6 +8,13 @@
 pub mod repl;
 pub mod vm;
 
+/// A catalog of the language's named entities (builtins, stdlib module
+/// members, keywords) with signatures and docstrings, parsed from the
+/// committed `docs/stdlib/*.md`. The language server uses it for hover,
+/// completion, and signature help; the wasm playground reuses it for the
+/// same, so the two stay in lockstep.
+pub mod catalog;
+
 /// `wasm-bindgen` entry points for the browser playground. Only built
 /// for the `wasm32` target; the native binary never sees it.
 #[cfg(target_arch = "wasm32")]

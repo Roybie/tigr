@@ -22,8 +22,8 @@ import { indentWithTab }
   from 'https://esm.sh/@codemirror/commands@6.10.3?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0';
 import { StreamLanguage, LanguageSupport, HighlightStyle, syntaxHighlighting, indentUnit }
   from 'https://esm.sh/@codemirror/language@6.12.3?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0,@lezer/highlight@1.2.3';
-import { completeFromList }
-  from 'https://esm.sh/@codemirror/autocomplete@6.20.2?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0';
+import { linter }
+  from 'https://esm.sh/@codemirror/lint@6.8.5?deps=@codemirror/state@6.6.0,@codemirror/view@6.43.0';
 import { tags as t }
   from 'https://esm.sh/@lezer/highlight@1.2.3';
 
@@ -114,7 +114,7 @@ const tigrStream = StreamLanguage.define({
   },
   languageData: {
     commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
-    autocomplete: completeFromList(buildCompletions()),
+    autocomplete: tigrCompletions,
   },
   // Map the token strings returned above directly to highlight tags,
   // rather than relying on StreamLanguage's classic-name fallback
@@ -131,18 +131,67 @@ const tigrStream = StreamLanguage.define({
   },
 });
 
-function buildCompletions() {
+// --- completion ------------------------------------------------------
+//
+// The stdlib catalog (module members, builtins) arrives from the wasm
+// build once it loads (app.js calls `setCatalog`), so suggestions match
+// what the language server gives an editor. Until then, completion falls
+// back to keywords/atoms plus a static builtin/module list.
+
+let CATALOG = null;
+
+/** Receive the stdlib catalog (see wasm `catalog_json`). */
+export function setCatalog(cat) {
+  CATALOG = cat;
+}
+
+// Static fallback used before the catalog loads.
+const FALLBACK_BUILTINS = ['print', 'str', 'num', 'int', 'float', 'bool',
+  'floor', 'ceil', 'rand', 'type', 'gc', 'join'];
+const FALLBACK_MODULES = ['Iter', 'Array', 'Map', 'Set', 'String', 'Math',
+  'Object', 'LocalChannel', 'Test', 'JSON', 'Random', 'Bytes', 'BigInt',
+  'Path', 'Time', 'DateTime'];
+
+// CodeMirror completion source. Two modes:
+//   * after `Receiver.` — offer that module's members (the headline case);
+//   * otherwise — keywords, atoms, module names, and builtins.
+function tigrCompletions(context) {
+  // Member access: `<receiver>.<partial>`, partial possibly empty.
+  const dotted = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_]*/);
+  if (dotted) {
+    const dot = dotted.text.lastIndexOf('.');
+    const receiver = dotted.text.slice(0, dot);
+    const mod = CATALOG && CATALOG.modules[receiver];
+    if (!mod) return null; // unknown receiver — no noise
+    return {
+      from: dotted.from + dot + 1,
+      options: mod.members.map((m) => ({
+        label: m.name,
+        type: m.constant ? 'constant' : 'function',
+        detail: m.signature,
+        info: m.doc || undefined,
+      })),
+    };
+  }
+
+  // Identifier position.
+  const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/);
+  if (!word && !context.explicit) return null;
+  return { from: word ? word.from : context.pos, options: identifierOptions() };
+}
+
+function identifierOptions() {
   const out = [];
   for (const k of KEYWORDS) out.push({ label: k, type: 'keyword' });
-  for (const k of ATOMS) out.push({ label: k, type: 'constant' });
-  for (const b of ['print', 'str', 'num', 'int', 'float', 'bool', 'floor',
-    'ceil', 'rand', 'type', 'gc', 'join']) {
-    out.push({ label: b, type: 'function' });
-  }
-  for (const m of ['Iter', 'Array', 'Map', 'Set', 'String', 'Math', 'Object',
-    'LocalChannel', 'Test', 'JSON', 'Random', 'Bytes', 'BigInt', 'Path',
-    'Time', 'DateTime']) {
-    out.push({ label: m, type: 'class' });
+  for (const a of ATOMS) out.push({ label: a, type: 'constant' });
+  if (CATALOG) {
+    for (const name of Object.keys(CATALOG.modules)) out.push({ label: name, type: 'class' });
+    for (const b of CATALOG.builtins) {
+      out.push({ label: b.name, type: 'function', detail: b.signature, info: b.doc || undefined });
+    }
+  } else {
+    for (const b of FALLBACK_BUILTINS) out.push({ label: b, type: 'function' });
+    for (const m of FALLBACK_MODULES) out.push({ label: m, type: 'class' });
   }
   return out;
 }
@@ -188,9 +237,26 @@ const tigrTheme = EditorView.theme({
 // --- public API ------------------------------------------------------
 
 // Mount a CodeMirror editor into `parent`. `onRun` fires on Mod-Enter;
-// `onChange` fires after any edit to the document.
+// `onChange` fires after any edit to the document. `lint`, if given, is an
+// async `(sourceText) => [{ from, to, message }]` (the worker's static
+// check) that drives inline error squiggles.
 // Returns a small handle so app.js need not know CodeMirror internals.
-export function createEditor(parent, doc, onRun, onChange) {
+export function createEditor(parent, doc, onRun, onChange, lint) {
+  // `linter` re-checks on a debounce after edits. Offsets come back in the
+  // same UTF-16 units CodeMirror uses, but the doc may have changed while
+  // the worker was busy, so clamp every range into the current document.
+  const tigrLinter = lint
+    ? [linter(async (view) => {
+        const diags = await lint(view.state.doc.toString());
+        const len = view.state.doc.length;
+        return diags.map((d) => {
+          const from = Math.max(0, Math.min(d.from, len));
+          const to = Math.max(from, Math.min(d.to, len));
+          return { from, to, severity: 'error', source: 'tigr', message: d.message };
+        });
+      }, { delay: 400 })]
+    : [];
+
   const view = new EditorView({
     parent,
     doc,
@@ -200,6 +266,7 @@ export function createEditor(parent, doc, onRun, onChange) {
       syntaxHighlighting(tigrHighlight),
       tigrTheme,
       indentUnit.of('  '),
+      ...tigrLinter,
       // Prec.highest so this Mod-Enter binding beats basicSetup's
       // default keymap, which already maps Mod-Enter to `insertBlankLine`
       // (without this it loses the precedence race and just adds a line).

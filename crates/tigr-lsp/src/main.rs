@@ -12,7 +12,10 @@
 //! stay pinned to one thread.
 
 mod analysis;
-mod catalog;
+// The catalog now lives in the `tigr` lib (so the wasm playground can
+// reuse it too); re-export it under `crate::catalog` so the rest of this
+// crate's `crate::catalog::*` paths are unchanged.
+use tigr::catalog;
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};

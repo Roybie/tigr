@@ -128,6 +128,29 @@ impl Catalog {
     pub fn keyword(&self, name: &str) -> Option<&str> {
         self.keywords.get(name).copied()
     }
+
+    /// Every module, as `(name, module)`. Order is unspecified.
+    pub fn modules(&self) -> impl Iterator<Item = (&str, &Module)> {
+        self.modules.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Every builtin, as `(name, member)`. Order is unspecified.
+    pub fn builtins(&self) -> impl Iterator<Item = (&str, &Member)> {
+        self.builtins.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Every keyword, as `(name, explanation)`. Order is unspecified.
+    pub fn keywords(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.keywords.iter().map(|(k, v)| (*k, *v))
+    }
+}
+
+impl Member {
+    /// Whether this entry is a constant (e.g. `Math.PI`) rather than a
+    /// callable. Constants have a bare-name signature with no `(`.
+    pub fn is_constant(&self) -> bool {
+        !self.signature.contains('(')
+    }
 }
 
 /// Parse one docs page into a [`Module`]. The page's intro paragraph

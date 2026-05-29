@@ -96,6 +96,13 @@ impl LanguageServer for Backend {
                 )),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    // `.` re-triggers so member completion fires right
+                    // after the dot; identifiers trigger as the client
+                    // sees fit (typically on any word character).
+                    trigger_characters: Some(vec![".".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         })
@@ -190,9 +197,154 @@ impl LanguageServer for Backend {
         }))
     }
 
+    async fn completion(
+        &self,
+        params: CompletionParams,
+    ) -> Result<Option<CompletionResponse>> {
+        let p = params.text_document_position;
+        let Some((text, offset)) = self.locate(&p.text_document.uri, p.position) else {
+            return Ok(None);
+        };
+        let program = tigr::vm::parse_tree(&text);
+        let items = completion_items(&text, offset, &program, &self.catalog);
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Build the completion list for `offset`. After `module.` it offers that
+/// module's members; otherwise it offers in-scope locals, builtins,
+/// module names, and keywords. Prefix filtering is left to the client.
+fn completion_items(
+    text: &str,
+    offset: usize,
+    program: &tigr::vm::ast::Block,
+    catalog: &Catalog,
+) -> Vec<CompletionItem> {
+    // `module.` member access — offer only that module's members.
+    if let Some(module) = member_trigger(text, offset) {
+        let canonical = analysis::canonical_module(program, &module);
+        let Some(m) = catalog.module(&canonical) else {
+            return Vec::new(); // unknown receiver: nothing to suggest
+        };
+        return m
+            .members
+            .iter()
+            .map(|(name, member)| CompletionItem {
+                label: name.clone(),
+                kind: Some(if member.is_constant() {
+                    CompletionItemKind::CONSTANT
+                } else {
+                    CompletionItemKind::FUNCTION
+                }),
+                detail: Some(format!("{canonical}.{}", member.signature)),
+                documentation: doc_markup(&member.doc),
+                ..Default::default()
+            })
+            .collect();
+    }
+
+    // Otherwise: locals, builtins, modules, keywords.
+    let mut items = Vec::new();
+
+    for local in analysis::locals_in_scope(program, offset) {
+        let detail = local
+            .sig
+            .clone()
+            .unwrap_or_else(|| local.kind.describe().to_string());
+        items.push(CompletionItem {
+            label: local.name,
+            kind: Some(if local.sig.is_some() {
+                CompletionItemKind::FUNCTION
+            } else {
+                CompletionItemKind::VARIABLE
+            }),
+            detail: Some(detail),
+            ..Default::default()
+        });
+    }
+
+    for (name, member) in catalog.builtins() {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(member.signature.clone()),
+            documentation: doc_markup(&member.doc),
+            ..Default::default()
+        });
+    }
+
+    for (name, module) in catalog.modules() {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::MODULE),
+            detail: Some("module".to_string()),
+            documentation: doc_markup(&module.description),
+            ..Default::default()
+        });
+    }
+
+    for (name, explanation) in catalog.keywords() {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("keyword".to_string()),
+            documentation: doc_markup(explanation),
+            ..Default::default()
+        });
+    }
+
+    items
+}
+
+/// Wrap a docstring as Markdown completion documentation, or `None` if
+/// empty.
+fn doc_markup(doc: &str) -> Option<Documentation> {
+    if doc.is_empty() {
+        return None;
+    }
+    Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: doc.to_string(),
+    }))
+}
+
+/// If the text just before `offset` is `<ident> . <partial>?`, return the
+/// receiver identifier — the cursor is completing a member access. Walks
+/// backward over an optional partial member name, the dot, and the
+/// receiver, all of which are ASCII, so byte indexing is safe.
+fn member_trigger(text: &str, offset: usize) -> Option<String> {
+    let b = text.as_bytes();
+    let mut i = offset.min(b.len());
+    // The partial member name being typed (may be empty right after `.`).
+    while i > 0 && is_ident_byte(b[i - 1]) {
+        i -= 1;
+    }
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || b[i - 1] != b'.' {
+        return None;
+    }
+    i -= 1; // the dot
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let end = i;
+    while i > 0 && is_ident_byte(b[i - 1]) {
+        i -= 1;
+    }
+    if i == end {
+        return None; // no receiver identifier
+    }
+    Some(text[i..end].to_string())
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Hover text for a keyword token under `offset`, if any. Keywords are
@@ -355,6 +507,66 @@ fn position_to_offset(text: &str, pos: Position, enc: &PositionEncodingKind) -> 
             units += ch.len_utf16();
         }
         line_end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Byte offset of the cursor marked `|` in `src`, with the marker
+    /// removed from the returned text.
+    fn cursor(src: &str) -> (String, usize) {
+        let off = src.find('|').expect("cursor marker");
+        (src.replace('|', ""), off)
+    }
+
+    #[test]
+    fn member_trigger_detects_receiver_after_dot() {
+        let (text, off) = cursor("Math.|");
+        assert_eq!(member_trigger(&text, off).as_deref(), Some("Math"));
+    }
+
+    #[test]
+    fn member_trigger_detects_receiver_with_partial() {
+        let (text, off) = cursor("Math.sq|");
+        assert_eq!(member_trigger(&text, off).as_deref(), Some("Math"));
+    }
+
+    #[test]
+    fn member_trigger_is_none_for_a_bare_word() {
+        let (text, off) = cursor("Mat|");
+        assert_eq!(member_trigger(&text, off), None);
+    }
+
+    #[test]
+    fn member_completion_lists_module_members() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("M := import 'Math';\nM.|");
+        let prog = tigr::vm::parse_tree(&text);
+        let items = completion_items(&text, off, &prog, &cat);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"sqrt"), "got {labels:?}");
+        // Aliased receiver canonicalizes, and detail is qualified.
+        let sqrt = items.iter().find(|i| i.label == "sqrt").unwrap();
+        assert_eq!(sqrt.detail.as_deref(), Some("Math.sqrt(x) -> Float"));
+        // Member context offers only members, not builtins/keywords.
+        assert!(!labels.contains(&"print"), "leaked builtin into member list");
+    }
+
+    #[test]
+    fn identifier_completion_offers_locals_builtins_modules_keywords() {
+        let cat = Catalog::load();
+        let (text, off) = cursor("x := 1;\n|");
+        let prog = tigr::vm::parse_tree(&text);
+        let labels: Vec<String> = completion_items(&text, off, &prog, &cat)
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert!(labels.contains(&"x".to_string()), "local missing");
+        assert!(labels.contains(&"print".to_string()), "builtin missing");
+        assert!(labels.contains(&"Math".to_string()), "module missing");
+        assert!(labels.contains(&"match".to_string()), "keyword missing");
     }
 }
 

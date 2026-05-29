@@ -96,16 +96,30 @@ Hover (`analysis::hover` + `keyword_hover` in `main.rs`) tries, in order:
 
 Rendered as Markdown — a signature in a `tigr` code fence, then the doc.
 
-### Remaining Phase 3 work
+### Phase 3b, as built
 
-3b. Completion (`textDocument/completion`).
-- Member completion after `.`: when the cursor follows `Ident("Mod").`,
-  offer that module's members from the catalog.
-- Identifier completion elsewhere: in-scope locals (reuse the resolver's
-  scope walk), builtins, module names, and keywords.
-- Each `CompletionItem` carries `kind`, `detail` (the signature), and
-  `documentation` (the catalog docstring).
-- This supersedes the static omnifunc in `vim-tigr`.
+Completion (`textDocument/completion`, `completion_items` in `main.rs`),
+with `.` registered as a trigger character:
+- **Member completion after `.`.** A backward text scan
+  (`member_trigger`) over `<receiver> . <partial>` finds the receiver
+  identifier even when the buffer is mid-edit and won't parse into a
+  clean `Index` (the common case right after typing the dot). The
+  receiver is canonicalized through `analysis::canonical_module`, then
+  the catalog's members are offered. Constants get
+  `CompletionItemKind::CONSTANT`, others `FUNCTION`. Nothing else is
+  offered in member position (no builtin/keyword leakage).
+- **Identifier completion elsewhere.** In-scope locals
+  (`analysis::locals_in_scope`, reusing the resolver's scope walk, with a
+  `fn` decl's signature in the detail), builtins, module names, and
+  keywords.
+- Each item carries `kind`, `detail` (the signature), and `documentation`
+  (the catalog docstring as Markdown). Prefix filtering is left to the
+  client.
+- Supersedes the static omnifunc in `vim-tigr`.
+
+Not yet done in 3b: completing a partial *member* of a user object/local
+(only catalog modules are offered after `.`); ranking/sorting hints
+(`sortText`); snippet insertion of call parens.
 
 3c. Signature help (`textDocument/signatureHelp`).
 - While typing arguments inside a call, show the callee's parameters and
@@ -171,11 +185,11 @@ span work.
 
 1. ~~Symbol catalog, then hover enrichment (3a).~~ **Done.** The catalog
    (`catalog.rs`) and enriched hover have shipped.
-2. Completion (3b), then signature help (3c). Reuse `catalog.rs`: its
-   `module`/`member`/`builtin`/`keyword` lookups already expose every
-   signature and docstring completion and signature help need. 3b also
-   wants the resolver's in-scope locals; 3c wants params from the `Fn`
-   decl a user-function callee resolves to.
+2. ~~Completion (3b)~~ **done**, then signature help (3c). 3b reused
+   `catalog.rs` plus `analysis::locals_in_scope`. For 3c, reuse the same
+   catalog lookups for builtins/stdlib arity; read params from the `Fn`
+   decl a user-function callee resolves to (the resolver already records
+   the signature for `name := fn(...)` locals).
 3. Document symbols (4a). Cheap and useful.
 4. AST spans for patterns/params, then references (4b) and rename (4c).
 5. Parse-tree caching once requests multiply.

@@ -29,7 +29,7 @@ pub enum BindingKind {
 }
 
 impl BindingKind {
-    fn describe(self) -> &'static str {
+    pub fn describe(self) -> &'static str {
         match self {
             BindingKind::Decl => "variable",
             BindingKind::Param => "parameter",
@@ -213,13 +213,53 @@ fn pattern_str(p: &Pattern) -> String {
 /// no local binding — likely a global, builtin, or stdlib module).
 fn resolve(program: &Block, offset: usize) -> Option<(String, Option<Binding>)> {
     let (name, _span) = ident_at(program, offset)?;
+    let scopes = scopes_at(program, offset);
+    let binding = scopes.iter().rev().find_map(|s| s.bindings.get(&name).cloned());
+    Some((name, binding))
+}
+
+/// The scope chain active at `offset`, outermost first: the hoisted
+/// top-level scope, then one scope per scope-opening construct on the
+/// path to the cursor.
+fn scopes_at(program: &Block, offset: usize) -> Vec<Scope> {
     let mut scopes = Vec::new();
     let mut root = Scope::default();
     hoist_block(program, &mut root);
     scopes.push(root);
     descend_block(program, offset, &mut scopes);
-    let binding = scopes.iter().rev().find_map(|s| s.bindings.get(&name).cloned());
-    Some((name, binding))
+    scopes
+}
+
+/// One in-scope binding, for completion. A `fn` decl carries its
+/// signature so completion can show parameters in the detail.
+pub struct Local {
+    pub name: String,
+    pub kind: BindingKind,
+    pub sig: Option<String>,
+}
+
+/// Every binding visible at `offset`, innermost shadowing outermost.
+pub fn locals_in_scope(program: &Block, offset: usize) -> Vec<Local> {
+    let mut map: HashMap<String, Local> = HashMap::new();
+    // `scopes_at` is outermost-first, so a later (inner) entry overwrites
+    // an outer one of the same name — the shadowing the resolver applies.
+    for scope in scopes_at(program, offset) {
+        for (name, b) in scope.bindings {
+            map.insert(
+                name.clone(),
+                Local { name, kind: b.kind, sig: b.sig },
+            );
+        }
+    }
+    map.into_values().collect()
+}
+
+/// Resolve an identifier to the module it imports, if it is an
+/// `Alias := import 'Name'` binding; otherwise return it unchanged.
+pub fn canonical_module(program: &Block, name: &str) -> String {
+    import_aliases(program)
+        .remove(name)
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn contains(span: Span, offset: usize) -> bool {
@@ -659,5 +699,38 @@ mod tests {
     fn no_hover_for_an_unknown_bare_identifier() {
         let src = "foo + 1;";
         assert!(hover_at(src, "foo").is_none());
+    }
+
+    #[test]
+    fn locals_in_scope_sees_outer_decls_and_inner_params() {
+        let src = "a := 1;\nf := fn(p) { b := 2; p };\nc := 3;";
+        // Offset inside the function body, on `b`.
+        let off = src.find("b := 2").unwrap();
+        let names: std::collections::HashSet<String> =
+            locals_in_scope(&parse_tree(src), off)
+                .into_iter()
+                .map(|l| l.name)
+                .collect();
+        for want in ["a", "f", "c", "p", "b"] {
+            assert!(names.contains(want), "missing {want} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn local_function_carries_its_signature() {
+        let src = "f := fn(p) { b := 2; p };";
+        let off = src.find("b := 2").unwrap();
+        let f = locals_in_scope(&parse_tree(src), off)
+            .into_iter()
+            .find(|l| l.name == "f")
+            .unwrap();
+        assert_eq!(f.sig.as_deref(), Some("f(p)"));
+    }
+
+    #[test]
+    fn canonical_module_resolves_aliases() {
+        let prog = parse_tree("M := import 'Math';");
+        assert_eq!(canonical_module(&prog, "M"), "Math");
+        assert_eq!(canonical_module(&prog, "Other"), "Other");
     }
 }

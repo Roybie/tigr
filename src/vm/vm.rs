@@ -200,6 +200,14 @@ pub struct Vm {
     /// when a `go` block captured a top-level binding
     /// (`stack_for`/`upvalue_set`). `None` outside a drain.
     drain_main: Option<GreenThread>,
+    /// Temporary GC roots held across a hot-reload. `Session::reload`
+    /// snapshots the old program's data values *before* resetting the
+    /// stack to run the new program, then carries them into the new
+    /// slots. Between those two steps the values are reachable only from
+    /// the Rust-side snapshot, so the new program's allocations could
+    /// otherwise collect them; parking them here keeps them traced until
+    /// the carry completes. Empty outside a reload.
+    reload_roots: Vec<Value>,
 }
 
 /// A parked resumer: the coroutine state that was running when a
@@ -246,6 +254,7 @@ impl Vm {
             frame_now: 0.0,
             in_drain: false,
             drain_main: None,
+            reload_roots: Vec::new(),
         }
     }
 
@@ -296,6 +305,39 @@ impl Vm {
     /// how many persistent top-level slots exist.
     pub fn stack_len(&self) -> usize {
         self.stack.len()
+    }
+
+    /// Discard every queued / parked green thread and reset coroutine
+    /// bookkeeping to a single main coroutine. Used by hot-reload
+    /// ([`crate::embed::Session::reload`]): a frozen coroutine's frames
+    /// hold `ip`s into the old, now-replaced bytecode chunks and so
+    /// cannot be migrated onto the recompiled program — Tier-1 reload
+    /// cancels them, and the new program re-spawns whatever it needs.
+    /// Any in-flight worker IO posts harmlessly (its completion finds no
+    /// parked coroutine and is dropped). Call at a frame boundary, never
+    /// mid-[`drain_ready`](Vm::drain_ready).
+    pub fn cancel_coroutines(&mut self) {
+        self.scheduler.reset();
+        self.current_handle = None;
+        self.current_gen = None;
+        self.resume_stack.clear();
+        self.in_drain = false;
+        self.drain_main = None;
+    }
+
+    /// Park `vals` as temporary GC roots for the duration of a
+    /// hot-reload (see [`reload_roots`](Vm::reload_roots) /
+    /// [`release_reload_roots`](Vm::release_reload_roots)). They are
+    /// traced until released, so old data values survive the new
+    /// program's allocations while being carried into fresh slots.
+    pub fn hold_reload_roots(&mut self, vals: Vec<Value>) {
+        self.reload_roots = vals;
+    }
+
+    /// Drop the temporary hot-reload GC roots held by
+    /// [`hold_reload_roots`](Vm::hold_reload_roots).
+    pub fn release_reload_roots(&mut self) {
+        self.reload_roots.clear();
     }
 
     /// Run a compiled top-level program. Returns its final value.
@@ -3135,6 +3177,11 @@ impl Vm {
             v.trace(m);
         }
         for v in self.host_modules.values() {
+            v.trace(m);
+        }
+        // Old data values held mid-flight by a hot-reload, before they
+        // are carried into the new program's slots.
+        for v in &self.reload_roots {
             v.trace(m);
         }
         // Parked green threads — their saved execution state holds

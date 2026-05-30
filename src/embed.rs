@@ -26,6 +26,7 @@
 //! `use tigr::embed::*` is enough — no reaching into `crate::vm::*`.
 
 use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -133,6 +134,133 @@ impl Session {
         }
     }
 
+    /// Hot-reload: replace the whole program with `source`, preserving
+    /// top-level *data* state (Tier-1). Unlike [`load`](Session::load),
+    /// which appends, `reload` swaps the code wholesale — the model
+    /// behind a "save the file, see the change, keep playing" workflow.
+    ///
+    /// 1. The new source is compiled **off to the side first**. On a
+    ///    lex/parse/compile error the live VM is left completely
+    ///    untouched and the rendered diagnostic is returned as `Err` —
+    ///    non-fatal, so the host can show an error overlay and keep
+    ///    running the last good program.
+    /// 2. Top-level bindings are classified: functions / natives are
+    ///    *code* (replaced), everything else is *data* (preserved).
+    /// 3. Parked green threads are cancelled
+    ///    ([`Vm::cancel_coroutines`]): their frames hold `ip`s into the
+    ///    old bytecode and cannot migrate. The new `init`/`update`
+    ///    re-spawns whatever sequences it needs.
+    /// 4. The new top-level runs fresh, recreating every slot.
+    /// 5. Data values whose name still exists (and is still data) are
+    ///    carried into the new slots. A name that changed kind
+    ///    (data↔fn) takes the new definition.
+    /// 6. If the new program defines a callable `on_reload`, it is
+    ///    invoked once (a state-shape migration hook).
+    ///
+    /// Caveat: only *compile* failures are non-fatal. A runtime error
+    /// thrown while the new top-level executes (step 4) cannot be rolled
+    /// back — the old program's coroutines are already cancelled — and
+    /// is returned as `Err`. Tier-2 coexistence (old sequences finishing
+    /// on old code) is deliberately not implemented; see the plan.
+    pub fn reload(&mut self, source: &str) -> Result<(), String> {
+        self.load_no += 1;
+        let sid = self
+            .sources
+            .borrow_mut()
+            .add(format!("<reload:{}>", self.load_no), source);
+
+        // 1. Compile off to the side, against *empty* prior bindings —
+        //    this is a full replacement, so the new program's slots
+        //    start fresh at slot 1. Any error leaves the VM untouched.
+        let empty: Vec<(String, u8)> = Vec::new();
+        let compiled: Result<_, Error> = (|| {
+            let tokens = Lexer::new(source).tokenize().map_err(|mut e| {
+                e.source = sid;
+                Error::from(e)
+            })?;
+            let mut program = parser::parse(tokens).map_err(|mut e| {
+                e.source = sid;
+                Error::from(e)
+            })?;
+            fold::fold_program(&mut program);
+            let compiled =
+                Compiler::compile_repl_with_source(&program, &empty, sid)?;
+            Ok(compiled)
+        })();
+        let (main, new_bindings) = match compiled {
+            Ok(v) => v,
+            Err(e) => return Err(e.render(&self.sources.borrow())),
+        };
+
+        // 2. Snapshot + classify the old top-level bindings (latest
+        //    declaration wins for a redeclared name).
+        let mut old: HashMap<String, (Value, bool)> = HashMap::new();
+        for (name, slot) in &self.bindings {
+            if let Some(v) = self.vm.stack_slot(*slot as usize) {
+                let data = is_data(&v);
+                old.insert(name.clone(), (v, data));
+            }
+        }
+        // Keep the old data values alive across the new program's run:
+        // once the stack is reset they are reachable only from `old`,
+        // so the new program's allocations could otherwise collect them.
+        let carry_roots: Vec<Value> = old
+            .values()
+            .filter(|(_, data)| *data)
+            .map(|(v, _)| v.clone())
+            .collect();
+        self.vm.hold_reload_roots(carry_roots);
+
+        // 3 + 4. Cancel parked coroutines, reset the persistent frame,
+        //        and run the new top-level fresh.
+        self.vm.cancel_coroutines();
+        let closure = crate::vm::gc::alloc_closure(Closure {
+            function: Arc::new(main),
+            upvalues: Vec::new(),
+        });
+        self.vm.start_repl();
+        if let Err(e) = self.vm.run_repl_line(closure, 1) {
+            // The new top-level raised. State is already reset, so this
+            // is fatal to the session — surface it rendered.
+            self.vm.release_reload_roots();
+            self.bindings = new_bindings;
+            return Err(Error::Runtime(e).render(&self.sources.borrow()));
+        }
+
+        // 5. Carry data forward into the new slots.
+        let new_map: HashMap<String, u8> =
+            new_bindings.iter().cloned().collect();
+        for (name, (old_val, data)) in &old {
+            if !data {
+                continue;
+            }
+            if let Some(&new_slot) = new_map.get(name) {
+                // A name that the new program redefined as code takes
+                // the new definition — don't clobber it with old data.
+                let new_is_data = self
+                    .vm
+                    .stack_slot(new_slot as usize)
+                    .map(|v| is_data(&v))
+                    .unwrap_or(false);
+                if new_is_data {
+                    self.vm.set_stack_slot(new_slot as usize, old_val.clone());
+                }
+            }
+        }
+        self.vm.release_reload_roots();
+        self.bindings = new_bindings;
+
+        // 6. Optional state-shape migration hook.
+        if self.has_callable("on_reload") {
+            if let Some(cb) = self.binding("on_reload") {
+                self.vm
+                    .call_function(cb, Vec::new())
+                    .map_err(|e| Error::Runtime(e).render(&self.sources.borrow()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Look up a top-level binding's current value by name. Returns
     /// `None` if no such binding was ever `load`ed. When a name was
     /// (re)declared more than once, the latest declaration wins.
@@ -189,6 +317,13 @@ impl Default for Session {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Classify a top-level binding for hot-reload: callables (tigr closures
+/// and natives) are *code* (replaced on reload); everything else is
+/// *data* (carried forward).
+fn is_data(v: &Value) -> bool {
+    !matches!(v, Value::Function(_) | Value::NativeFn(_))
 }
 
 #[cfg(test)]
@@ -388,5 +523,116 @@ mod tests {
         s.vm().drain_ready(0.0).expect("idle drain");
         s.vm().drain_ready(123.0).expect("idle drain 2");
         assert_eq!(int(&s.call("get", vec![]).expect("get")), 5);
+    }
+
+    // -- Phase C3: hot-reload ----------------------------------------
+
+    /// The headline reload contract: top-level *data* is carried across
+    /// a reload, top-level *code* is replaced. We bump `count` via the
+    /// old `tick`, reload with a `tick` that steps by 10, and confirm
+    /// `count` survived (data) while `tick` now runs the new body.
+    #[test]
+    fn reload_carries_data_replaces_code() {
+        let mut s = Session::new();
+        s.load("count := 0; tick := fn(){ count = count + 1; count };")
+            .expect("load");
+        s.call("tick", vec![]).expect("tick 1");
+        s.call("tick", vec![]).expect("tick 2");
+        assert_eq!(int(&s.binding("count").expect("count")), 2);
+
+        // New code: same `count` declaration, a `tick` that steps by 10.
+        s.reload("count := 0; tick := fn(){ count = count + 10; count };")
+            .expect("reload");
+        // `count` was preserved (the new `count := 0` is overridden by
+        // the carried value); `tick` runs the new body.
+        assert_eq!(int(&s.binding("count").expect("count after reload")), 2);
+        assert_eq!(int(&s.call("tick", vec![]).expect("tick new")), 12);
+        assert_eq!(int(&s.binding("count").expect("count final")), 12);
+    }
+
+    /// A reload whose source fails to compile is non-fatal: it returns
+    /// the rendered diagnostic as `Err` and leaves the live program
+    /// running the last good code.
+    #[test]
+    fn reload_compile_error_is_non_fatal() {
+        let mut s = Session::new();
+        s.load("count := 7; tick := fn(){ count };").expect("load");
+        let err = s.reload("count := 0; tick := fn( {").expect_err("syntax error");
+        // A rendered, non-empty diagnostic.
+        assert!(!err.is_empty());
+        // The session is untouched — last-good code still runs.
+        assert_eq!(int(&s.binding("count").expect("count intact")), 7);
+        assert_eq!(int(&s.call("tick", vec![]).expect("tick intact")), 7);
+    }
+
+    /// A name that changes kind across a reload takes the new
+    /// definition: data→code means the old value is dropped, not carried
+    /// over the new function.
+    #[test]
+    fn reload_kind_change_takes_new_definition() {
+        let mut s = Session::new();
+        s.load("x := 5;").expect("load");
+        assert_eq!(int(&s.binding("x").expect("x")), 5);
+        // `x` is now a function; the old data value must not clobber it.
+        s.reload("x := fn(){ 42 };").expect("reload");
+        assert!(s.has_callable("x"));
+        assert_eq!(int(&s.call("x", vec![]).expect("call x")), 42);
+    }
+
+    /// Reload cancels parked green threads: their frames hold `ip`s into
+    /// the old bytecode and cannot migrate. A `wait`-parked coroutine is
+    /// gone after reload, and a later `drain_ready` neither resurrects it
+    /// nor panics.
+    #[test]
+    fn reload_cancels_parked_coroutines() {
+        let mut s = Session::new();
+        s.load("flag := 0; go fn(){ wait(1.0); flag = 1; };").expect("load");
+        s.vm().drain_ready(0.0).expect("drain"); // coroutine parks on the timer
+
+        // Reload wipes the parked coroutine; `flag` (data) is carried.
+        s.reload("flag := 0;").expect("reload");
+
+        // Past the old wait time — nothing wakes, no panic, flag stays 0.
+        s.vm().drain_ready(2.0).expect("drain after reload");
+        assert_eq!(int(&s.binding("flag").expect("flag")), 0);
+    }
+
+    /// The optional `on_reload` hook runs once after data is carried, so
+    /// it observes the *preserved* state, not the new program's initial
+    /// value.
+    #[test]
+    fn reload_runs_on_reload_hook_after_carry() {
+        let mut s = Session::new();
+        s.load("state := 1;").expect("load");
+        s.reload(
+            "state := 99; \
+             migrated := 0; \
+             on_reload := fn(){ migrated = state * 2 };",
+        )
+        .expect("reload");
+        // `state` carried (1, not the new 99); the hook saw the carried
+        // value: migrated = 1 * 2.
+        assert_eq!(int(&s.binding("state").expect("state")), 1);
+        assert_eq!(int(&s.binding("migrated").expect("migrated")), 2);
+    }
+
+    /// GC root proof for the carry (run under `--features gc-torture`):
+    /// the new top-level allocates heavily before the old data is
+    /// carried into its slot. The old value is reachable only from the
+    /// reload snapshot during that window, so it must be held as a GC
+    /// root (`Vm::hold_reload_roots`) or the carry reads a freed handle.
+    #[test]
+    fn reload_carried_heap_data_survives_gc() {
+        let mut s = Session::new();
+        s.load("items := [1, 2, 3];").expect("load");
+        // New top-level allocates a lot, then redeclares `items` (data);
+        // the old `[1, 2, 3]` is carried over the new `[9, 9]`.
+        s.reload(
+            "junk := for[] (i, 1..=800) { [i, i] }; \
+             items := [9, 9]; \
+             total := fn(){ items[0] + items[1] + items[2] };",
+        )
+        .expect("reload");
+        assert_eq!(int(&s.call("total", vec![]).expect("total")), 6);
     }
 }

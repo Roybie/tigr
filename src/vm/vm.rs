@@ -178,6 +178,28 @@ pub struct Vm {
     /// Monotonic counter for offload job ids. Each id pairs an
     /// in-flight job with the coroutine parked on it.
     next_job_id: u64,
+    /// Host-owned clock, in seconds, set at the top of each
+    /// [`drain_ready`](Vm::drain_ready) / [`wake_timers`](Vm::wake_timers)
+    /// tick. A cooperative `wait(secs)` parks until `frame_now + secs`.
+    /// Owned by the host (not read from the OS clock) so timing is
+    /// deterministic, testable and wasm-safe. `0.0` until a host drives.
+    frame_now: f64,
+    /// True only while inside [`drain_ready`](Vm::drain_ready): the
+    /// host is pumping ready coroutines for one frame. In this mode the
+    /// actor thread must never block on the worker pool / reactor / a
+    /// `join`, so the coroutine-pick sites fall back to a non-blocking
+    /// poll and unwind via `HostYield` when nothing is runnable, instead
+    /// of `pump_io_completions`'s blocking `mailbox.wait_drain()`.
+    in_drain: bool,
+    /// The persistent main coroutine, parked aside for the duration of a
+    /// [`drain_ready`](Vm::drain_ready) while sibling green threads run
+    /// in its place. Held here (not in the scheduler's run-queue, which
+    /// the drain pulls from) so it is never re-run mid-drain, yet still
+    /// reachable for the two things a running coroutine needs from it:
+    /// GC tracing of its top-level values, and open-upvalue resolution
+    /// when a `go` block captured a top-level binding
+    /// (`stack_for`/`upvalue_set`). `None` outside a drain.
+    drain_main: Option<GreenThread>,
 }
 
 /// A parked resumer: the coroutine state that was running when a
@@ -221,6 +243,9 @@ impl Vm {
             current_handle: None,
             mailbox: CompletionMailbox::new(),
             next_job_id: 0,
+            frame_now: 0.0,
+            in_drain: false,
+            drain_main: None,
         }
     }
 
@@ -327,6 +352,11 @@ impl Vm {
     /// resumer is restored, and the search retries there — walking the
     /// whole resume chain. Returns `true` once a handler is found.
     fn catch_with_generators(&mut self, err: &mut RuntimeError) -> bool {
+        // Never absorb the internal host-yield signal here; `drain_ready`
+        // is the only thing that handles it.
+        if matches!(err.kind, RuntimeErrorKind::HostYield) {
+            return false;
+        }
         loop {
             if self.try_catch(0, err) {
                 return true;
@@ -547,6 +577,11 @@ impl Vm {
     /// so a raise the callee does not catch internally unwinds only the
     /// callee's own frames and then propagates to the caller.
     fn try_catch(&mut self, floor: usize, err: &mut RuntimeError) -> bool {
+        // `HostYield` is an internal unwind to the host driver, never a
+        // tigr-catchable error — leave state untouched and propagate.
+        if matches!(err.kind, RuntimeErrorKind::HostYield) {
+            return false;
+        }
         while self.frames.len() > floor {
             let frame = self.frames.last_mut().unwrap();
             if let Some(tf) = frame.try_frames.pop() {
@@ -984,6 +1019,16 @@ impl Vm {
                                 self.load_green(next)?;
                                 continue;
                             }
+                            // In a host drain, main is parked aside (not
+                            // in the scheduler), so an empty pick means
+                            // "frame done" — unwind to the host rather
+                            // than ending the actor.
+                            None if self.in_drain => {
+                                return Err(RuntimeError::new(
+                                    RuntimeErrorKind::HostYield,
+                                    0,
+                                ));
+                            }
                             None => return Ok(result),
                         }
                     }
@@ -1185,6 +1230,15 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
+                            // `wait`/`wait_frame` park the running green
+                            // thread cooperatively — same interception
+                            // precedent as `join`; their `Pure` bodies
+                            // are raising fallbacks reached only when not
+                            // intercepted (wrong arg, or no host drive).
+                            if let Some(kind) = wait_target(&nf, &args) {
+                                self.coop_wait(kind, line)?;
+                                continue;
+                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -1287,6 +1341,13 @@ impl Vm {
                             // result for the compiler-emitted `Return`.
                             if let Some(h) = green_join_target(&nf, &args) {
                                 self.coop_join(h, line)?;
+                                continue;
+                            }
+                            // Tail-positioned `wait`/`wait_frame`: park
+                            // cooperatively, leaving the result for the
+                            // compiler-emitted `Return` after the call.
+                            if let Some(kind) = wait_target(&nf, &args) {
+                                self.coop_wait(kind, line)?;
                                 continue;
                             }
                             if !nf.arity.check(args.len()) {
@@ -2572,10 +2633,71 @@ impl Vm {
         }
         let parked = self.save_current(None);
         self.scheduler.block(id, parked);
-        let next = self
-            .pick_next()
-            .expect("can_make_progress guarantees a runnable coroutine");
-        self.load_green(next)
+        match self.pick_next() {
+            Some(next) => self.load_green(next),
+            // Only reachable in a host drain (outside one,
+            // `can_make_progress` above guaranteed a runnable
+            // coroutine): nothing is ready, so unwind to the host. The
+            // joiner stays `block`ed and resumes when its target ends.
+            None => Err(RuntimeError::new(RuntimeErrorKind::HostYield, 0)),
+        }
+    }
+
+    /// Cooperative `wait(secs)` / `wait_frame()`: park the running green
+    /// thread on the host clock and switch to the next ready coroutine.
+    /// Modelled on [`coop_join`], but the wake source is wall-clock
+    /// (`Scheduler::wake_timers`), so there is no deadlock check — a
+    /// timer always resumes once the host advances time. `wait` is only
+    /// legal inside a host-driven green thread, so it raises catchably
+    /// when not in a [`drain_ready`](Vm::drain_ready) (`update`/`draw`,
+    /// the main program, or a plain `tigr run` have no host clock to
+    /// resume the timer) and when inside a generator (synchronous). When
+    /// nothing else is ready the pick unwinds to the host via
+    /// `HostYield`; the parked coroutine resumes on a later frame's
+    /// `wake_timers`.
+    fn coop_wait(
+        &mut self,
+        kind: WaitKind,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        if self.current_gen.is_some() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "cannot wait inside a generator".into(),
+                )),
+                line,
+            ));
+        }
+        // Only a host frame drain has a clock to wake the timer. On the
+        // main coroutine (in_drain is false during a host's
+        // `update`/`draw` call too) or in a plain `tigr run`, parking
+        // would hang forever — raise instead.
+        if !self.in_drain {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "wait is only valid inside a host-driven green thread \
+                     (call it from a `go` block, not the main program or \
+                     update/draw)"
+                        .into(),
+                )),
+                line,
+            ));
+        }
+        let wake_time = match kind {
+            WaitKind::Secs(s) => self.frame_now + s,
+            WaitKind::NextFrame => f64::NEG_INFINITY,
+        };
+        let parked = self.save_current(None);
+        self.scheduler.park_timer(wake_time, parked);
+        match self.pick_next() {
+            Some(next) => self.load_green(next),
+            // Nothing else ready — unwind to the host. The parked
+            // coroutine resumes on a later frame's `wake_timers`. (Only
+            // reachable in a host drain; `wait` outside one already
+            // raised above, the main coroutine never being a green
+            // thread.)
+            None => Err(RuntimeError::new(RuntimeErrorKind::HostYield, 0)),
+        }
     }
 
     // -- blocking-IO offload -----------------------------------------
@@ -2616,10 +2738,13 @@ impl Vm {
         offload::submit(job_id, self.mailbox.clone(), job);
         let parked = self.save_current(None);
         self.scheduler.park_io(job_id, parked);
-        let next = self
-            .pick_next()
-            .expect("an io-blocked coroutine guarantees progress");
-        self.load_green(next)
+        match self.pick_next() {
+            Some(next) => self.load_green(next),
+            // Host drain only: the offload is in flight but nothing is
+            // ready now. Unwind to the host; this coroutine resumes on a
+            // later frame when `poll_io_completions` readies it.
+            None => Err(RuntimeError::new(RuntimeErrorKind::HostYield, 0)),
+        }
     }
 
     /// Run a `Socket` native — a steady-state `Net` read / write /
@@ -2656,10 +2781,13 @@ impl Vm {
         reactor::submit(job_id, self.mailbox.clone(), rop);
         let parked = self.save_current(None);
         self.scheduler.park_io(job_id, parked);
-        let next = self
-            .pick_next()
-            .expect("an io-blocked coroutine guarantees progress");
-        self.load_green(next)
+        match self.pick_next() {
+            Some(next) => self.load_green(next),
+            // Host drain only: the reactor op is in flight but nothing
+            // is ready now. Unwind to the host; this coroutine resumes
+            // on a later frame when `poll_io_completions` readies it.
+            None => Err(RuntimeError::new(RuntimeErrorKind::HostYield, 0)),
+        }
     }
 
     /// Pick the next coroutine to run, the running one having already
@@ -2673,6 +2801,15 @@ impl Vm {
                 return Some(next);
             }
             if self.scheduler.has_io_blocked() {
+                // Inside a host drain the actor thread must not block:
+                // poll completions once (non-blocking) and return
+                // whatever that readied, or `None` so the caller unwinds
+                // to the host via `HostYield`. The parked coroutine
+                // resumes on a later frame's poll.
+                if self.in_drain {
+                    self.poll_io_completions();
+                    return self.scheduler.take_next();
+                }
                 self.pump_io_completions();
                 continue;
             }
@@ -2707,6 +2844,110 @@ impl Vm {
             };
             self.scheduler.wake_io(job_id, outcome);
         }
+    }
+
+    // -- host frame loop ---------------------------------------------
+
+    /// Drive every coroutine that is ready *this frame* and return to
+    /// the host without blocking — the non-blocking, re-entrant
+    /// counterpart of the actor's normal blocking dispatch. Call once
+    /// per frame, after `update`/`draw`, with `now` the host clock in
+    /// seconds:
+    ///
+    /// 1. `wake_timers(now)` re-readies `wait`-parked coroutines whose
+    ///    time has come; `poll_io_completions` re-readies async-IO ones.
+    /// 2. The persistent main coroutine is parked aside (it owns the
+    ///    `update`/`draw` frame and must survive across frames).
+    /// 3. Ready coroutines run until each either finishes or re-parks
+    ///    (on a later `wait`, an offload, or a `join`). When a park
+    ///    leaves nothing runnable, execution unwinds here via the
+    ///    internal `HostYield` signal — never blocking the render thread
+    ///    on disk / socket / clock. Those coroutines resume on a later
+    ///    frame.
+    ///
+    /// Returns the first uncaught coroutine error (so the host can
+    /// render it); remaining coroutines still run. Main is always
+    /// restored before returning, so a subsequent `call`/`drain_ready`
+    /// sees an intact session.
+    pub fn drain_ready(&mut self, now: f64) -> Result<(), RuntimeError> {
+        self.frame_now = now;
+        self.scheduler.wake_timers(now);
+        if self.scheduler.has_io_blocked() {
+            self.poll_io_completions();
+        }
+        // Nothing became runnable — leave the persistent main frame
+        // untouched (no park/restore churn on an idle frame).
+        if !self.scheduler.has_ready() {
+            return Ok(());
+        }
+        // Park main aside (reachable via `drain_main` for GC tracing and
+        // upvalue resolution, but kept off the run-queue so the drain
+        // never re-runs it) and switch the actor into non-blocking mode.
+        self.drain_main = Some(self.save_current(None));
+        self.in_drain = true;
+        let mut first_err: Option<RuntimeError> = None;
+        while let Some(next) = self.scheduler.take_next() {
+            let mut outcome = self.load_green(next);
+            loop {
+                let err = match outcome {
+                    Ok(()) => match self.run_until(0) {
+                        Ok(_) => break,
+                        Err(e) => e,
+                    },
+                    Err(e) => e,
+                };
+                // A coroutine parked with nothing else ready: absorbed,
+                // its state is saved in the scheduler, resume next frame.
+                if matches!(err.kind, RuntimeErrorKind::HostYield) {
+                    break;
+                }
+                let mut err = err;
+                self.stamp_error_source(&mut err);
+                // An uncaught coroutine error: `catch_with_generators`
+                // fails the green thread (recording the error on its
+                // handle for a later `join`) and switches to the next
+                // ready coroutine — re-run it; otherwise record the
+                // first such error for the host and move on.
+                if self.catch_with_generators(&mut err) {
+                    outcome = Ok(());
+                    continue;
+                }
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+                break;
+            }
+        }
+        self.in_drain = false;
+        // Restore the persistent main coroutine. It was parked with no
+        // resume outcome, so `load_green` cannot fail.
+        let saved_main = self
+            .drain_main
+            .take()
+            .expect("drain_main is set for the whole drain");
+        let _ = self.load_green(saved_main);
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Re-ready every `wait`-parked coroutine whose time has come, using
+    /// `now` (seconds) as the host clock. Returns `true` if any woke.
+    /// A thin public handle on the scheduler's timer wake for hosts that
+    /// drive the steps of a frame manually; [`drain_ready`](Vm::drain_ready)
+    /// already calls it.
+    pub fn wake_timers(&mut self, now: f64) -> bool {
+        self.frame_now = now;
+        self.scheduler.wake_timers(now)
+    }
+
+    /// Surface any offloaded async-IO completions that are ready right
+    /// now (non-blocking). A thin public handle on the internal poll for
+    /// hosts driving frame steps manually; [`drain_ready`](Vm::drain_ready)
+    /// already calls it.
+    pub fn poll_io(&mut self) {
+        self.poll_io_completions();
     }
 
     // -- generators --------------------------------------------------
@@ -2801,6 +3042,14 @@ impl Vm {
         if let Some(st) = self.scheduler.stack_of(owner) {
             return Some(st);
         }
+        // During a host drain, main is parked aside in `drain_main`
+        // rather than the scheduler; a `go` block that captured a
+        // top-level binding resolves its owner here.
+        if let Some(gt) = &self.drain_main {
+            if gt.id == owner {
+                return Some(&gt.stack);
+            }
+        }
         self.resume_stack
             .iter()
             .rev()
@@ -2825,6 +3074,14 @@ impl Vm {
         if let Some(st) = self.scheduler.stack_of_mut(owner) {
             st[slot] = v;
             return;
+        }
+        // Main, parked in `drain_main` during a host drain (see
+        // `stack_for`).
+        if let Some(gt) = &mut self.drain_main {
+            if gt.id == owner {
+                gt.stack[slot] = v;
+                return;
+            }
         }
         let ctx = self
             .resume_stack
@@ -2907,6 +3164,20 @@ impl Vm {
                 m.mark_green_handle(h);
             }
         }
+        // Main, parked aside during a host drain: its top-level values
+        // (and open upvalues a `go` block captured) must survive a
+        // collection triggered while a sibling coroutine runs.
+        if let Some(gt) = &self.drain_main {
+            for v in &gt.stack {
+                v.trace(m);
+            }
+            for up in &gt.open_upvalues {
+                m.mark_upvalue(*up);
+            }
+            for frame in &gt.frames {
+                trace_frame(frame, m);
+            }
+        }
         // Resumers parked under a running generator — each is a slice
         // of execution state the generator's `next()` will return to.
         for ctx in &self.resume_stack {
@@ -2971,6 +3242,34 @@ fn green_join_target(
         }
     }
     None
+}
+
+/// How a cooperative `wait` parks: for a fixed number of seconds on the
+/// host clock, or until the very next host tick (`wait_frame`).
+#[derive(Clone, Copy)]
+enum WaitKind {
+    /// Resume once the host clock advances by `secs` from `frame_now`.
+    Secs(f64),
+    /// Resume on the next tick — `wait_frame()`, the per-frame yield.
+    NextFrame,
+}
+
+/// Recognise the `wait` / `wait_frame` built-ins so the Call/TailCall
+/// dispatch can park the running green thread cooperatively instead of
+/// running their (raising) `Pure` fallback bodies — the same
+/// interception precedent as [`green_join_target`]. `wait` matches only
+/// with a single numeric argument; anything else falls through to the
+/// fallback, which raises.
+fn wait_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<WaitKind> {
+    match (nf.name, args) {
+        ("wait", [Value::Float(s)]) => Some(WaitKind::Secs(*s)),
+        ("wait", [Value::Int(s)]) => Some(WaitKind::Secs(*s as f64)),
+        ("wait_frame", []) => Some(WaitKind::NextFrame),
+        _ => None,
+    }
 }
 
 /// Trace one call frame's GC roots: its closure, plus any heap handle

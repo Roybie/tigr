@@ -233,6 +233,12 @@ pub enum RuntimeErrorKind {
     /// Built-in error variants are never `Raised`; when caught, those
     /// are reified by the VM into a `${kind, message, line}` object.
     Raised(Value),
+    /// Internal control-flow signal, never user-visible: the running
+    /// green thread parked itself (a `wait`, an offload, or a `join`)
+    /// and nothing else is runnable, so unwind to the host driver
+    /// (`Vm::drain_ready`), which absorbs it. Produced only while
+    /// draining a host frame; excluded from tigr `try`/`catch`.
+    HostYield,
 }
 
 impl RuntimeErrorKind {
@@ -258,6 +264,9 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::NotSendable(_) => "not_sendable",
             RuntimeErrorKind::ChannelClosed => "channel_closed",
             RuntimeErrorKind::Raised(_) => "raised",
+            // Never reified — absorbed by the host driver before any
+            // `catch` can see it.
+            RuntimeErrorKind::HostYield => "host_yield",
         }
     }
 }
@@ -292,6 +301,9 @@ impl fmt::Display for RuntimeError {
                 f.write_str("send on a closed channel")
             }
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
+            RuntimeErrorKind::HostYield => {
+                f.write_str("internal: host yield (never user-visible)")
+            }
         }
     }
 }

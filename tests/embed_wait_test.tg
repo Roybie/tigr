@@ -1,0 +1,44 @@
+// tests/embed_wait_test.tg — the `wait` / `wait_frame` cooperative
+// timing primitives (embedding API, Phase C).
+//
+// `wait(secs)` and `wait_frame()` park a green thread on the *host*
+// clock: they only make sense inside a host that drives the frame loop
+// (calling `Vm::drain_ready` each tick to advance time and resume parked
+// coroutines). The full frame-driven behavior — a coroutine actually
+// sleeping for `secs` and waking — is therefore a Rust test (see
+// `src/embed.rs`, which can inject `now` and call `drain_ready`).
+//
+// At the tigr level there is no host clock, so all we assert here is the
+// language surface: both are defined globals, and calling either where
+// there is no host drive (the main program, or inside a generator)
+// raises a catchable error rather than hanging.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test := import 'Test';
+
+[
+    Test.suite('wait — language surface', [
+        Test.case('wait and wait_frame are defined globals', fn() {
+            Test.assert_eq(type(wait), 'function');
+            Test.assert_eq(type(wait_frame), 'function')
+        }),
+
+        Test.case('wait on the main program raises (no host drive)', fn() {
+            // Outside a host frame drain there is no clock to resume the
+            // timer, so `wait` raises rather than hanging forever.
+            Test.assert_raises(fn() { wait(0.5) })
+        }),
+
+        Test.case('wait_frame on the main program raises', fn() {
+            Test.assert_raises(fn() { wait_frame() })
+        }),
+
+        Test.case('wait inside a generator raises', fn() {
+            // Generators are pulled synchronously; they cannot park on a
+            // host timer.
+            gen_it := (gen fn() { wait(1); yield 1 })();
+            Test.assert_raises(fn() { gen_it.next() })
+        }),
+    ]),
+]

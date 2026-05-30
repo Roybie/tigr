@@ -78,11 +78,19 @@ const BUILTINS: &[Spec] = &[
         arity: Arity::Exact(1),
         kind: NativeKind::Blocking(native_join),
     },
+    // Cooperative green-thread timing for a host frame loop. Both are
+    // intercepted by the VM's Call/TailCall dispatch (like `join`) to
+    // park the running coroutine on the host clock; the `Pure` bodies
+    // here are fallbacks that raise when *not* intercepted — `wait` with
+    // a non-numeric argument, or either called where there is no host
+    // drive (the main program, `update`/`draw`, or a plain `tigr run`).
+    Spec { name: "wait", arity: Arity::Exact(1), kind: pure(native_wait) },
+    Spec { name: "wait_frame", arity: Arity::Exact(0), kind: pure(native_wait_frame) },
 ];
 
-const BUILTIN_NAMES: [&str; 13] = [
+const BUILTIN_NAMES: [&str; 15] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type", "gc", "__select", "join",
+    "type", "gc", "__select", "join", "wait", "wait_frame",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -110,6 +118,45 @@ fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
     // Returns the last arg (or null), mirroring block-tail semantics.
     // Lets `compute(print('val:', x))` log and pass `x` through.
     Ok(args.last().cloned().unwrap_or(Value::Null))
+}
+
+/// Fallback body for `wait` — reached only when the VM did *not*
+/// intercept the call (`Vm::wait_target` matches `wait` only with a
+/// single numeric argument). A non-numeric argument is a type error; a
+/// numeric one reaching here means `wait` was invoked outside the
+/// Call/TailCall dispatch (e.g. a host `call_function("wait", ...)`),
+/// where there is no coroutine to park. Both raise catchably.
+fn native_wait(args: &[Value]) -> Result<Value, RuntimeError> {
+    match args.first() {
+        Some(Value::Int(_)) | Some(Value::Float(_)) => Err(RuntimeError::new(
+            RuntimeErrorKind::Raised(Value::Str(
+                "wait is only valid inside a host-driven green thread".into(),
+            )),
+            0,
+        )),
+        other => Err(RuntimeError::new(
+            RuntimeErrorKind::Raised(Value::Str(
+                format!(
+                    "wait expects a number of seconds, got {}",
+                    other.map(|v| v.type_name()).unwrap_or("nothing"),
+                )
+                .into(),
+            )),
+            0,
+        )),
+    }
+}
+
+/// Fallback body for `wait_frame` — see [`native_wait`]. Reached only
+/// outside the Call/TailCall dispatch (the no-arg form is otherwise
+/// always intercepted).
+fn native_wait_frame(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Err(RuntimeError::new(
+        RuntimeErrorKind::Raised(Value::Str(
+            "wait_frame is only valid inside a host-driven green thread".into(),
+        )),
+        0,
+    ))
 }
 
 /// `str(x)` — canonical string form. `str(n, radix)` /

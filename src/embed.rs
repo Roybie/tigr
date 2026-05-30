@@ -287,4 +287,106 @@ mod tests {
         assert!(s.load("broken := fn( {").is_err());
         assert_eq!(int(&s.call("get", vec![]).expect("get still works")), 100);
     }
+
+    // -- Phase C: cooperative timing (wait / drain_ready) ------------
+
+    /// `drain_ready` is the per-frame, non-blocking coroutine pump. A
+    /// `go` coroutine that `wait`s parks on the host clock; it resumes
+    /// only once `drain_ready` is called with `now` past its wake time.
+    /// Crucially, a `drain_ready` with the coroutine still parked must
+    /// return promptly rather than block the calling (render) thread.
+    #[test]
+    fn drain_ready_is_non_blocking_and_clock_driven() {
+        let mut s = Session::new();
+        s.load("flag := 0; go fn(){ wait(1.0); flag = 1; };").expect("load");
+
+        // Coroutine runs up to `wait(1.0)` and parks. If `drain_ready`
+        // blocked on the park this call would hang the test.
+        s.vm().drain_ready(0.0).expect("drain @0.0");
+        assert_eq!(int(&s.binding("flag").expect("flag")), 0);
+
+        // Clock not yet at the wake time — still parked.
+        s.vm().drain_ready(0.5).expect("drain @0.5");
+        assert_eq!(int(&s.binding("flag").expect("flag")), 0);
+
+        // Clock reaches the wake time — coroutine resumes and finishes.
+        s.vm().drain_ready(1.0).expect("drain @1.0");
+        assert_eq!(int(&s.binding("flag").expect("flag")), 1);
+    }
+
+    /// `wait_frame()` parks until the *next* tick regardless of the
+    /// clock value — the per-frame yield. Three drains at the same
+    /// `now` should step the coroutine across both `wait_frame`s.
+    #[test]
+    fn wait_frame_steps_one_tick_per_drain() {
+        let mut s = Session::new();
+        s.load(
+            "ticks := 0; \
+             go fn(){ wait_frame(); ticks = 1; wait_frame(); ticks = 2; };",
+        )
+        .expect("load");
+
+        s.vm().drain_ready(0.0).expect("drain 1"); // runs to first wait_frame
+        assert_eq!(int(&s.binding("ticks").expect("ticks")), 0);
+        s.vm().drain_ready(0.0).expect("drain 2"); // wakes, runs to second
+        assert_eq!(int(&s.binding("ticks").expect("ticks")), 1);
+        s.vm().drain_ready(0.0).expect("drain 3"); // wakes, finishes
+        assert_eq!(int(&s.binding("ticks").expect("ticks")), 2);
+    }
+
+    /// GC root proof (run this under `--features gc-torture`): a
+    /// `wait`-parked coroutine holds a heap array reachable *only*
+    /// through its saved (timer-blocked) stack. A collection that runs
+    /// while it is parked — here forced via a `gc()` load — must keep
+    /// that array alive, or the resume reads a freed handle. Exercises
+    /// `Scheduler::queued()` chaining `timer_blocked` and `trace_roots`.
+    #[test]
+    fn wait_parked_coroutine_survives_gc() {
+        let mut s = Session::new();
+        s.load(
+            "result := 0; \
+             go fn(){ \
+                 local := [11, 22, 33]; \
+                 wait(0.5); \
+                 result = local[0] + local[1] + local[2]; \
+             };",
+        )
+        .expect("load");
+
+        // Coroutine runs to `wait(0.5)` and parks, holding `local`.
+        s.vm().drain_ready(0.0).expect("drain @0.0");
+        assert_eq!(int(&s.binding("result").expect("result")), 0);
+
+        // Collect while parked: `local` lives only on the parked
+        // coroutine's saved stack.
+        s.load("gc();").expect("gc");
+
+        // Resume past the wait — `local` must be intact.
+        s.vm().drain_ready(0.6).expect("drain @0.6");
+        assert_eq!(int(&s.binding("result").expect("result")), 66);
+    }
+
+    /// `wait` is only legal inside a host-driven green thread: calling
+    /// it on the main coroutine (e.g. from an `update`-style callback)
+    /// raises catchably rather than hanging. A clean `Err`, and the
+    /// session survives for a later call.
+    #[test]
+    fn wait_on_main_raises_and_session_survives() {
+        let mut s = Session::new();
+        s.load("bad := fn(){ wait(1) }; ok := fn(){ 7 };").expect("load");
+        assert!(s.call("bad", vec![]).is_err());
+        // Frame-0 survived: a normal call still works.
+        assert_eq!(int(&s.call("ok", vec![]).expect("ok")), 7);
+    }
+
+    /// A `drain_ready` with no ready coroutines is a cheap no-op that
+    /// leaves the persistent session untouched.
+    #[test]
+    fn drain_ready_with_nothing_ready_is_noop() {
+        let mut s = Session::new();
+        s.load("x := 5; get := fn(){ x };").expect("load");
+        s.vm().drain_ready(0.0).expect("idle drain");
+        s.vm().drain_ready(123.0).expect("idle drain 2");
+        assert_eq!(int(&s.call("get", vec![]).expect("get")), 5);
+    }
 }

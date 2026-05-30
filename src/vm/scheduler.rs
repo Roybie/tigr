@@ -82,6 +82,19 @@ struct IoBlockedThread {
     thread: GreenThread,
 }
 
+/// A coroutine parked in a cooperative `wait` / `wait_frame`, waiting
+/// for the host clock to reach `wake_time`. Unlike `io_blocked` and
+/// `blocked`, nothing inside the actor can wake it — only the host
+/// advancing time via [`Scheduler::wake_timers`] does, which is why
+/// timer parks must stay out of [`Scheduler::can_make_progress`].
+struct TimerBlockedThread {
+    /// Host-clock time at which the coroutine becomes ready again. A
+    /// `wait(secs)` sets `frame_now + secs`; a `wait_frame()` uses
+    /// `f64::NEG_INFINITY` so it is due on the very next tick.
+    wake_time: f64,
+    thread: GreenThread,
+}
+
 /// Lifecycle of a generator coroutine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GenStatus {
@@ -129,6 +142,11 @@ pub struct Scheduler {
     /// ready to run until the worker pool posts their job's completion.
     /// Kept off `queue` for the same reason as `blocked`.
     io_blocked: Vec<IoBlockedThread>,
+    /// Coroutines parked in a cooperative `wait` / `wait_frame` — not
+    /// ready until the host clock reaches each one's `wake_time`. Kept
+    /// off `queue`, and deliberately excluded from `can_make_progress`
+    /// (only the host wakes these, never another coroutine).
+    timer_blocked: Vec<TimerBlockedThread>,
     next_id: u32,
     current_id: u32,
     current_is_main: bool,
@@ -140,6 +158,7 @@ impl Scheduler {
             queue: VecDeque::new(),
             blocked: Vec::new(),
             io_blocked: Vec::new(),
+            timer_blocked: Vec::new(),
             next_id: 1,
             current_id: 0,
             current_is_main: true,
@@ -152,6 +171,7 @@ impl Scheduler {
         self.queue.clear();
         self.blocked.clear();
         self.io_blocked.clear();
+        self.timer_blocked.clear();
         self.next_id = 1;
         self.current_id = 0;
         self.current_is_main = true;
@@ -182,6 +202,13 @@ impl Scheduler {
     /// Take the next ready coroutine, if any (round-robin: front).
     pub fn take_next(&mut self) -> Option<GreenThread> {
         self.queue.pop_front()
+    }
+
+    /// Is any coroutine sitting on the ready run-queue right now? Lets a
+    /// host frame drain skip the park/restore of the main coroutine when
+    /// nothing woke this tick.
+    pub fn has_ready(&self) -> bool {
+        !self.queue.is_empty()
     }
 
     /// Park `thread` until green thread `awaiting` finishes. Used by a
@@ -238,6 +265,39 @@ impl Scheduler {
         !self.io_blocked.is_empty()
     }
 
+    /// Park `thread` in a cooperative `wait` until the host clock reaches
+    /// `wake_time` (a `wait_frame()` passes `f64::NEG_INFINITY`, so it is
+    /// due on the next tick). Re-enqueued by [`wake_timers`].
+    pub fn park_timer(&mut self, wake_time: f64, thread: GreenThread) {
+        self.timer_blocked.push(TimerBlockedThread { wake_time, thread });
+    }
+
+    /// Move every timer-parked coroutine whose `wake_time <= now` back
+    /// onto the run-queue, delivering `Value::Null` (a `wait` expression
+    /// evaluates to null on resume). Returns `true` if any woke. Called
+    /// once per host tick at the top of [`crate::vm::vm::Vm::drain_ready`].
+    pub fn wake_timers(&mut self, now: f64) -> bool {
+        let mut woke = false;
+        let mut i = 0;
+        while i < self.timer_blocked.len() {
+            if self.timer_blocked[i].wake_time <= now {
+                let mut t = self.timer_blocked.swap_remove(i);
+                t.thread.parked_resume =
+                    Some(ResumeOutcome::Value(Value::Null));
+                self.queue.push_back(t.thread);
+                woke = true;
+            } else {
+                i += 1;
+            }
+        }
+        woke
+    }
+
+    /// Is any coroutine parked in a cooperative `wait`?
+    pub fn has_timer_blocked(&self) -> bool {
+        !self.timer_blocked.is_empty()
+    }
+
     /// No coroutine other than the running one is ready, `join`-blocked
     /// or IO-blocked — so a blocking call can run inline on the actor
     /// thread without stalling anyone.
@@ -260,24 +320,27 @@ impl Scheduler {
         self.current_is_main = is_main;
     }
 
-    /// Every parked coroutine — ready, `join`-blocked *and*
-    /// IO-blocked — for GC root tracing.
+    /// Every parked coroutine — ready, `join`-blocked, IO-blocked *and*
+    /// timer-blocked — for GC root tracing.
     pub fn queued(&self) -> impl Iterator<Item = &GreenThread> {
         self.queue
             .iter()
             .chain(self.blocked.iter().map(|bt| &bt.thread))
             .chain(self.io_blocked.iter().map(|t| &t.thread))
+            .chain(self.timer_blocked.iter().map(|t| &t.thread))
     }
 
     /// Borrow a parked coroutine's value stack by id — used to resolve
     /// an open upvalue that a `go` block captured from another
-    /// coroutine. Searches both the run-queue and the `join`-blocked
-    /// set. Returns `None` if no parked coroutine has that id.
+    /// coroutine. Searches the run-queue and every parked set
+    /// (`join`-blocked, IO-blocked, timer-blocked). Returns `None` if no
+    /// parked coroutine has that id.
     pub fn stack_of(&self, id: u32) -> Option<&Vec<Value>> {
         self.queue
             .iter()
             .chain(self.blocked.iter().map(|bt| &bt.thread))
             .chain(self.io_blocked.iter().map(|t| &t.thread))
+            .chain(self.timer_blocked.iter().map(|t| &t.thread))
             .find(|gt| gt.id == id)
             .map(|gt| &gt.stack)
     }
@@ -288,6 +351,7 @@ impl Scheduler {
             .iter_mut()
             .chain(self.blocked.iter_mut().map(|bt| &mut bt.thread))
             .chain(self.io_blocked.iter_mut().map(|t| &mut t.thread))
+            .chain(self.timer_blocked.iter_mut().map(|t| &mut t.thread))
             .find(|gt| gt.id == id)
             .map(|gt| &mut gt.stack)
     }

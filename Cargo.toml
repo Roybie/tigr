@@ -62,3 +62,6 @@ wasm-bindgen = "0.2"
 # Collect on every VM dispatch step — stress mode that turns any
 # missing GC root into an immediate stale-handle panic.
 gc-torture = []
+# Public embedding API (`tigr::embed::Session`) for driving a
+# persistent VM from a Rust host. Off by default — additive surface.
+embed = []

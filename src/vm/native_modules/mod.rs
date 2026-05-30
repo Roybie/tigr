@@ -82,7 +82,7 @@ pub fn resolve(name: &str) -> Option<Value> {
 
 /// Build a `Value::NativeFn` for an ordinary (non-blocking) module
 /// entry — runs inline on the actor thread.
-pub(crate) fn native(
+pub fn native(
     name: &'static str,
     arity: Arity,
     func: fn(&[Value]) -> Result<Value, RuntimeError>,
@@ -99,7 +99,7 @@ pub(crate) fn native(
 /// thread doing IO does not stall its siblings. `func` runs on the
 /// actor thread to validate arguments and extract `Send` POD; the
 /// closure it returns runs on a pool thread. See [`crate::vm::offload`].
-pub(crate) fn native_blocking(
+pub fn native_blocking(
     name: &'static str,
     arity: Arity,
     func: fn(&[Value]) -> Result<BlockingJob, RuntimeError>,
@@ -120,7 +120,7 @@ pub(crate) fn native_blocking(
 /// Only the native-only `Net` module builds socket entries, so on
 /// `wasm32` this helper is unreferenced — kept for a uniform API.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn native_socket(
+pub fn native_socket(
     name: &'static str,
     arity: Arity,
     func: fn(&[Value]) -> Result<ReactorOp, RuntimeError>,
@@ -135,7 +135,7 @@ pub(crate) fn native_socket(
 /// Build a `Value::Object` from a list of (key, value) pairs in source
 /// order. Keys are static `&'static str` since module entry names are
 /// fixed; the IndexMap uses `Arc<str>` internally.
-pub(crate) fn object(entries: &[(&'static str, Value)]) -> Value {
+pub fn object(entries: &[(&'static str, Value)]) -> Value {
     let mut m: IndexMap<Arc<str>, Value> = IndexMap::with_capacity(entries.len());
     for (k, v) in entries {
         m.insert(Arc::from(*k), v.clone());

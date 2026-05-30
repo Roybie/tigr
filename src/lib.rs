@@ -8,6 +8,13 @@
 pub mod repl;
 pub mod vm;
 
+/// Embedding API: drive a persistent VM from a Rust host (register
+/// native modules, load a program, call its top-level functions each
+/// frame). Gated behind the `embed` feature so it is absent from the
+/// default build and the wasm playground.
+#[cfg(feature = "embed")]
+pub mod embed;
+
 /// A catalog of the language's named entities (builtins, stdlib module
 /// members, keywords) with signatures and docstrings, parsed from the
 /// committed `docs/stdlib/*.md`. The language server uses it for hover,

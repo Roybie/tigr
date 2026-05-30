@@ -140,6 +140,12 @@ pub struct Vm {
     /// Spec §12 was no-caching in v0.2; v0.3 adds caching so a module
     /// imported twice within the same run evaluates only once.
     module_cache: HashMap<PathBuf, Value>,
+    /// Modules registered by an embedding host via
+    /// [`Vm::register_module`]. Consulted by the bare-name `import`
+    /// path *after* the built-in resolver, so a host module can never
+    /// shadow a core module. Empty on the wasm playground (nothing
+    /// registers there), so this field is free on every target.
+    host_modules: HashMap<String, Value>,
     /// Paths currently being evaluated. A second import of any of
     /// these is a circular-import error (catchable via `try`).
     in_flight: HashSet<PathBuf>,
@@ -206,6 +212,7 @@ impl Vm {
             globals: stdlib::builtins(),
             open_upvalues: Vec::new(),
             module_cache: HashMap::new(),
+            host_modules: HashMap::new(),
             in_flight: HashSet::new(),
             source_map,
             scheduler: Scheduler::new(),
@@ -215,6 +222,55 @@ impl Vm {
             mailbox: CompletionMailbox::new(),
             next_job_id: 0,
         }
+    }
+
+    /// Register a host-provided module under a bare `import` name.
+    ///
+    /// `import '<name>'` will resolve to `module` *unless* `<name>` is a
+    /// built-in module (those resolve first, so a host module can never
+    /// shadow core). Intended for embedders building natives with
+    /// [`crate::vm::native_modules::object`] / `native`. Call before
+    /// running any program that imports the name.
+    pub fn register_module(&mut self, name: &str, module: Value) {
+        self.host_modules.insert(name.to_string(), module);
+    }
+
+    /// Call a tigr closure (or native) with `args`, re-entrantly, from
+    /// host code. Safe to call against a live persistent frame-0 (the
+    /// REPL / [`crate::embed::Session`] model): it pushes a frame above
+    /// the existing ones, runs to completion, and returns the result.
+    /// The callee's own `try`/`catch` are honoured; an uncaught raise
+    /// unwinds the callee's frames and surfaces as `Err`, leaving the
+    /// persistent frame intact. This is the per-frame `update(dt)` /
+    /// `draw()` entry point for an embedding host.
+    pub fn call_function(
+        &mut self,
+        callee: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        self.call_value(callee, args, 0)
+    }
+
+    /// Read a top-level binding by stack slot. Returns `None` if the
+    /// slot is out of range. Hosts use this (via
+    /// [`crate::embed::Session::binding`]) to fetch `update`/`draw`
+    /// closures or carry data across a reload.
+    pub fn stack_slot(&self, slot: usize) -> Option<Value> {
+        self.stack.get(slot).cloned()
+    }
+
+    /// Write a top-level binding by stack slot. No-op if out of range.
+    /// Used to carry data forward across a hot-reload.
+    pub fn set_stack_slot(&mut self, slot: usize, v: Value) {
+        if let Some(s) = self.stack.get_mut(slot) {
+            *s = v;
+        }
+    }
+
+    /// Current depth of the value stack. A host snapshots this to know
+    /// how many persistent top-level slots exist.
+    pub fn stack_len(&self) -> usize {
+        self.stack.len()
     }
 
     /// Run a compiled top-level program. Returns its final value.
@@ -1933,6 +1989,15 @@ impl Vm {
                             self.frames.last_mut().unwrap().ip = ip;
                             continue;
                         }
+                        // Host-registered modules resolve last, so they
+                        // cannot shadow a built-in. Cache under the same
+                        // `<bare:Name>` key as natives.
+                        if let Some(module) = self.host_modules.get(&*path_str).cloned() {
+                            self.module_cache.insert(key, module.clone());
+                            self.stack.push(module);
+                            self.frames.last_mut().unwrap().ip = ip;
+                            continue;
+                        }
                         return Err(RuntimeError::new(
                             RuntimeErrorKind::ImportFailed(
                                 path_str.to_string(),
@@ -2793,7 +2858,7 @@ impl Vm {
     }
 
     /// Mark every GC root this Vm holds. The root set is exactly these
-    /// five fields — nothing else retains a `Value` (see `gc.rs`).
+    /// fields — nothing else retains a `Value` (see `gc.rs`).
     fn trace_roots(&self, m: &mut Marker) {
         // The running coroutine.
         for v in &self.stack {
@@ -2810,6 +2875,9 @@ impl Vm {
             v.trace(m);
         }
         for v in self.module_cache.values() {
+            v.trace(m);
+        }
+        for v in self.host_modules.values() {
             v.trace(m);
         }
         // Parked green threads — their saved execution state holds

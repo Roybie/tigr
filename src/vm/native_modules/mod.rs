@@ -17,10 +17,11 @@ pub mod json;
 pub mod local_channel;
 pub mod map;
 pub mod math;
-// `Net` (sockets/TLS) and `Os` (processes/env) have no browser
-// equivalent — excluded from the `wasm32` playground build. `net` also
-// depends on the native-only `socket` API, so it cannot compile there.
-#[cfg(not(target_arch = "wasm32"))]
+// `Net` (sockets/TLS) builds only on reactor-capable targets: it
+// depends on the real `socket`/`reactor` API, which is stubbed on both
+// `wasm32` (no browser sockets) and `windows` (IOCP gap, Tier 1). `Os`
+// (processes/env) below stays on every native target — it is portable.
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 pub mod net;
 pub mod object;
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,17 +56,20 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Random" => Some(random::module()),
         "Bytes" => Some(bytes::module()),
         "BigInt" => Some(bigint::module()),
-        // `Os` (processes/env), `Net` (sockets/TLS), and the
-        // cross-actor `_NativeChannel` need OS threads or sockets that
-        // the browser playground build does not have — unregistered on
-        // `wasm32` so `import` of them fails with a clean, catchable
-        // "no module of that name" error rather than panicking.
+        // `Os` (processes/env) and the cross-actor `_NativeChannel` use
+        // `std::process` and OS threads — portable to every native
+        // target, so they stay enabled on Windows. Only `wasm32` (no
+        // threads/processes in the playground) drops them.
         #[cfg(not(target_arch = "wasm32"))]
         "Os" => Some(os::module()),
         #[cfg(not(target_arch = "wasm32"))]
-        "Net" => Some(net::module()),
-        #[cfg(not(target_arch = "wasm32"))]
         "_NativeChannel" => Some(channel::module()),
+        // `Net` (sockets/TLS) needs the async reactor, unavailable on
+        // `wasm32` and on Windows Tier 1. Unregistered there so `import
+        // 'Net'` fails with a clean, catchable "no module of that name"
+        // error rather than panicking.
+        #[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+        "Net" => Some(net::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.
@@ -117,9 +121,10 @@ pub fn native_blocking(
 /// on the actor thread to validate arguments and build a
 /// [`ReactorOp`]; the reactor's poll thread carries it out.
 ///
-/// Only the native-only `Net` module builds socket entries, so on
-/// `wasm32` this helper is unreferenced — kept for a uniform API.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Only the `Net` module builds socket entries, so on targets where
+/// `Net` is unregistered (`wasm32` and `windows`) this helper is
+/// unreferenced — kept for a uniform API.
+#[cfg_attr(any(target_arch = "wasm32", windows), allow(dead_code))]
 pub fn native_socket(
     name: &'static str,
     arity: Arity,

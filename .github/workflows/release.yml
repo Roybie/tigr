@@ -32,10 +32,14 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
-          # Windows is intentionally absent: the Net reactor registers raw
-          # fds via mio's os-ext (SourceFd), and Os.run / file-permission
-          # code use std::os::unix. Add a target back here once that code
-          # is cross-platform.
+          # Windows Tier 1: the `Net` module is unregistered (the
+          # reactor's unix `SourceFd` seam has no IOCP port yet) and
+          # `rustls`/`mio` are dropped on this target, so no `ring`/NASM
+          # toolchain is needed. The VM, GC, compiler, stdlib, REPL,
+          # actors, `Os.run`, and BigInt all run. `Http`/`Url` (which
+          # import `Net`) are transitively unavailable here.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
 
     steps:
       - name: Checkout
@@ -80,7 +84,13 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr tigr-lsp
+          # Windows produces `.exe` binaries; every other target produces
+          # bare names. `tar` is available on the windows-latest runner.
+          if [ -f tigr.exe ]; then
+            tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr.exe tigr-lsp.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr tigr-lsp
+          fi
 
       # softprops/action-gh-release creates the release for the pushed tag
       # on first upload and appends assets on subsequent matrix jobs.

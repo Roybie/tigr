@@ -32,12 +32,18 @@ num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
 
-# Native-only dependencies — terminal IO, sockets, TLS, and the async
-# reactor have no `wasm32-unknown-unknown` equivalent, so the browser
-# playground build excludes them (the `Net`/`Os` modules and the
-# rustyline REPL loop are `#[cfg]`-gated out to match).
+# Native dependencies that work on every non-wasm target, Windows
+# included. `rustyline` (the REPL line editor) is portable; the browser
+# playground excludes it because the wasm REPL console is HTML-driven.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = "14"
+
+# Reactor-capable native dependencies — sockets/TLS and the async-IO
+# reactor. Excluded from `wasm32` (no browser sockets) AND from
+# `windows` (Tier 1: the reactor's unix `SourceFd` seam has no IOCP
+# port yet, and `Net` is stubbed there). Dropping them on Windows also
+# sidesteps the `ring`/NASM crypto toolchain on the Windows runner.
+[target.'cfg(all(not(target_arch = "wasm32"), not(windows)))'.dependencies]
 # v0.15 — TLS for the `Net` module's encrypted client connections.
 # `default-features = false` + `ring` selects the `ring` crypto
 # provider over the default `aws-lc-rs`, which would pull in a C

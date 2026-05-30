@@ -35,6 +35,32 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Test suites that import `Net` — directly, or transitively via the
+/// pure-tigr `Http`/`Url` stdlib modules. On Windows Tier 1 the `Net`
+/// module is unregistered (see `native_modules/mod.rs`), so these would
+/// fail at their top-level `import 'Net'`. Skipped during *directory*
+/// discovery on Windows; an explicit `tigr test tests/net_test.tg` is
+/// still returned verbatim and runs (failing with a clean, catchable
+/// "no module of that name" error). Empty list on every other platform.
+#[cfg(windows)]
+const WINDOWS_SKIP_SUITES: &[&str] = &[
+    "net_test.tg",
+    "http_test.tg",
+    "url_test.tg",
+    "io_reactor_test.tg",
+    "io_offload_test.tg",
+];
+
+/// Whether `name` is a suite to skip during discovery on this platform.
+#[cfg(windows)]
+fn skip_on_platform(name: &str) -> bool {
+    WINDOWS_SKIP_SUITES.contains(&name)
+}
+#[cfg(not(windows))]
+fn skip_on_platform(_name: &str) -> bool {
+    false
+}
+
 /// Recurse `dir`, appending matching test files. `in_tests` is true
 /// once any ancestor directory was named `tests` — inside such a
 /// directory every `.tg` file is a test; elsewhere only `*_test.tg`.
@@ -51,7 +77,10 @@ fn walk(dir: &Path, in_tests: bool, out: &mut Vec<PathBuf>) {
                 continue;
             }
             walk(&path, in_tests || name == "tests", out);
-        } else if name.ends_with(".tg") && (in_tests || name.ends_with("_test.tg")) {
+        } else if name.ends_with(".tg")
+            && (in_tests || name.ends_with("_test.tg"))
+            && !skip_on_platform(name.as_ref())
+        {
             out.push(path);
         }
     }

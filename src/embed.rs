@@ -148,8 +148,16 @@ impl Session {
         // Fold to match `run` semantics — the REPL skips this, but a
         // whole program is compiled exactly as `tigr run` would.
         fold::fold_program(&mut program);
-        let (main, new_bindings) =
-            Compiler::compile_repl_with_source(&program, &self.bindings, sid)?;
+        // Host-registered modules are ambient: the game can use them with
+        // no `import`. Their global indices follow the built-ins + stdlib,
+        // matching the VM's globals vec.
+        let host_ambient = self.vm.ambient_host_names().to_vec();
+        let (main, new_bindings) = Compiler::compile_repl_with_ambient(
+            &program,
+            &self.bindings,
+            sid,
+            &host_ambient,
+        )?;
 
         let closure = crate::vm::gc::alloc_closure(Closure {
             function: Arc::new(main),
@@ -229,8 +237,10 @@ impl Session {
                 Error::from(e)
             })?;
             fold::fold_program(&mut program);
-            let compiled =
-                Compiler::compile_repl_with_source(&program, &empty, sid)?;
+            let host_ambient = self.vm.ambient_host_names().to_vec();
+            let compiled = Compiler::compile_repl_with_ambient(
+                &program, &empty, sid, &host_ambient,
+            )?;
             Ok(compiled)
         })();
         let (main, new_bindings) = match compiled {
@@ -397,6 +407,72 @@ mod tests {
         );
         s.load("Host := import 'Host'; result := Host.answer();").expect("load");
         assert_eq!(int(&s.binding("result").expect("result")), 42);
+    }
+
+    /// A host module is *ambient*: game code calls it with no `import`,
+    /// exactly like stdlib. `Host.answer()` resolves the registered
+    /// module via its lazy global slot.
+    #[test]
+    fn host_module_is_ambient_no_import() {
+        let mut s = Session::new();
+        s.register_module(
+            "Host",
+            object(&[("answer", native("answer", Arity::Exact(0), |_| Ok(Value::Int(42))))]),
+        );
+        s.load("result := Host.answer();").expect("load");
+        assert_eq!(int(&s.binding("result").expect("result")), 42);
+    }
+
+    /// A host *source* module is ambient too — bare `Num.lerp(...)`.
+    #[test]
+    fn host_source_module_is_ambient_no_import() {
+        let mut s = Session::new();
+        s.register_source_module(
+            "Num",
+            "lerp := fn(a, b, t) { a + (b - a) * t };\n${ lerp: lerp }",
+        );
+        s.load("mid := Num.lerp(0, 10, 0.5);").expect("load");
+        match s.binding("mid").expect("mid") {
+            Value::Float(v) => assert_eq!(v, 5.0),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    /// Index stability: a host module used (resolved, so its `ambient`
+    /// slot is cleared) before a second module is registered must keep
+    /// its global index, so a later `load` referencing both resolves the
+    /// right ones. Catches a layout derived from the mutable table.
+    #[test]
+    fn host_ambient_indices_stable_after_resolution() {
+        let mut s = Session::new();
+        s.register_module(
+            "A",
+            object(&[("v", native("v", Arity::Exact(0), |_| Ok(Value::Int(1))))]),
+        );
+        // Resolve A (clears its lazy marker), then register B and load
+        // code that uses both.
+        s.load("a1 := A.v();").expect("load 1");
+        s.register_module(
+            "B",
+            object(&[("v", native("v", Arity::Exact(0), |_| Ok(Value::Int(2))))]),
+        );
+        s.load("a2 := A.v(); b := B.v();").expect("load 2");
+        assert_eq!(int(&s.binding("a2").expect("a2")), 1);
+        assert_eq!(int(&s.binding("b").expect("b")), 2);
+    }
+
+    /// A host ambient module survives hot-reload: reloaded code can still
+    /// reference it without an `import`.
+    #[test]
+    fn host_ambient_survives_reload() {
+        let mut s = Session::new();
+        s.register_module(
+            "Host",
+            object(&[("answer", native("answer", Arity::Exact(0), |_| Ok(Value::Int(7))))]),
+        );
+        s.load("x := Host.answer();").expect("load");
+        s.reload("y := Host.answer() + 1;").expect("reload");
+        assert_eq!(int(&s.binding("y").expect("y")), 8);
     }
 
     /// Host-facing helpers: `Value::get_field` reads an `Object` field,

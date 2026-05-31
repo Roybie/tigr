@@ -893,6 +893,7 @@ dependencies = [
 name = "tigr-lsp"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tigr",
  "tokio",
  "tower-lsp",

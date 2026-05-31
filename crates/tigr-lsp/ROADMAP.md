@@ -504,3 +504,46 @@ downstream errors.
    `release.yml` + `install.sh` ship both binaries in one archive. See
    "Distribution. DONE." under Cross-cutting infrastructure. This was the
    last core roadmap item.
+
+## Host module manifest (embedding), as built
+
+An embedder (purr) registers native/source modules into the VM, and those
+are *ambient* at runtime: game code uses them with no `import`. The server
+runs the same checker but with no live VM, so it cannot know those names
+exist. Without help it would flag a bare `Game.rect(...)` as an undeclared
+variable and offer no hover/completion for `Game.*`.
+
+The fix is a small JSON manifest the host ships, read at `initialize` from
+two sources: a committable `tigr.modules.json` at a workspace root
+(primary), then `initializationOptions` (an override the host can inject at
+launch). Both feed two consumers:
+
+1. **Diagnostics** — the module names go into `host_ambient`, passed to
+   `check_source_with_ambient` so a bare reference resolves instead of
+   flagging. (Stdlib needs nothing here: the compiler already seeds stdlib
+   modules as ambient globals, so the server stopped flagging them the day
+   ambient stdlib landed.)
+2. **Catalog** — `Catalog::with_host_modules` folds the manifest's modules
+   in next to the stdlib ones, so hover / completion / signature help cover
+   host members. A host module never overrides a stdlib module of the same
+   name (core wins, matching the runtime import order).
+
+Schema (every field but the module name is optional):
+
+```json
+{
+  "modules": {
+    "Game": {
+      "description": "purr engine surface",
+      "members": {
+        "rect": { "signature": "rect(x, y, w, h) -> Null", "doc": "Draw a filled rectangle." }
+      }
+    }
+  }
+}
+```
+
+A missing or malformed manifest is ignored, so plain stdlib editing never
+depends on it. purr can generate the file from the modules it registers
+(it knows the names and member names; signatures and docs come from its own
+metadata, since `register_module` carries only names and arities).

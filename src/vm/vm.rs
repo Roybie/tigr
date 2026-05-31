@@ -171,6 +171,11 @@ pub struct Vm {
     /// memoizes the module into `globals[idx]` and sets this to `None`.
     /// Builtin and already-resolved slots are `None`.
     ambient: Vec<Option<Arc<str>>>,
+    /// Host-registered ambient module names in registration / global
+    /// order, kept persistently as the compiler's layout for embedding
+    /// (the `ambient` table clears a slot once resolved). See
+    /// [`Vm::ambient_host_names`].
+    host_ambient: Vec<String>,
     open_upvalues: Vec<GcRef<UpvalueKind>>,
     /// Per-Vm cache of `import 'path'` results, keyed by absolute path.
     /// Spec §12 was no-caching in v0.2; v0.3 adds caching so a module
@@ -305,6 +310,7 @@ impl Vm {
             stack: Vec::with_capacity(256),
             globals: ambient_globals(),
             ambient: ambient_table(),
+            host_ambient: Vec::new(),
             open_upvalues: Vec::new(),
             module_cache: HashMap::new(),
             host_modules: HashMap::new(),
@@ -335,6 +341,7 @@ impl Vm {
     /// running any program that imports the name.
     pub fn register_module(&mut self, name: &str, module: Value) {
         self.host_modules.insert(name.to_string(), module);
+        self.register_ambient_module(name);
     }
 
     /// Register a host-provided **pure-tigr source** module under a bare
@@ -349,6 +356,37 @@ impl Vm {
     /// imports the name.
     pub fn register_source_module(&mut self, name: &str, src: &str) {
         self.host_source_modules.insert(name.to_string(), Arc::from(src));
+        self.register_ambient_module(name);
+    }
+
+    /// Give a host-registered module an ambient global slot so it is
+    /// usable without an `import`, mirroring the stdlib. Idempotent and
+    /// append-only: a name that already maps to a global (a built-in, a
+    /// stdlib module, or a previously-registered host module) is left
+    /// alone, so a host module can never shadow core and existing global
+    /// indices never move. The slot starts as a `Null` placeholder and
+    /// resolves+memoizes on first `LoadGlobal`, like any ambient module.
+    /// `host_ambient` keeps the names persistently (the `ambient` table
+    /// entry is cleared on resolution, so it cannot serve as the layout).
+    fn register_ambient_module(&mut self, name: &str) {
+        let is_builtin = stdlib::names().contains(&name);
+        let is_stdlib = stdlib::ambient_module_names().contains(&name);
+        let is_host = self.host_ambient.iter().any(|n| n == name);
+        if is_builtin || is_stdlib || is_host {
+            return;
+        }
+        self.host_ambient.push(name.to_string());
+        self.globals.push(Value::Null);
+        self.ambient.push(Some(Arc::from(name)));
+    }
+
+    /// The host-registered ambient module names, in global-index order.
+    /// An embedder passes these to `Compiler::compile_repl_with_ambient`
+    /// so a bare reference compiles to the matching `LoadGlobal` index
+    /// (built-ins + stdlib + these). Stable across resolution — unlike
+    /// the `ambient` table, which a resolved slot clears.
+    pub fn ambient_host_names(&self) -> &[String] {
+        &self.host_ambient
     }
 
     /// Call a tigr closure (or native) with `args`, re-entrantly, from

@@ -215,6 +215,19 @@ pub fn check_source(
     base_dir: Option<PathBuf>,
     sid: SourceId,
 ) -> Vec<Error> {
+    check_source_with_ambient(source, base_dir, sid, &[])
+}
+
+/// Like [`check_source`], but additionally treats `host_ambient` module
+/// names as resolvable (usable without an `import`) — for a language
+/// server checking embedder code against a host module manifest, so
+/// bare host-module references don't surface as undeclared variables.
+pub fn check_source_with_ambient(
+    source: &str,
+    base_dir: Option<PathBuf>,
+    sid: SourceId,
+    host_ambient: &[String],
+) -> Vec<Error> {
     let (tokens, lex_errors) = Lexer::new(source).tokenize_recover();
     if !lex_errors.is_empty() {
         return lex_errors
@@ -236,7 +249,7 @@ pub fn check_source(
             .collect();
     }
     fold::fold_program(&mut program);
-    Compiler::compile_check(&program, base_dir, sid)
+    Compiler::compile_check_with_ambient(&program, base_dir, sid, host_ambient)
         .into_iter()
         .map(Error::from)
         .collect()

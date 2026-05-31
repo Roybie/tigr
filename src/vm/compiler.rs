@@ -183,6 +183,12 @@ enum Resolved {
 pub struct Compiler {
     funcs: Vec<FuncCompiler>,
     globals: Vec<&'static str>,
+    /// Host-registered ambient module names (embedding only), resolved
+    /// as globals at indices just past [`globals`]. Empty for ordinary
+    /// `tigr run` / module compiles; populated for an `embed::Session`
+    /// whose host registered native/source modules. Owned `String`s
+    /// because the names come from the host, not the `'static` stdlib.
+    host_globals: Vec<String>,
     /// Directory of the source file being compiled, if known. Used to
     /// resolve `import 'path'` paths at compile time (spec §12).
     /// `None` for source compiled from a string (no path context).
@@ -251,7 +257,22 @@ impl Compiler {
         base_dir: Option<PathBuf>,
         source: SourceId,
     ) -> Vec<CompileError> {
+        Self::compile_check_with_ambient(program, base_dir, source, &[])
+    }
+
+    /// Like [`compile_check`], but treats `host_ambient` module names as
+    /// resolvable globals — so a language server checking embedder code
+    /// (a purr game) does not flag a bare reference to a host-registered
+    /// module as an undeclared variable. The names come from the host's
+    /// module manifest, mirroring what the VM's globals hold at runtime.
+    pub fn compile_check_with_ambient(
+        program: &Block,
+        base_dir: Option<PathBuf>,
+        source: SourceId,
+        host_ambient: &[String],
+    ) -> Vec<CompileError> {
         let mut c = Compiler::new(base_dir, source);
+        c.host_globals = host_ambient.to_vec();
         let result = c.compile_main(program);
         c.into_check_errors(result)
     }
@@ -267,6 +288,7 @@ impl Compiler {
         Compiler {
             funcs: Vec::new(),
             globals,
+            host_globals: Vec::new(),
             base_dir,
             source,
             fn_name_hint: None,
@@ -383,7 +405,22 @@ impl Compiler {
         existing_locals: &[(String, u8)],
         source: SourceId,
     ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
+        Self::compile_repl_with_ambient(program, existing_locals, source, &[])
+    }
+
+    /// REPL compile that also makes `host_ambient` module names resolve
+    /// without an `import` — the embedding (`embed::Session`) path. The
+    /// names occupy global slots just past the built-ins and stdlib, in
+    /// the same order the host registered them with the VM, so the
+    /// compiled `LoadGlobal` indices line up with the VM's globals vec.
+    pub fn compile_repl_with_ambient(
+        program: &Block,
+        existing_locals: &[(String, u8)],
+        source: SourceId,
+        host_ambient: &[String],
+    ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
         let mut c = Compiler::new(None, source);
+        c.host_globals = host_ambient.to_vec();
         let result = (|| {
         c.push_function(0, Some("<repl>".to_string()));
         // Slot 0 = closure placeholder (the REPL frame holds the
@@ -695,11 +732,18 @@ impl Compiler {
                 }
             }
         }
+        if let Some(i) = self.globals.iter().position(|n| *n == name) {
+            return Ok(Some(Resolved::Global(i as u8)));
+        }
+        // Host-registered ambient modules occupy global slots after the
+        // built-ins and stdlib (the embedder appends them to the VM's
+        // globals in this same order). A bare reference to one resolves
+        // here, just like a stdlib module.
         Ok(self
-            .globals
+            .host_globals
             .iter()
-            .position(|n| *n == name)
-            .map(|i| Resolved::Global(i as u8)))
+            .position(|n| n == name)
+            .map(|j| Resolved::Global((self.globals.len() + j) as u8)))
     }
 
     fn add_upvalue(

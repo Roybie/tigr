@@ -19,14 +19,14 @@ use tigr::catalog;
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use tigr::vm::ast::Block;
-use tigr::vm::check_source;
+use tigr::vm::check_source_with_ambient;
 use tigr::vm::error::Error as TigrError;
 use tigr::vm::lexer::Lexer;
 use tigr::vm::source_map::SourceId;
@@ -66,8 +66,14 @@ struct Backend {
     /// UTF-16 code units when we project an offset onto an LSP position.
     encoding: Mutex<PositionEncodingKind>,
     /// Builtins, stdlib members, and keywords with signatures and docs,
-    /// parsed once from the embedded reference docs. Powers hover.
-    catalog: Catalog,
+    /// parsed once from the embedded reference docs. Powers hover. Behind
+    /// a lock because `initialize` may rebuild it to fold in host modules
+    /// from a `tigr.modules.json` manifest; read-only thereafter.
+    catalog: RwLock<Catalog>,
+    /// Names of host-registered ambient modules (from the manifest),
+    /// passed to the checker so a bare reference to one is not flagged as
+    /// an undeclared variable. Empty unless an embedder ships a manifest.
+    host_ambient: Mutex<Vec<String>>,
 }
 
 impl Backend {
@@ -258,7 +264,8 @@ impl Backend {
     /// Recompile `text` and publish the resulting diagnostics for `uri`.
     async fn publish(&self, uri: Url, text: &str, version: Option<i32>) {
         let enc = self.encoding.lock().unwrap().clone();
-        let diagnostics = compute_diagnostics(text, &uri, &enc);
+        let host_ambient = self.host_ambient.lock().unwrap().clone();
+        let diagnostics = compute_diagnostics(text, &uri, &enc, &host_ambient);
         self.client
             .publish_diagnostics(uri, diagnostics, version)
             .await;
@@ -296,6 +303,25 @@ impl LanguageServer for Backend {
                 roots.push(p);
             }
         }
+
+        // Host module manifest: a committable `tigr.modules.json` in a
+        // workspace root (primary), then `initializationOptions` (an
+        // override an embedder can inject at launch). Both teach the
+        // server about an embedder's ambient modules — so a bare
+        // reference doesn't false-flag as undeclared, and hover /
+        // completion / signature help cover the host members.
+        let mut host_modules: HashMap<String, catalog::Module> = HashMap::new();
+        let mut host_names: Vec<String> = Vec::new();
+        if let Some(v) = load_manifest_file(&roots) {
+            merge_manifest(&v, &mut host_modules, &mut host_names);
+        }
+        if let Some(v) = &params.initialization_options {
+            merge_manifest(v, &mut host_modules, &mut host_names);
+        }
+        *self.host_ambient.lock().unwrap() = host_names;
+        *self.catalog.write().unwrap() =
+            catalog::Catalog::with_host_modules(host_modules);
+
         *self.roots.lock().unwrap() = roots;
 
         Ok(InitializeResult {
@@ -417,9 +443,10 @@ impl LanguageServer for Backend {
         let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        let markdown = analysis::hover(&program, offset, &self.catalog)
+        let cat = self.catalog.read().unwrap();
+        let markdown = analysis::hover(&program, offset, &cat)
             .or_else(|| self.foreign_member_hover(&uri, &program, offset))
-            .or_else(|| keyword_hover(&text, offset, &self.catalog));
+            .or_else(|| keyword_hover(&text, offset, &cat));
         let Some(markdown) = markdown else {
             return Ok(None);
         };
@@ -462,7 +489,8 @@ impl LanguageServer for Backend {
                 return Ok(Some(CompletionResponse::Array(items)));
             }
         }
-        let items = completion_items(&text, offset, &program, &self.catalog);
+        let cat = self.catalog.read().unwrap();
+        let items = completion_items(&text, offset, &program, &cat);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -475,7 +503,8 @@ impl LanguageServer for Backend {
         let Some((text, offset, program)) = self.analyze(&uri, p.position) else {
             return Ok(None);
         };
-        if let Some(sh) = signature_help(&text, offset, &program, &self.catalog) {
+        let cat = self.catalog.read().unwrap();
+        if let Some(sh) = signature_help(&text, offset, &program, &cat) {
             return Ok(Some(sh));
         }
         // Cross-file: a call on a member of a user file import.
@@ -1288,10 +1317,13 @@ fn keyword_str(t: &Token) -> Option<&'static str> {
 }
 
 /// Run the frontend over `text` and return diagnostics. Empty on success.
+/// `host_ambient` names (from an embedder's manifest) are treated as
+/// resolvable so bare host-module references aren't flagged.
 fn compute_diagnostics(
     text: &str,
     uri: &Url,
     enc: &PositionEncodingKind,
+    host_ambient: &[String],
 ) -> Vec<Diagnostic> {
     // base_dir mirrors what the CLI passes so relative-import resolution
     // (a runtime concern) is set up consistently; compilation never reads
@@ -1305,7 +1337,7 @@ fn compute_diagnostics(
     // bypass; UNKNOWN is fine since we render from `text` directly.
     // check_source recovers past syntax errors, so this is every error in
     // the file, not just the first.
-    check_source(text, base_dir, SourceId::UNKNOWN)
+    check_source_with_ambient(text, base_dir, SourceId::UNKNOWN, host_ambient)
         .iter()
         .filter_map(|err| {
             let (start, end, message) = error_span(err)?;
@@ -1321,6 +1353,67 @@ fn compute_diagnostics(
             })
         })
         .collect()
+}
+
+/// Read the first `tigr.modules.json` found in a workspace root. Missing
+/// or malformed files are ignored (the manifest is optional), so a bad
+/// file never breaks plain stdlib editing.
+fn load_manifest_file(roots: &[PathBuf]) -> Option<serde_json::Value> {
+    for root in roots {
+        let path = root.join("tigr.modules.json");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Merge a host-module manifest into the running maps. Shape:
+/// `{ "modules": { "Name": { "description": str,
+///    "members": { "fn": { "signature": str, "doc": str } } } } }`.
+/// Every field but the module name is optional. A later call overrides an
+/// earlier one for the same module (so `initializationOptions` wins over
+/// the file). Unknown / malformed entries are skipped, not fatal.
+fn merge_manifest(
+    value: &serde_json::Value,
+    modules: &mut HashMap<String, catalog::Module>,
+    names: &mut Vec<String>,
+) {
+    let Some(mods) = value.get("modules").and_then(|m| m.as_object()) else {
+        return;
+    };
+    for (name, def) in mods {
+        let description = def
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut members = HashMap::new();
+        if let Some(ms) = def.get("members").and_then(|m| m.as_object()) {
+            for (mname, mdef) in ms {
+                let signature = mdef
+                    .get("signature")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or(mname)
+                    .to_string();
+                let doc = mdef
+                    .get("doc")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                members.insert(
+                    mname.clone(),
+                    catalog::Member { signature, doc },
+                );
+            }
+        }
+        modules.insert(name.clone(), catalog::Module { description, members });
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
 }
 
 /// Extract `(start_byte, end_byte, message)` from a frontend error.
@@ -1576,6 +1669,88 @@ mod tests {
         let prog = tigr::vm::parse_tree(&text);
         assert!(signature_help(&text, off, &prog, &cat).is_none());
     }
+
+    // -- host module manifest (embedding: purr) ----------------------
+
+    fn uri() -> Url {
+        Url::parse("file:///game.tg").unwrap()
+    }
+
+    /// Without a manifest, a bare reference to a host module is flagged
+    /// as an undeclared variable — the baseline the manifest fixes.
+    #[test]
+    fn host_module_unknown_without_manifest() {
+        let enc = PositionEncodingKind::UTF8;
+        let diags = compute_diagnostics("x := Game.rect(1, 2, 3, 4);", &uri(), &enc, &[]);
+        assert!(
+            diags.iter().any(|d| d.message.contains("Game")),
+            "expected an undeclared-variable diagnostic for Game: {diags:?}"
+        );
+    }
+
+    /// With `Game` in the host-ambient set, the same code is clean — no
+    /// false "undeclared variable" diagnostic.
+    #[test]
+    fn host_ambient_suppresses_undeclared() {
+        let enc = PositionEncodingKind::UTF8;
+        let host = vec!["Game".to_string()];
+        let diags =
+            compute_diagnostics("x := Game.rect(1, 2, 3, 4);", &uri(), &enc, &host);
+        assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
+        // A genuinely undeclared name is still reported.
+        let diags2 = compute_diagnostics("y := Nope.x();", &uri(), &enc, &host);
+        assert!(diags2.iter().any(|d| d.message.contains("Nope")));
+    }
+
+    /// The manifest parses into module names plus a catalog the hover /
+    /// completion path can read — member signature and doc included.
+    #[test]
+    fn manifest_parses_into_catalog_and_names() {
+        let json = serde_json::json!({
+            "modules": {
+                "Game": {
+                    "description": "purr engine",
+                    "members": {
+                        "rect": { "signature": "rect(x, y, w, h) -> Null", "doc": "Draw a rect." }
+                    }
+                }
+            }
+        });
+        let mut modules = HashMap::new();
+        let mut names = Vec::new();
+        merge_manifest(&json, &mut modules, &mut names);
+        assert_eq!(names, vec!["Game".to_string()]);
+
+        let cat = Catalog::with_host_modules(modules);
+        let m = cat.member("Game", "rect").expect("Game.rect in catalog");
+        assert_eq!(m.signature, "rect(x, y, w, h) -> Null");
+        assert!(m.doc.contains("Draw a rect"));
+        // Completion after `Game.` offers the host member.
+        let (text, off) = cursor("Game.|");
+        let prog = tigr::vm::parse_tree(&text);
+        let items = completion_items(&text, off, &prog, &cat);
+        assert!(
+            items.iter().any(|i| i.label == "rect"),
+            "expected rect in completion: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    /// A host module never overrides a stdlib module of the same name —
+    /// core wins, matching the runtime import order.
+    #[test]
+    fn manifest_does_not_override_stdlib() {
+        let json = serde_json::json!({
+            "modules": { "Math": { "members": { "bogus": { "signature": "bogus()" } } } }
+        });
+        let mut modules = HashMap::new();
+        let mut names = Vec::new();
+        merge_manifest(&json, &mut modules, &mut names);
+        let cat = Catalog::with_host_modules(modules);
+        // The real Math (with sqrt) survived; the bogus member is absent.
+        assert!(cat.member("Math", "sqrt").is_some());
+        assert!(cat.member("Math", "bogus").is_none());
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -1588,7 +1763,8 @@ async fn main() {
         foreign: Mutex::new(HashMap::new()),
         roots: Mutex::new(Vec::new()),
         encoding: Mutex::new(PositionEncodingKind::UTF16),
-        catalog: Catalog::load(),
+        catalog: RwLock::new(Catalog::load()),
+        host_ambient: Mutex::new(Vec::new()),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

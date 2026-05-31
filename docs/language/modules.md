@@ -20,6 +20,20 @@ mod := import './plugins/' + name;   // path built from an expression
 
 `import` returns the imported module's final value, so the `:=` on the left binds whatever the module produced.
 
+## Ambient stdlib (no import needed)
+
+Every built-in module is also available without writing `import` at all. A bare `Math`, `String`, `JSON`, and so on just resolves:
+
+```tigr
+print(Math.sqrt(144));            // => 12.0
+print(String.upper("hi"));        // => "HI"
+print(JSON.stringify([1, 2, 3])); // => "[1,2,3]"
+```
+
+The rule is simple: a capitalized stdlib module is always in scope; anything you wrote yourself or pulled in as a third-party file still needs an explicit `import` by path. Writing `Math := import 'Math'` keeps working, and a local binding of the same name shadows the ambient module, so you can still name a variable `Map` or hand your own object to `String` if you want to.
+
+Resolution stays lazy. A module is only built the first time you actually reach it, so a program that never mentions `Net` never opens the networking machinery, exactly as if you had never imported it.
+
 ## Name resolution
 
 The resolved string has two flavors, and which one applies depends on its shape.

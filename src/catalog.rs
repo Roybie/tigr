@@ -113,6 +113,19 @@ impl Catalog {
         Catalog { modules, builtins, keywords }
     }
 
+    /// Build the catalog and merge in host-provided modules (from an
+    /// embedder's `tigr.modules.json` manifest), so hover / completion /
+    /// signature help cover them too. A host module never overrides a
+    /// stdlib module of the same name — core wins, matching the runtime
+    /// import order.
+    pub fn with_host_modules(host: HashMap<String, Module>) -> Catalog {
+        let mut c = Self::load();
+        for (name, module) in host {
+            c.modules.entry(name).or_insert(module);
+        }
+        c
+    }
+
     pub fn module(&self, name: &str) -> Option<&Module> {
         self.modules.get(name)
     }

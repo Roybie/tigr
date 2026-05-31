@@ -23,3 +23,8 @@ tower-lsp = "0.20"
 # must stay on one thread. `io-std` gives the async stdin/stdout the LSP
 # stdio transport needs.
 tokio = { version = "1", features = ["rt", "io-std", "macros"] }
+# Parsing the optional `tigr.modules.json` host-module manifest (and the
+# `initializationOptions` override) that teaches the server about an
+# embedder's ambient modules. tower-lsp already pulls serde_json in for
+# the protocol; declaring it keeps the dependency explicit.
+serde_json = "1"

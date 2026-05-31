@@ -23,8 +23,12 @@ pub mod embed;
 pub mod catalog;
 
 /// `wasm-bindgen` entry points for the browser playground. Only built
-/// for the `wasm32` target; the native binary never sees it.
-#[cfg(target_arch = "wasm32")]
+/// for the `wasm32` target *and* the `playground` feature (on by
+/// default): the native binary never sees it, and an embedder building
+/// for a non-`wasm-bindgen` web host (e.g. macroquad's plain-wasm
+/// loader) turns the feature off so this glue — and its `wasm-bindgen`
+/// imports — stays out of the module.
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 pub mod wasm;
 
 #[cfg(test)]

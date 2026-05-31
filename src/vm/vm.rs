@@ -42,7 +42,7 @@ use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
 use crate::vm::value::{
     bigint_to_f64, Closure, Function, IterState, MapKey, NativeKind, RangeData,
-    Upvalue, Value,
+    Upvalue, Value, WaitKind,
 };
 
 pub(crate) struct CallFrame {
@@ -208,6 +208,24 @@ pub struct Vm {
     /// otherwise collect them; parking them here keeps them traced until
     /// the carry completes. Empty outside a reload.
     reload_roots: Vec<Value>,
+    /// True only while the VM owns the OS thread for a whole top-level
+    /// program run ([`run`](Vm::run) / [`drive`](Vm::drive)) — a plain
+    /// `tigr run`, or a `Session::load`. In that mode a cooperative
+    /// `wait(secs)` with nothing else ready may block the actor thread on
+    /// the clock (see [`sleep_to_next_timer`](Vm::sleep_to_next_timer)),
+    /// because the program is the only thing on this thread. It is `false`
+    /// during a host frame drain (where `in_drain` governs instead) and
+    /// during a re-entrant host [`call_function`](Vm::call_function), so a
+    /// `wait` from a synchronous `Session::call` raises rather than
+    /// silently stalling the host.
+    blocking_timers_ok: bool,
+    /// Monotonic origin for the standalone cooperative-`wait` clock, set
+    /// when [`run`](Vm::run) enters blocking mode. `Some` only alongside
+    /// `blocking_timers_ok`; the clock reads `origin.elapsed()` so a
+    /// `wait` measures real wall-clock time even while sibling coroutines
+    /// spin on `yield`. `None` under a host frame drain (the host's
+    /// `frame_now` is the clock there) and on wasm (no threads/clock).
+    clock_origin: Option<std::time::Instant>,
 }
 
 /// A parked resumer: the coroutine state that was running when a
@@ -255,6 +273,8 @@ impl Vm {
             in_drain: false,
             drain_main: None,
             reload_roots: Vec::new(),
+            blocking_timers_ok: false,
+            clock_origin: None,
         }
     }
 
@@ -363,7 +383,32 @@ impl Vm {
             try_frames: Vec::new(),
             kind: FrameKind::Function,
         });
-        self.drive()
+        // This is the program's own run loop on this thread, so a
+        // cooperative `wait` may block-sleep the thread to its timer (a
+        // re-entrant `call_function` leaves this `false` and so raises).
+        // wasm has no threads/clock, so leave it off there — `wait` then
+        // raises, as it does on a synchronous host call.
+        let prev_blocking = self.blocking_timers_ok;
+        let prev_origin = self.clock_origin;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.blocking_timers_ok = true;
+            self.clock_origin = Some(std::time::Instant::now());
+        }
+        let result = self.drive();
+        self.blocking_timers_ok = prev_blocking;
+        self.clock_origin = prev_origin;
+        result
+    }
+
+    /// "Now", in seconds, for cooperative-`wait` timers: the real
+    /// monotonic clock while a standalone program owns the thread, or the
+    /// host-supplied `frame_now` under a frame drive.
+    fn now_seconds(&self) -> f64 {
+        match self.clock_origin {
+            Some(origin) => origin.elapsed().as_secs_f64(),
+            None => self.frame_now,
+        }
     }
 
     /// Run the current actor to completion. Executes the running
@@ -808,6 +853,15 @@ impl Vm {
             // completing without having to reach a blocking switch.
             if self.scheduler.has_io_blocked() {
                 self.poll_io_completions();
+            }
+
+            // Same for standalone cooperative `wait` timers: fire any
+            // whose real time has come, so a coroutine spinning on `yield`
+            // still lets a sibling's timer wake without the run-queue ever
+            // emptying. Under a host drain the host advances the clock
+            // (`blocking_timers_ok` is false then), so this is skipped.
+            if self.blocking_timers_ok && self.scheduler.has_timer_blocked() {
+                self.scheduler.wake_timers(self.now_seconds());
             }
 
             // Refresh the frame cache only when the current frame's
@@ -1272,15 +1326,6 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
-                            // `wait`/`wait_frame` park the running green
-                            // thread cooperatively — same interception
-                            // precedent as `join`; their `Pure` bodies
-                            // are raising fallbacks reached only when not
-                            // intercepted (wrong arg, or no host drive).
-                            if let Some(kind) = wait_target(&nf, &args) {
-                                self.coop_wait(kind, line)?;
-                                continue;
-                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -1309,6 +1354,16 @@ impl Vm {
                                 }
                                 NativeKind::Socket(f) => {
                                     self.dispatch_socket(*f, args, line)?;
+                                }
+                                // `wait` / `GameTime.wait_frame`: park the
+                                // running green thread cooperatively. The
+                                // `fn` validates args and says how to park.
+                                NativeKind::Park(f) => {
+                                    let kind = f(&args).map_err(|mut e| {
+                                        if e.line == 0 { e.line = line; }
+                                        e
+                                    })?;
+                                    self.coop_wait(kind, line)?;
                                 }
                             }
                             continue;
@@ -1385,13 +1440,6 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
-                            // Tail-positioned `wait`/`wait_frame`: park
-                            // cooperatively, leaving the result for the
-                            // compiler-emitted `Return` after the call.
-                            if let Some(kind) = wait_target(&nf, &args) {
-                                self.coop_wait(kind, line)?;
-                                continue;
-                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -1415,6 +1463,16 @@ impl Vm {
                                 }
                                 NativeKind::Socket(f) => {
                                     self.dispatch_socket(*f, args, line)?;
+                                }
+                                // Tail-positioned `wait` / `wait_frame`:
+                                // park cooperatively, leaving the resume
+                                // value for the compiler-emitted `Return`.
+                                NativeKind::Park(f) => {
+                                    let kind = f(&args).map_err(|mut e| {
+                                        if e.line == 0 { e.line = line; }
+                                        e
+                                    })?;
+                                    self.coop_wait(kind, line)?;
                                 }
                             }
                             continue;
@@ -1927,6 +1985,15 @@ impl Vm {
                                     self.dispatch_socket(
                                         *f, call_args, line,
                                     )?;
+                                }
+                                // Spread-applied `wait` / `wait_frame`:
+                                // park cooperatively, same as a plain call.
+                                NativeKind::Park(f) => {
+                                    let kind = f(&call_args).map_err(|mut e| {
+                                        if e.line == 0 { e.line = line; }
+                                        e
+                                    })?;
+                                    self.coop_wait(kind, line)?;
                                 }
                             }
                             continue;
@@ -2446,6 +2513,24 @@ impl Vm {
                             },
                         )
                     }
+                    // A `Park` native (`wait` / `wait_frame`) reached
+                    // through a host `call_function` entry: there is no
+                    // green thread here to suspend, so raise rather than
+                    // hang. Validate args first for a precise message.
+                    NativeKind::Park(f) => {
+                        f(&args).map_err(|mut e| {
+                            if e.line == 0 { e.line = line; }
+                            e
+                        })?;
+                        Err(RuntimeError::new(
+                            RuntimeErrorKind::Raised(Value::Str(
+                                "wait is only valid inside a green thread, \
+                                 not a host call_function entry"
+                                    .into(),
+                            )),
+                            line,
+                        ))
+                    }
                 }
             }
             Value::Function(c) => {
@@ -2685,18 +2770,19 @@ impl Vm {
         }
     }
 
-    /// Cooperative `wait(secs)` / `wait_frame()`: park the running green
-    /// thread on the host clock and switch to the next ready coroutine.
-    /// Modelled on [`coop_join`], but the wake source is wall-clock
-    /// (`Scheduler::wake_timers`), so there is no deadlock check — a
-    /// timer always resumes once the host advances time. `wait` is only
-    /// legal inside a host-driven green thread, so it raises catchably
-    /// when not in a [`drain_ready`](Vm::drain_ready) (`update`/`draw`,
-    /// the main program, or a plain `tigr run` have no host clock to
-    /// resume the timer) and when inside a generator (synchronous). When
-    /// nothing else is ready the pick unwinds to the host via
-    /// `HostYield`; the parked coroutine resumes on a later frame's
-    /// `wake_timers`.
+    /// Cooperative `wait(secs)` / `wait_frame()`: park the running
+    /// coroutine on the clock and switch to the next ready one. Modelled
+    /// on [`coop_join`], but the wake source is wall-clock
+    /// ([`Scheduler::wake_timers`]).
+    ///
+    /// `Secs` works in any program: under a host frame drive the host
+    /// advances the clock; standalone, [`pick_next`](Vm::pick_next) blocks
+    /// the actor thread to the next timer and advances it. `NextFrame`
+    /// (purr's `GameTime.wait_frame`) only means something under a frame
+    /// drive, so it raises outside one. Either raises inside a generator
+    /// (synchronous, no coroutine to suspend). When nothing else is
+    /// runnable under a host drain the pick unwinds via `HostYield`,
+    /// resuming on a later frame's `wake_timers`.
     fn coop_wait(
         &mut self,
         kind: WaitKind,
@@ -2710,24 +2796,41 @@ impl Vm {
                 line,
             ));
         }
-        // Only a host frame drain has a clock to wake the timer. On the
-        // main coroutine (in_drain is false during a host's
-        // `update`/`draw` call too) or in a plain `tigr run`, parking
-        // would hang forever — raise instead.
-        if !self.in_drain {
-            return Err(RuntimeError::new(
-                RuntimeErrorKind::Raised(Value::Str(
-                    "wait is only valid inside a host-driven green thread \
-                     (call it from a `go` block, not the main program or \
-                     update/draw)"
-                        .into(),
-                )),
-                line,
-            ));
-        }
         let wake_time = match kind {
-            WaitKind::Secs(s) => self.frame_now + s,
-            WaitKind::NextFrame => f64::NEG_INFINITY,
+            WaitKind::Secs(s) => {
+                // A synchronous host `call_function` (e.g. `Session::call`
+                // for an `update` callback) is neither the program's own
+                // run loop nor a frame drain: there is no clock to wake the
+                // timer and blocking would stall the host. Raise instead.
+                if !self.in_drain && !self.blocking_timers_ok {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::Raised(Value::Str(
+                            "wait is only valid inside a running program or a \
+                             host frame loop, not a synchronous host call"
+                                .into(),
+                        )),
+                        line,
+                    ));
+                }
+                // Standalone uses the real monotonic clock; under a drain
+                // `now_seconds` reads the host's `frame_now`.
+                self.now_seconds() + s
+            }
+            // A frame yield is meaningless without a host advancing
+            // frames — standalone there is no "next frame" to resume on.
+            WaitKind::NextFrame => {
+                if !self.in_drain {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::Raised(Value::Str(
+                            "wait_frame is only valid under a host frame \
+                             loop (e.g. inside a purr game)"
+                                .into(),
+                        )),
+                        line,
+                    ));
+                }
+                f64::NEG_INFINITY
+            }
         };
         let parked = self.save_current(None);
         self.scheduler.park_timer(wake_time, parked);
@@ -2834,9 +2937,11 @@ impl Vm {
 
     /// Pick the next coroutine to run, the running one having already
     /// been parked. Dequeues a ready coroutine, or — if the queue is
-    /// empty but offload jobs are outstanding — blocks the actor thread
-    /// until a completion makes one runnable. `None` only when nothing
-    /// is runnable and nothing is outstanding (the actor is finished).
+    /// empty but offload jobs or `wait` timers are outstanding — blocks
+    /// the actor thread until one makes a coroutine runnable. `None` only
+    /// when nothing is runnable and nothing is outstanding (the actor is
+    /// finished), or inside a host drain where the host, not this thread,
+    /// owns the clock and the poll loop.
     fn pick_next(&mut self) -> Option<GreenThread> {
         loop {
             if let Some(next) = self.scheduler.take_next() {
@@ -2855,7 +2960,37 @@ impl Vm {
                 self.pump_io_completions();
                 continue;
             }
+            if self.scheduler.has_timer_blocked() {
+                // The program's own run loop owns this thread: block it
+                // until the earliest `wait` is due, re-ready that
+                // coroutine, and retry. This is what makes `wait` work in
+                // a plain `tigr run` program. Under a host frame drain the
+                // host owns the clock instead, so unwind via
+                // `None`/`HostYield` and let the next frame's
+                // `wake_timers` re-ready the coroutine.
+                if self.blocking_timers_ok {
+                    self.sleep_to_next_timer();
+                    continue;
+                }
+                return None;
+            }
             return None;
+        }
+    }
+
+    /// Standalone (non-host) timer driving: with nothing else ready,
+    /// block the actor thread until the earliest cooperative-`wait` timer
+    /// is due on the real clock, then re-ready every coroutine whose time
+    /// has come. Only reached while `blocking_timers_ok` (a program's own
+    /// run loop) — under [`drain_ready`] the host advances the clock and
+    /// pumps coroutines instead.
+    fn sleep_to_next_timer(&mut self) {
+        if let Some(wake) = self.scheduler.next_timer_wake() {
+            let dt = wake - self.now_seconds();
+            if dt > 0.0 {
+                std::thread::sleep(std::time::Duration::from_secs_f64(dt));
+            }
+            self.scheduler.wake_timers(self.now_seconds());
         }
     }
 
@@ -3289,34 +3424,6 @@ fn green_join_target(
         }
     }
     None
-}
-
-/// How a cooperative `wait` parks: for a fixed number of seconds on the
-/// host clock, or until the very next host tick (`wait_frame`).
-#[derive(Clone, Copy)]
-enum WaitKind {
-    /// Resume once the host clock advances by `secs` from `frame_now`.
-    Secs(f64),
-    /// Resume on the next tick — `wait_frame()`, the per-frame yield.
-    NextFrame,
-}
-
-/// Recognise the `wait` / `wait_frame` built-ins so the Call/TailCall
-/// dispatch can park the running green thread cooperatively instead of
-/// running their (raising) `Pure` fallback bodies — the same
-/// interception precedent as [`green_join_target`]. `wait` matches only
-/// with a single numeric argument; anything else falls through to the
-/// fallback, which raises.
-fn wait_target(
-    nf: &crate::vm::value::NativeFn,
-    args: &[Value],
-) -> Option<WaitKind> {
-    match (nf.name, args) {
-        ("wait", [Value::Float(s)]) => Some(WaitKind::Secs(*s)),
-        ("wait", [Value::Int(s)]) => Some(WaitKind::Secs(*s as f64)),
-        ("wait_frame", []) => Some(WaitKind::NextFrame),
-        _ => None,
-    }
 }
 
 /// Trace one call frame's GC roots: its closure, plus any heap handle

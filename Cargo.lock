@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "tigr"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "indexmap",
  "mio",

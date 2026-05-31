@@ -147,7 +147,7 @@ export function setCatalog(cat) {
 
 // Static fallback used before the catalog loads.
 const FALLBACK_BUILTINS = ['print', 'str', 'num', 'int', 'float', 'bool',
-  'floor', 'ceil', 'rand', 'type', 'gc', 'join'];
+  'floor', 'ceil', 'rand', 'type', 'gc', 'join', 'wait'];
 const FALLBACK_MODULES = ['Iter', 'Array', 'Map', 'Set', 'String', 'Math',
   'Object', 'LocalChannel', 'Test', 'JSON', 'Random', 'Bytes', 'BigInt',
   'Path', 'Time', 'DateTime'];

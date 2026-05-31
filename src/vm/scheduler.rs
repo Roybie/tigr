@@ -298,20 +298,38 @@ impl Scheduler {
         !self.timer_blocked.is_empty()
     }
 
-    /// No coroutine other than the running one is ready, `join`-blocked
-    /// or IO-blocked — so a blocking call can run inline on the actor
-    /// thread without stalling anyone.
+    /// The earliest `wake_time` among timer-parked coroutines, if any.
+    /// The standalone driver sleeps the actor thread to this point.
+    pub fn next_timer_wake(&self) -> Option<f64> {
+        self.timer_blocked
+            .iter()
+            .map(|t| t.wake_time)
+            .min_by(|a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// No coroutine other than the running one is ready, `join`-blocked,
+    /// IO-blocked or timer-blocked — so a blocking call can run inline on
+    /// the actor thread without stalling anyone. A timer-parked sibling
+    /// counts: running inline would delay its wake, so the call should
+    /// offload instead.
     pub fn is_idle(&self) -> bool {
         self.queue.is_empty()
             && self.blocked.is_empty()
             && self.io_blocked.is_empty()
+            && self.timer_blocked.is_empty()
     }
 
     /// Could the actor make progress if the running coroutine parked
-    /// itself? True when another coroutine is ready, or an offload job
-    /// is outstanding (its completion will make one ready).
+    /// itself? True when another coroutine is ready, an offload job is
+    /// outstanding (its completion will make one ready), or a `wait`
+    /// timer is pending (it wakes once its time comes — the host advances
+    /// the clock, or the standalone driver sleeps to it).
     pub fn can_make_progress(&self) -> bool {
-        !self.queue.is_empty() || !self.io_blocked.is_empty()
+        !self.queue.is_empty()
+            || !self.io_blocked.is_empty()
+            || !self.timer_blocked.is_empty()
     }
 
     /// Record which coroutine is now running. Called on every switch.

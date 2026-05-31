@@ -3,7 +3,7 @@
 > Global builtin functions, always in scope (no import needed)
 > Spec: [LANGUAGE.md §13.1](../../LANGUAGE.md#131-required-built-ins-for-v02)
 
-The built-ins are ordinary bindings in the root environment, so they need no `import`. They cover printing, type conversion, type inspection, rounding, and a couple of runtime hooks. Being plain bindings, they can be shadowed, passed to other functions, or stored in a variable like any value.
+The built-ins are ordinary bindings in the root environment, so they need no `import`. They cover printing, type conversion, type inspection, rounding, a couple of runtime hooks, concurrency, and cooperative timing. Being plain bindings, they can be shadowed, passed to other functions, or stored in a variable like any value.
 
 ## Functions
 
@@ -21,6 +21,7 @@ The built-ins are ordinary bindings in the root environment, so they need no `im
 | [`rand() -> Float`](#rand---float) | Returns a uniformly distributed random `Float` in the half-open range `[0, 1)`. |
 | [`gc() -> Object`](#gc---object) | Returns a read-only snapshot of the tracing garbage collector's state. |
 | [`join(handle) -> value`](#joinhandle---value) | Waits for a concurrent computation to finish and returns its result. |
+| [`wait(seconds) -> null`](#waitseconds---null) | Cooperatively pauses the running coroutine for a number of seconds, letting siblings run. |
 
 
 ### `print(value1, value2?) -> value`
@@ -202,6 +203,25 @@ print(for[] (t, tasks) { join(t) });  // => [1, 4, 9, 16]
 
 h := go fn() { 1 + 2 + 3 };
 print(join(h));   // => 6
+```
+
+### `wait(seconds) -> null`
+
+Cooperatively pauses the running coroutine for `seconds`, then resumes it. While it waits, the scheduler runs the actor's other coroutines, so a `wait` never freezes them. This is the cooperative counterpart of [`Time.sleep_ms`](time.md), which blocks the whole actor thread, and a far lighter pause than spawning a `sleep` process with [`Os.run`](os.md). It works in any program with green threads: a plain `tigr run` advances the clock on its own; an embedder driving a frame loop advances it each frame.
+
+`wait` raises inside a generator (which is pulled synchronously, with no coroutine to suspend) and when called through a synchronous host call such as the embedding API's `Session::call` (an `update`-style callback), where blocking would stall the host. The per-frame yield — pausing until the host's next frame rather than for a fixed time — is not a language builtin, since frames are a host concept; a host that drives frames (such as the purr game framework) provides it as its own module member.
+
+- `seconds` *(Number)*: how long to pause, in seconds. An `Int` or `Float`.
+
+**Returns:** `null`, once the wait elapses.
+**Raises:** inside a generator, through a synchronous host call, or with a non-numeric argument.
+
+```tigr
+// Two coroutines that pause without blocking each other.
+a := go fn() { wait(0.2); print('a done') };
+b := go fn() { wait(0.2); print('b done') };
+join(a);
+join(b);   // both finish in ~0.2s, not 0.4s — the waits overlap
 ```
 
 ## See also

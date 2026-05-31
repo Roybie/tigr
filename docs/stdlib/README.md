@@ -10,7 +10,7 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 
 ## Builtins
 
-- [Builtins](builtins.md): `print`, `str`, `num`, `int`, `float`, `bool`, `type`, `gc`, `rand`, `floor`, `ceil`, `join`. Always in scope, no import needed.
+- [Builtins](builtins.md): `print`, `str`, `num`, `int`, `float`, `bool`, `type`, `gc`, `rand`, `floor`, `ceil`, `join`, `wait`. Always in scope, no import needed.
 
 ## Collections and data
 

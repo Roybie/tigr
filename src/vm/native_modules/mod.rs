@@ -41,7 +41,7 @@ use crate::vm::error::RuntimeError;
 use crate::vm::gc;
 use crate::vm::offload::BlockingJob;
 use crate::vm::socket::ReactorOp;
-use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
+use crate::vm::value::{Arity, NativeFn, NativeKind, Value, WaitKind};
 
 /// Look up a bare-name module. Returns `None` if no native module of
 /// that name exists — callers should then fall back to filesystem
@@ -134,6 +134,27 @@ pub fn native_socket(
         name,
         arity,
         kind: NativeKind::Socket(func),
+    }))
+}
+
+/// The actor-thread step of a frame-yield `Park` native: take no
+/// arguments and always park until the next host frame.
+fn park_frame(_args: &[Value]) -> Result<WaitKind, RuntimeError> {
+    Ok(WaitKind::NextFrame)
+}
+
+/// Build a *frame-wait* module entry for an embedder driving a frame
+/// loop (e.g. purr's `GameTime.wait_frame`). Calling it from a green
+/// thread cooperatively parks that thread until the host's next
+/// [`Vm::drain_ready`](crate::vm::vm::Vm::drain_ready); siblings run
+/// meanwhile. It raises if called outside a host frame drive, since
+/// there is then no "next frame" to resume on. Hosts that do not drive
+/// frames should not register one.
+pub fn native_frame_wait(name: &'static str, arity: Arity) -> Value {
+    Value::NativeFn(Rc::new(NativeFn {
+        name,
+        arity,
+        kind: NativeKind::Park(park_frame),
     }))
 }
 

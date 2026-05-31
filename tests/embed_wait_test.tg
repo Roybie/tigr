@@ -1,44 +1,83 @@
-// tests/embed_wait_test.tg — the `wait` / `wait_frame` cooperative
-// timing primitives (embedding API, Phase C).
+// tests/embed_wait_test.tg — the cooperative `wait(secs)` primitive.
 //
-// `wait(secs)` and `wait_frame()` park a green thread on the *host*
-// clock: they only make sense inside a host that drives the frame loop
-// (calling `Vm::drain_ready` each tick to advance time and resume parked
-// coroutines). The full frame-driven behavior — a coroutine actually
-// sleeping for `secs` and waking — is therefore a Rust test (see
-// `src/embed.rs`, which can inject `now` and call `drain_ready`).
+// `wait(secs)` parks the running green thread on the clock and lets its
+// siblings run while it sleeps, then resumes once `secs` have elapsed.
+// Unlike `Time.sleep_ms` (which blocks the whole actor thread) it is
+// cooperative, and unlike `Os.run('sleep', n)` (which offloads a whole
+// subprocess) it is just a timer. It works in any program with green
+// threads: the standalone run loop advances the clock here; under a host
+// frame loop the host does.
 //
-// At the tigr level there is no host clock, so all we assert here is the
-// language surface: both are defined globals, and calling either where
-// there is no host drive (the main program, or inside a generator)
-// raises a catchable error rather than hanging.
+// There is deliberately no `wait_frame` builtin — frames are a host
+// concept, so purr provides that as `GameTime.wait_frame` (built with
+// `embed::native_frame_wait`). The frame-yield path is covered by the
+// Rust embed tests in `src/embed.rs`, which can drive `drain_ready`.
+//
+// Timing assertions use generous bounds — overlap, not exact duration,
+// is the point (cf. tests/io_offload_test.tg).
 //
 // Evaluates to an array of suites so `tigr test` aggregates each tally.
 
 Test := import 'Test';
+Time := import 'Time';
 
 [
     Test.suite('wait — language surface', [
-        Test.case('wait and wait_frame are defined globals', fn() {
-            Test.assert_eq(type(wait), 'function');
-            Test.assert_eq(type(wait_frame), 'function')
+        Test.case('wait is a defined global', fn() {
+            Test.assert_eq(type(wait), 'function')
         }),
 
-        Test.case('wait on the main program raises (no host drive)', fn() {
-            // Outside a host frame drain there is no clock to resume the
-            // timer, so `wait` raises rather than hanging forever.
-            Test.assert_raises(fn() { wait(0.5) })
+        Test.case('wait on the main program returns null', fn() {
+            // No siblings: it degenerates to a plain sleep and yields null.
+            Test.assert_eq(wait(0.01), null)
         }),
 
-        Test.case('wait_frame on the main program raises', fn() {
-            Test.assert_raises(fn() { wait_frame() })
+        Test.case('wait with a non-numeric argument raises', fn() {
+            Test.assert_raises(fn() { wait('soon') })
         }),
 
         Test.case('wait inside a generator raises', fn() {
-            // Generators are pulled synchronously; they cannot park on a
-            // host timer.
+            // Generators are pulled synchronously; there is no coroutine
+            // to suspend, so a `wait` in one raises rather than parking.
             gen_it := (gen fn() { wait(1); yield 1 })();
             Test.assert_raises(fn() { gen_it.next() })
+        }),
+    ]),
+
+    Test.suite('wait — cooperative timing', [
+        Test.case('a waiting coroutine does not freeze a sibling', fn() {
+            // While one coroutine waits, a sibling keeps incrementing a
+            // counter. If the wait froze the actor it would never advance.
+            done := false;
+            counter := 0;
+            go fn() { wait(0.1); done = true };
+            go fn() {
+                while (!done) { counter = counter + 1; yield }
+            };
+            while (!done) { yield };
+            Test.assert(counter > 0,
+                'sibling counter should advance while a coroutine waits')
+        }),
+
+        Test.case('concurrent waits overlap, not serialize', fn() {
+            start := Time.now_ms();
+            handles := for[] (i, 0..4) { go fn() { wait(0.2) } };
+            for (h, handles) { join(h) };
+            elapsed := Time.now_ms() - start;
+            // Serial would be ~800ms; cooperative overlap is ~200ms. A
+            // generous ceiling still proves the waits ran concurrently.
+            Test.assert(elapsed < 600,
+                'four concurrent 0.2s waits took ' + str(elapsed) + 'ms');
+            Test.assert(elapsed > 150,
+                'the waits should actually have elapsed (' + str(elapsed) + 'ms)')
+        }),
+
+        Test.case('wait actually sleeps for about the requested time', fn() {
+            start := Time.now_ms();
+            join(go fn() { wait(0.15) });
+            elapsed := Time.now_ms() - start;
+            Test.assert(elapsed > 100,
+                'wait(0.15) should take at least ~150ms, took ' + str(elapsed) + 'ms')
         }),
     ]),
 ]

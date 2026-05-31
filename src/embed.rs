@@ -31,7 +31,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::vm::compiler::Compiler;
-use crate::vm::error::RuntimeErrorKind;
 use crate::vm::fold;
 use crate::vm::lexer::Lexer;
 use crate::vm::parser;
@@ -43,8 +42,10 @@ use crate::vm::value::Closure;
 // enough, with no reaching into `crate::vm`. `Error` (lex/parse/
 // compile/runtime) is what `load` returns; `RuntimeError` is what
 // `call` returns.
-pub use crate::vm::error::{Error, RuntimeError};
-pub use crate::vm::native_modules::{native, native_blocking, native_socket, object};
+pub use crate::vm::error::{Error, RuntimeError, RuntimeErrorKind};
+pub use crate::vm::native_modules::{
+    native, native_blocking, native_frame_wait, native_socket, object,
+};
 pub use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 pub use crate::vm::vm::Vm;
 
@@ -84,6 +85,16 @@ impl Session {
         self.vm.register_module(name, module);
     }
 
+    /// Seed the pseudo-random stream that the `Random` module and the
+    /// bare `rand()` builtin both draw from (see [`crate::vm::rng`]).
+    /// This lets the *host* own the seed — record it at session start
+    /// and re-inject the same value to reproduce a run — instead of
+    /// relying on game code to call `Random.seed`. Any `u64` works
+    /// (`0` included); from this point the stream is deterministic.
+    pub fn seed_rng(&self, seed: u64) {
+        crate::vm::rng::seed(seed);
+    }
+
     /// Compile and run a whole top-level program against the persistent
     /// frame. Top-level functions and data become live frame-0 slots
     /// that survive across calls. May be invoked more than once; later
@@ -95,11 +106,23 @@ impl Session {
     /// snapshot) and no new bindings are committed. Render the returned
     /// [`Error`] against [`sources`](Session::sources).
     pub fn load(&mut self, source: &str) -> Result<(), Error> {
+        let label = format!("<host:{}>", self.load_no + 1);
+        self.load_labeled(label, source)
+    }
+
+    /// Like [`load`](Session::load), but the source is labelled `name`
+    /// (e.g. the game's file path) so a rendered diagnostic points at it
+    /// — `--> games/hello.tg:50:52` rather than an anonymous `<host:N>`.
+    /// Use this when the host knows where the source came from; the
+    /// label also rides on the chunk, so a later runtime error in a
+    /// callback compiled from this source reports the same `name`.
+    pub fn load_named(&mut self, name: &str, source: &str) -> Result<(), Error> {
+        self.load_labeled(name.to_owned(), source)
+    }
+
+    fn load_labeled(&mut self, label: String, source: &str) -> Result<(), Error> {
         self.load_no += 1;
-        let sid = self
-            .sources
-            .borrow_mut()
-            .add(format!("<host:{}>", self.load_no), source);
+        let sid = self.sources.borrow_mut().add(label, source);
 
         let tokens = Lexer::new(source).tokenize().map_err(|mut e| {
             e.source = sid;
@@ -163,11 +186,21 @@ impl Session {
     /// is returned as `Err`. Tier-2 coexistence (old sequences finishing
     /// on old code) is deliberately not implemented; see the plan.
     pub fn reload(&mut self, source: &str) -> Result<(), String> {
+        let label = format!("<reload:{}>", self.load_no + 1);
+        self.reload_labeled(label, source)
+    }
+
+    /// Like [`reload`](Session::reload), but the source is labelled
+    /// `name` (e.g. the game's file path) so the rendered compile
+    /// diagnostic, and later runtime errors in the reloaded callbacks,
+    /// point at the file rather than an anonymous `<reload:N>`.
+    pub fn reload_named(&mut self, name: &str, source: &str) -> Result<(), String> {
+        self.reload_labeled(name.to_owned(), source)
+    }
+
+    fn reload_labeled(&mut self, label: String, source: &str) -> Result<(), String> {
         self.load_no += 1;
-        let sid = self
-            .sources
-            .borrow_mut()
-            .add(format!("<reload:{}>", self.load_no), source);
+        let sid = self.sources.borrow_mut().add(label, source);
 
         // 1. Compile off to the side, against *empty* prior bindings —
         //    this is a full replacement, so the new program's slots
@@ -353,6 +386,23 @@ mod tests {
         assert_eq!(int(&s.binding("result").expect("result")), 42);
     }
 
+    /// Host-facing helpers: `Value::get_field` reads an `Object` field,
+    /// and `RuntimeErrorKind` is reachable from `embed::*` so a host can
+    /// build native errors with the same idiom the stdlib natives use.
+    #[test]
+    fn object_field_read_and_error_kind() {
+        let mut s = Session::new();
+        s.load("cfg := ${ title: 'hi', width: 640 };").expect("load");
+        let cfg = s.binding("cfg").expect("cfg");
+        assert!(matches!(cfg.get_field("width"), Some(Value::Int(640))));
+        assert!(matches!(cfg.get_field("title"), Some(Value::Str(_))));
+        assert!(cfg.get_field("missing").is_none());
+        // A non-object yields None rather than panicking.
+        assert!(Value::Int(1).get_field("x").is_none());
+        // RuntimeErrorKind is exported for host-built natives.
+        let _ = RuntimeError::new(RuntimeErrorKind::TypeMismatch("x".into()), 0);
+    }
+
     /// A host module named after a built-in must NOT shadow it: the
     /// built-in resolves first. We register a bogus `Math` whose `abs`
     /// returns -1; the real source-stdlib `Math.abs` (returns 5) must
@@ -379,6 +429,36 @@ mod tests {
         assert_eq!(int(&s.binding("x").expect("x")), 10);
         let r = s.call("dbl", vec![Value::Int(21)]).expect("call dbl");
         assert_eq!(int(&r), 42);
+    }
+
+    /// `seed_rng` pins tigr's shared stream from the host side, so the
+    /// `Random` module replays identically without the game seeding it.
+    #[test]
+    fn host_seeds_rng() {
+        let draw = |seed: u64| {
+            let mut s = Session::new();
+            s.seed_rng(seed);
+            s.load("R := import 'Random'; v := R.int(0, 1000000);").expect("load");
+            int(&s.binding("v").expect("v"))
+        };
+        assert_eq!(draw(12345), draw(12345));
+        // A different seed almost certainly yields a different draw.
+        assert_ne!(draw(1), draw(2));
+    }
+
+    /// `load_named` labels the source so a rendered diagnostic points at
+    /// the given name (a file path) rather than an anonymous `<host:N>`.
+    #[test]
+    fn named_source_appears_in_diagnostic() {
+        let mut s = Session::new();
+        // Two statements without a separating `;` is a parse error.
+        let err = s.load_named("games/hello.tg", "x := 1\ny := 2\n").expect_err("parse error");
+        let rendered = err.render(&s.sources());
+        assert!(
+            rendered.contains("games/hello.tg"),
+            "diagnostic names the file: {rendered}"
+        );
+        assert!(!rendered.contains("<host:"), "no anonymous label: {rendered}");
     }
 
     /// `call_function` is re-entrant: a callee that calls another tigr
@@ -449,24 +529,51 @@ mod tests {
         assert_eq!(int(&s.binding("flag").expect("flag")), 1);
     }
 
-    /// `wait_frame()` parks until the *next* tick regardless of the
-    /// clock value — the per-frame yield. Three drains at the same
-    /// `now` should step the coroutine across both `wait_frame`s.
+    /// A host-provided frame-yield (built with [`native_frame_wait`], as
+    /// purr's `GameTime.wait_frame` is) parks until the *next* tick
+    /// regardless of the clock value — the per-frame yield. Three drains
+    /// at the same `now` should step the coroutine across both yields. It
+    /// is a host *module member*, not a language builtin: registered by
+    /// the host, reached as `Frame.next()`.
     #[test]
-    fn wait_frame_steps_one_tick_per_drain() {
+    fn host_frame_wait_steps_one_tick_per_drain() {
         let mut s = Session::new();
+        s.register_module(
+            "Frame",
+            object(&[("next", native_frame_wait("next", Arity::Exact(0)))]),
+        );
         s.load(
-            "ticks := 0; \
-             go fn(){ wait_frame(); ticks = 1; wait_frame(); ticks = 2; };",
+            "Frame := import 'Frame'; ticks := 0; \
+             go fn(){ Frame.next(); ticks = 1; Frame.next(); ticks = 2; };",
         )
         .expect("load");
 
-        s.vm().drain_ready(0.0).expect("drain 1"); // runs to first wait_frame
+        s.vm().drain_ready(0.0).expect("drain 1"); // runs to first Frame.next
         assert_eq!(int(&s.binding("ticks").expect("ticks")), 0);
         s.vm().drain_ready(0.0).expect("drain 2"); // wakes, runs to second
         assert_eq!(int(&s.binding("ticks").expect("ticks")), 1);
         s.vm().drain_ready(0.0).expect("drain 3"); // wakes, finishes
         assert_eq!(int(&s.binding("ticks").expect("ticks")), 2);
+    }
+
+    /// A host-provided frame-yield raises if used outside a frame drive
+    /// (here, a synchronous `call`): there is no "next frame" to resume
+    /// on. The session survives for a later call.
+    #[test]
+    fn host_frame_wait_outside_drain_raises() {
+        let mut s = Session::new();
+        s.register_module(
+            "Frame",
+            object(&[("next", native_frame_wait("next", Arity::Exact(0)))]),
+        );
+        s.load(
+            "Frame := import 'Frame'; bad := fn(){ Frame.next() }; \
+             ok := fn(){ 7 };",
+        )
+        .expect("load");
+        assert!(s.call("bad", vec![]).is_err());
+        // The session survived the raise: a normal call still works.
+        assert_eq!(int(&s.call("ok", vec![]).expect("ok")), 7);
     }
 
     /// GC root proof (run this under `--features gc-torture`): a
@@ -501,10 +608,12 @@ mod tests {
         assert_eq!(int(&s.binding("result").expect("result")), 66);
     }
 
-    /// `wait` is only legal inside a host-driven green thread: calling
-    /// it on the main coroutine (e.g. from an `update`-style callback)
-    /// raises catchably rather than hanging. A clean `Err`, and the
-    /// session survives for a later call.
+    /// `wait` from a synchronous host `call` (e.g. an `update`-style
+    /// callback invoked via `Session::call`, not a frame drain) raises
+    /// catchably rather than blocking the host thread on the clock. A
+    /// clean `Err`, and the session survives for a later call. (`wait`
+    /// *does* work at a program's top level and inside a `go` under a
+    /// frame drain — just not on a re-entrant host call.)
     #[test]
     fn wait_on_main_raises_and_session_survives() {
         let mut s = Session::new();

@@ -398,12 +398,28 @@ pub struct NativeFn {
     pub kind: NativeKind,
 }
 
+/// How a cooperative `wait` parks the running green thread: for a fixed
+/// number of seconds on the clock, or until the very next host frame.
+/// Returned by a [`NativeKind::Park`] native; the VM's call dispatch
+/// reads it and parks instead of pushing a value.
+#[derive(Clone, Copy)]
+pub enum WaitKind {
+    /// Resume once the clock advances by `secs` from now. The standalone
+    /// run loop advances the clock itself; under a host frame drive the
+    /// host does. Works in any program with green threads.
+    Secs(f64),
+    /// Resume on the next host frame — only meaningful under a host frame
+    /// drive, so it raises outside one. Backs purr's `GameTime.wait_frame`.
+    NextFrame,
+}
+
 /// How a [`NativeFn`] is run. Most natives are `Pure` — fast,
 /// non-blocking, run inline on the actor thread exactly as before.
 /// `Blocking` natives wrap a call that may wait (a child process, file
 /// or network IO); the VM can offload them to a worker pool so a green
 /// thread doing IO does not stall its siblings (see
-/// [`crate::vm::offload`]).
+/// [`crate::vm::offload`]). `Park` natives cooperatively suspend the
+/// running green thread on the clock (`wait`, `GameTime.wait_frame`).
 #[derive(Clone, Copy)]
 pub enum NativeKind {
     /// Runs inline on the actor thread — the historical behaviour.
@@ -427,6 +443,19 @@ pub enum NativeKind {
     Socket(
         fn(&[Value]) -> Result<
             crate::vm::socket::ReactorOp,
+            crate::vm::error::RuntimeError,
+        >,
+    ),
+    /// A cooperative park. The `fn` runs on the actor thread to validate
+    /// arguments and decide *how* to park ([`WaitKind`]); the VM's call
+    /// dispatch then suspends the running green thread instead of pushing
+    /// a return value. Reachable only at a coroutine-switch point (a
+    /// `Call`/`TailCall`/`CallSpread`); called anywhere else (e.g. a host
+    /// `call_function` entry) it raises, since there is no green thread to
+    /// park. Backs `wait` and purr's `GameTime.wait_frame`.
+    Park(
+        fn(&[Value]) -> Result<
+            WaitKind,
             crate::vm::error::RuntimeError,
         >,
     ),
@@ -489,6 +518,18 @@ impl Value {
             Value::Generator(_) => "generator",
             Value::GreenHandle(_) => "green_thread",
             Value::LocalChannel(_) => "local_channel",
+        }
+    }
+
+    /// Read a field of an `Object` value by key, cloning the value out.
+    /// Returns `None` if `self` is not an object or the key is absent. A
+    /// convenience for host/embedder code reading config-style objects
+    /// (e.g. a `${ title: ..., width: ... }` window declaration) without
+    /// reaching into the GC arena.
+    pub fn get_field(&self, key: &str) -> Option<Value> {
+        match self {
+            Value::Object(o) => o.borrow().get(key).cloned(),
+            _ => None,
         }
     }
 

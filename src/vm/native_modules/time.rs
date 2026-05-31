@@ -60,7 +60,9 @@ fn sleep_ms(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 /// `Date.now()` — milliseconds since the Unix epoch, as JS sees them.
-#[cfg(target_arch = "wasm32")]
+/// Only the browser-playground build reaches JS this way; a plain-wasm
+/// embed host (no `wasm-bindgen` glue) has no clock to read.
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 mod js {
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
@@ -70,16 +72,29 @@ mod js {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 fn now_ms(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Int(js::now() as i64))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 fn now_ns(_args: &[Value]) -> Result<Value, RuntimeError> {
     // `Date.now()` has only millisecond resolution; scale to ns so the
     // unit matches the native build even though the low digits are 0.
     Ok(Value::Int((js::now() * 1.0e6) as i64))
+}
+
+// Plain-wasm embed host: no `wasm-bindgen`, so no JS `Date.now`. The
+// wall clock is the embedder's to provide; reading it from tigr here
+// raises rather than returning a wrong time.
+#[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+fn now_ms(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Err(raise("Time.now_ms is unavailable on a plain-wasm host".into()))
+}
+
+#[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+fn now_ns(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Err(raise("Time.now_ns is unavailable on a plain-wasm host".into()))
 }
 
 #[cfg(target_arch = "wasm32")]

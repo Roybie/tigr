@@ -1,6 +1,6 @@
 [package]
 name = "tigr"
-version = "0.19.1"
+version = "0.20.0"
 authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 edition = "2021"
 exclude = ["examples/*"]
@@ -60,14 +60,24 @@ rustls-native-certs = "0.8"
 mio = { version = "1", features = ["os-poll", "os-ext"] }
 
 # wasm32-only dependencies — the `wasm-bindgen` glue for the browser
-# playground (see `src/wasm.rs`).
+# playground (see `src/wasm.rs`). Optional and pulled in by the
+# `playground` feature, so an embedder building for a non-wasm-bindgen
+# web host (macroquad's plain-wasm loader) can drop it.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+wasm-bindgen = { version = "0.2", optional = true }
 
 [features]
+# On by default so `wasm-pack build` / the Pages release workflow keep
+# emitting the browser playground unchanged.
+default = ["playground"]
 # Collect on every VM dispatch step — stress mode that turns any
 # missing GC root into an immediate stale-handle panic.
 gc-torture = []
 # Public embedding API (`tigr::embed::Session`) for driving a
 # persistent VM from a Rust host. Off by default — additive surface.
 embed = []
+# The browser playground's `wasm-bindgen` entry points (`src/wasm.rs`)
+# and the `Math.random` rng entropy path. An embedder targeting a
+# plain-wasm host builds `--no-default-features` so this glue, and its
+# `wasm-bindgen` imports, stay out of the module.
+playground = ["dep:wasm-bindgen"]

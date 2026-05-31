@@ -1021,6 +1021,7 @@ shadowed, passed around, and stored.
 | `type`    | `type(x) -> String`      | Name of the value's type (v0.5)        |
 | `gc`      | `gc() -> Object`         | Garbage-collector counters (v0.10): `${live, collections, allocated, freed}` |
 | `join`    | `join(task) -> value`    | Block for a `spawn`ed actor's result (v0.14, Appendix L) |
+| `wait`    | `wait(seconds) -> null`  | Cooperatively pause the running coroutine for `seconds`, letting siblings run (Appendix P) |
 
 `gc()` returns a read-only snapshot of the tracing collector's state
 (§15.1): `live` is the current managed-object count, `collections` the

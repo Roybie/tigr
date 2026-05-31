@@ -109,8 +109,10 @@ fn now(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(parts_object(&parts_from_ms(d.as_millis() as i64)))
 }
 
-/// `Date.now()` — the browser playground has no OS clock.
-#[cfg(target_arch = "wasm32")]
+/// `Date.now()` — the browser playground has no OS clock. Only the
+/// playground build reaches JS this way; a plain-wasm embed host has no
+/// `wasm-bindgen` glue, so the clock is the embedder's to provide.
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 mod js {
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
@@ -120,9 +122,16 @@ mod js {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 fn now(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(parts_object(&parts_from_ms(js::now() as i64)))
+}
+
+// Plain-wasm embed host: no JS clock, so reading the current time from
+// tigr raises rather than fabricating one.
+#[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+fn now(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Err(raise("DateTime.now is unavailable on a plain-wasm host".into()))
 }
 
 fn from_ms(args: &[Value]) -> Result<Value, RuntimeError> {

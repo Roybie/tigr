@@ -28,7 +28,7 @@ fn entropy() -> u64 {
         .unwrap_or(0xdeadbeef)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "playground"))]
 fn entropy() -> u64 {
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
@@ -40,6 +40,17 @@ fn entropy() -> u64 {
     let hi = (random() * (1u64 << 53) as f64) as u64;
     let lo = (random() * (1u64 << 53) as f64) as u64;
     (hi << 11) ^ lo
+}
+
+/// wasm without the `playground` feature: an embedder on a plain-wasm
+/// host (no `wasm-bindgen` glue) has no `Math.random` to draw from, so
+/// the lazy first-draw entropy falls back to a fixed word. Such hosts
+/// are expected to seed explicitly (`embed::Session::seed_rng`); the
+/// only consequence of not doing so is that an unseeded stream is
+/// identical each run, not that it breaks.
+#[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+fn entropy() -> u64 {
+    0x9E3779B97F4A7C15
 }
 
 /// Mix a raw seed into a non-zero xorshift state. The constant is the

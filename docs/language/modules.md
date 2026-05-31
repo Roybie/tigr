@@ -38,7 +38,7 @@ Resolution stays lazy. A module is only built the first time you actually reach 
 
 The resolved string has two flavors, and which one applies depends on its shape.
 
-**Bare names** contain no `/`, `\`, or `.`. They resolve against the modules built into tigr. Some of these are written in tigr itself: `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test`, `Channel`, `Url`, and `Http`. Others are native modules implemented in the host: `IO`, `Os`, `Time`, and `Net`. An unknown bare name raises a catchable error.
+**Bare names** contain no `/`, `\`, or `.`. They resolve against the modules built into tigr, the same set that is [ambient](#ambient-stdlib-no-import-needed): the tigr-written `Array`, `Iter`, `String`, `Math`, `Object`, `Map`, `Set`, `Test`, `Channel`, `LocalChannel`, `Url`, and `Http`, and the native `IO`, `Os`, `Time`, `Path`, `DateTime`, `Random`, `JSON`, `Bytes`, `BigInt`, and `Net`. Writing `import 'Name'` is just the explicit form of reaching one by name. An unknown bare name raises a catchable error. (When tigr is embedded in a host application, the host can register more bare-name modules; see the embedding API.)
 
 **Path-shaped strings** contain a `/`, `\`, or `.`. They resolve relative to the directory of the importing file. The `.tg` extension is appended automatically when absent, so `import './lib/util'` and `import './lib/util.tg'` are the same. A missing file raises a catchable `import_failed` error, and a path that does not evaluate to a string raises a `type_mismatch` error.
 

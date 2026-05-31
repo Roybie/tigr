@@ -89,7 +89,6 @@ Array-literal and call spread accept an `Array`, `Range`, `String`, or iterator 
 - Otherwise `rhs` is evaluated, must produce a function, and is called with `x` as its only argument.
 
 ```tigr
-Array := import 'Array';
 double := fn(x) { x * 2 };
 
 print(5 |> double);     // => 10   no call on the right, so double(5)

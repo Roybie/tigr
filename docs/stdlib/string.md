@@ -3,13 +3,11 @@
 > Pure-tigr source module, `stdlib/String.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#string)
 
-The `String` module is the text-manipulation toolkit. Most entries are thin re-exports of native primitives; a few (`join`, `pad_start`, `pad_end`, `is_blank`, `printf`) are pure tigr. Import it as `String := import 'String'`.
+The `String` module is the text-manipulation toolkit. Most entries are thin re-exports of native primitives; a few (`join`, `pad_start`, `pad_end`, `is_blank`, `printf`) are pure tigr. It is ambient, so a bare module name works without an `import`.
 
 Indices and lengths are byte offsets, consistent with `#s` counting bytes. A `String` is iterable with `for (ch, s) { ... }`, and `s[i]` indexes it. Every function raises on a non-`String` argument.
 
 ```tigr
-String := import 'String';
-
 print(String.join(String.split('a,b,c', ','), '-'));   // => a-b-c
 ```
 
@@ -59,8 +57,6 @@ Splits `s` into pieces on every occurrence of `sep`. An empty `sep` splits `s` i
 **Returns:** an `Array` of `String` pieces.
 
 ```tigr
-String := import 'String';
-
 print(String.split('a,b,c', ','));   // => [a, b, c]
 ```
 
@@ -74,8 +70,6 @@ Joins an array of values into one string, calling `str` on each one, placing `se
 **Returns:** the joined `String`, or `''` for an empty array.
 
 ```tigr
-String := import 'String';
-
 print(String.join(['a', 'b', 'c'], '-'));   // => a-b-c
 ```
 
@@ -90,8 +84,6 @@ Replaces every occurrence of `from` with `to`. An empty `from` returns `s` uncha
 **Returns:** a new `String` with the replacements applied.
 
 ```tigr
-String := import 'String';
-
 print(String.replace('a-b-c', '-', '+'));   // => a+b+c
 ```
 
@@ -106,8 +98,6 @@ Replaces only the first occurrence of `from` with `to`. An empty `from` returns 
 **Returns:** a new `String` with the first match replaced.
 
 ```tigr
-String := import 'String';
-
 print(String.replace_first('a-b-c', '-', '+'));   // => a+b-c
 ```
 
@@ -121,8 +111,6 @@ Tests whether `s` contains `needle`.
 **Returns:** `true` if `needle` is present, otherwise `false`.
 
 ```tigr
-String := import 'String';
-
 print(String.contains('hello world', 'world'));   // => true
 ```
 
@@ -136,8 +124,6 @@ Finds the byte index of the first `needle`.
 **Returns:** the byte index of the first match, or `-1` if absent.
 
 ```tigr
-String := import 'String';
-
 print(String.index_of('hello', 'l'));   // => 2
 ```
 
@@ -150,8 +136,6 @@ Converts `s` to lowercase.
 **Returns:** the lowercased `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.lower('Hello World'));   // => hello world
 ```
 
@@ -164,8 +148,6 @@ Converts `s` to uppercase.
 **Returns:** the uppercased `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.upper('Hello World'));   // => HELLO WORLD
 ```
 
@@ -179,8 +161,6 @@ Tests whether `s` begins with `prefix`.
 **Returns:** `true` if `s` starts with `prefix`, otherwise `false`.
 
 ```tigr
-String := import 'String';
-
 print(String.starts_with('readme.txt', 'readme'));   // => true
 ```
 
@@ -194,8 +174,6 @@ Tests whether `s` ends with `suffix`.
 **Returns:** `true` if `s` ends with `suffix`, otherwise `false`.
 
 ```tigr
-String := import 'String';
-
 print(String.ends_with('readme.txt', '.txt'));   // => true
 ```
 
@@ -208,8 +186,6 @@ Removes whitespace from both ends of `s`.
 **Returns:** the trimmed `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.trim('  hi  '));   // => hi
 ```
 
@@ -222,8 +198,6 @@ Removes leading whitespace from `s`.
 **Returns:** the trimmed `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.trim_start('  hi  ') + '|');   // => hi  |
 ```
 
@@ -236,8 +210,6 @@ Removes trailing whitespace from `s`.
 **Returns:** the trimmed `String`.
 
 ```tigr
-String := import 'String';
-
 print('|' + String.trim_end('  hi  '));   // => |  hi
 ```
 
@@ -252,8 +224,6 @@ Concatenates `n` copies of `s`.
 **Raises:** an error if `n` is negative.
 
 ```tigr
-String := import 'String';
-
 print(String.repeat('ab', 3));   // => ababab
 ```
 
@@ -266,8 +236,6 @@ Splits `s` into one-character strings, one per Unicode character.
 **Returns:** an `Array` of single-character `String` values.
 
 ```tigr
-String := import 'String';
-
 print(String.chars('hi!'));   // => [h, i, !]
 ```
 
@@ -280,8 +248,6 @@ Reverses the characters of `s`.
 **Returns:** the reversed `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.reverse('hello'));   // => olleh
 ```
 
@@ -294,8 +260,6 @@ Uppercases the first character of `s` and leaves the rest unchanged.
 **Returns:** the capitalized `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.capitalize('hello world'));   // => Hello world
 ```
 
@@ -310,8 +274,6 @@ Pads `s` on the left with `ch` until it is at least `len` characters wide.
 **Returns:** the left-padded `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.pad_start('42', 5, '0'));   // => 00042
 ```
 
@@ -326,8 +288,6 @@ Pads `s` on the right with `ch` until it is at least `len` characters wide.
 **Returns:** the right-padded `String`.
 
 ```tigr
-String := import 'String';
-
 print(String.pad_end('42', 5, '.') + '|');   // => 42...|
 ```
 
@@ -340,8 +300,6 @@ Tests whether `s` is empty or contains only whitespace.
 **Returns:** `true` if `s` is empty or all whitespace, otherwise `false`.
 
 ```tigr
-String := import 'String';
-
 print(String.is_blank('   '));   // => true
 print(String.is_blank(' x '));   // => false
 ```
@@ -355,8 +313,6 @@ Splits `s` on runs of whitespace, dropping empty fields.
 **Returns:** an `Array` of non-empty `String` words.
 
 ```tigr
-String := import 'String';
-
 print(String.words('  the  quick fox '));   // => [the, quick, fox]
 ```
 
@@ -369,8 +325,6 @@ Splits `s` into lines on `\n` or `\r\n`. A trailing newline adds no final empty 
 **Returns:** an `Array` of `String` lines.
 
 ```tigr
-String := import 'String';
-
 print(String.lines('one\ntwo\nthree'));   // => [one, two, three]
 ```
 
@@ -384,8 +338,6 @@ Splits `s` on any character that appears in `delims`. An empty `delims` yields `
 **Returns:** an `Array` of `String` pieces.
 
 ```tigr
-String := import 'String';
-
 print(String.split_any('a,b;c d', ',; '));   // => [a, b, c, d]
 ```
 
@@ -399,8 +351,6 @@ Finds the byte offset of every non-overlapping occurrence of `needle`.
 **Returns:** an `Array` of `Int` byte offsets, empty for an empty `needle`.
 
 ```tigr
-String := import 'String';
-
 print(String.find_all('abababa', 'aba'));   // => [0, 4]
 ```
 
@@ -414,8 +364,6 @@ Counts the non-overlapping occurrences of `needle` in `s`.
 **Returns:** the count as an `Int`, `0` for an empty `needle`.
 
 ```tigr
-String := import 'String';
-
 print(String.count('abababa', 'aba'));   // => 2
 ```
 
@@ -429,8 +377,6 @@ Removes `prefix` from the start of `s` if it is there, otherwise returns `s` unc
 **Returns:** `s` without the prefix, or `s` unchanged.
 
 ```tigr
-String := import 'String';
-
 print(String.strip_prefix('img_03.png', 'img_'));   // => 03.png
 print(String.strip_prefix('readme', 'img_'));       // => readme
 ```
@@ -445,8 +391,6 @@ Removes `suffix` from the end of `s` if it is there, otherwise returns `s` uncha
 **Returns:** `s` without the suffix, or `s` unchanged.
 
 ```tigr
-String := import 'String';
-
 print(String.strip_suffix('readme.txt', '.txt'));   // => readme
 ```
 
@@ -461,8 +405,6 @@ Tests `s` against a shell-style glob pattern. The whole string must match. The p
 **Raises:** an error on a malformed pattern, such as an unterminated `[` or a dangling `\`.
 
 ```tigr
-String := import 'String';
-
 print(String.matches_glob('readme.txt', '*.txt'));            // => true
 print(String.matches_glob('img_03.png', 'img_[0-9][0-9].png'));   // => true
 ```
@@ -478,8 +420,6 @@ Renders `value` through the format spec mini-language. The spec controls fill, a
 **Raises:** an error on a mismatched type code, an unparsable spec, or a value the spec cannot render (such as a fractional float with a `d` type).
 
 ```tigr
-String := import 'String';
-
 print(String.format(42, '05'));        // => 00042
 print(String.format(3.14159, '.2f'));  // => 3.14
 print(String.format(255, '#x'));       // => 0xff
@@ -497,8 +437,6 @@ Renders `template`, replacing each `%(SPEC)` placeholder with `format(next arg, 
 **Raises:** an error on an arity mismatch, a stray `%`, or an unterminated placeholder.
 
 ```tigr
-String := import 'String';
-
 print(String.printf('%(<6)%(>6.2f)', ['tea', 1.5]));   // => tea     1.50
 ```
 

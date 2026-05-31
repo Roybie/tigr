@@ -63,9 +63,8 @@ The [`String`](../stdlib/string.md) module adds the bulk of the text toolkit: `s
 Two pieces are worth flagging here. `String.format` and `String.printf` share a format-spec mini-language for padding, alignment, sign, numeric base, and precision. `String.matches_glob` tests a string against a shell-style glob pattern.
 
 ```tigr
-Str := import 'String';
-print(Str.format(42, '08'));   // => 00000042
-print(Str.matches_glob('foo.tg', '*.tg'));   // => true
+print(String.format(42, '08'));   // => 00000042
+print(String.matches_glob('foo.tg', '*.tg'));   // => true
 ```
 
 See the [`String` module reference](../stdlib/string.md) for the full API and the format-spec grammar.

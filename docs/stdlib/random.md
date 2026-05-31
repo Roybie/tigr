@@ -3,11 +3,9 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#random-v09)
 
-The `Random` module draws pseudo-random numbers. It exposes no value type of its own. Every function draws from one per-thread PRNG stream, the same stream the bare `rand()` builtin uses, so `Random.seed(n)` makes both this module and `rand()` reproducible. Import it with `Random := import 'Random'`. Seeding before a draw is the way to get deterministic output in a test.
+The `Random` module draws pseudo-random numbers. It exposes no value type of its own. Every function draws from one per-thread PRNG stream, the same stream the bare `rand()` builtin uses, so `Random.seed(n)` makes both this module and `rand()` reproducible. It is ambient, so a bare module name works without an `import`. Seeding before a draw is the way to get deterministic output in a test.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(1);
 print(Random.int(1, 6));        // => 3
 ```
@@ -35,8 +33,6 @@ Pins the PRNG stream to `n`. Any `Int` works, `seed(0)` included. After seeding,
 **Raises:** a string error if `n` is not an `Int`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(42);
 a := Random.int(0, 100);
 Random.seed(42);
@@ -51,8 +47,6 @@ Draws a uniform `Float` in the half-open range `[0, 1)`.
 **Returns:** a `Float` that is at least `0` and below `1`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(7);
 print(Random.float());          // => 0.8597941211851238
 ```
@@ -68,8 +62,6 @@ Draws a uniform `Int` from the inclusive range `[lo, hi]`. Both endpoints can be
 **Raises:** a string error if `lo` exceeds `hi`, or if either argument is not an `Int`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(3);
 print(Random.int(1, 6));        // => 1
 ```
@@ -81,8 +73,6 @@ Draws `true` or `false`, each with probability one half.
 **Returns:** a `Bool`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(9);
 print(Random.bool());           // => false
 ```
@@ -97,8 +87,6 @@ Picks one element of `arr` uniformly at random.
 **Raises:** a string error if `arr` is empty, or if it is not an `Array`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(2);
 print(Random.choice(['rock', 'paper', 'scissors']));    // => paper
 ```
@@ -113,8 +101,6 @@ Picks one value of a Range uniformly at random. The range's step is respected, s
 **Raises:** a string error if `r` is empty, or if it is not a `Range`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(5);
 print(Random.range(0..=8:2));   // => 6
 ```
@@ -129,8 +115,6 @@ Builds a new array holding `arr`'s elements in a random order, using a Fisher-Ya
 **Raises:** a string error if `arr` is not an `Array`.
 
 ```tigr
-Random := import 'Random';
-
 Random.seed(4);
 print(Random.shuffle([1, 2, 3, 4, 5]));     // => [3, 4, 2, 1, 5]
 ```

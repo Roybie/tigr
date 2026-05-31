@@ -3,11 +3,9 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#bytes-v013)
 
-A `Bytes` value is a mutable byte buffer, a growable sequence of integers each in the range `0..=255`. It is a value type in its own right, so it gets the same syntax as the other collections: `b[i]` indexes a byte, `#b` is the length, `for (x, b) { ... }` iterates the bytes, `b[start:end]` slices a fresh buffer, and `+` / `+=` concatenate. Import the module with `Bytes := import 'Bytes'`. The module supplies what the operators cannot: construction, conversion to and from strings, hex, base64, arrays, in-place growth, and a family of fixed-width integer readers and writers for binary-protocol work.
+A `Bytes` value is a mutable byte buffer, a growable sequence of integers each in the range `0..=255`. It is a value type in its own right, so it gets the same syntax as the other collections: `b[i]` indexes a byte, `#b` is the length, `for (x, b) { ... }` iterates the bytes, `b[start:end]` slices a fresh buffer, and `+` / `+=` concatenate. It is ambient, so a bare module name works without an `import`. The module supplies what the operators cannot: construction, conversion to and from strings, hex, base64, arrays, in-place growth, and a family of fixed-width integer readers and writers for binary-protocol work.
 
 ```tigr
-Bytes := import 'Bytes';
-
 b := Bytes.from_string('hi');
 print(#b);              // => 2
 print(b[0]);            // => 104
@@ -71,8 +69,6 @@ Creates a buffer of `n` bytes. Without `fill` the bytes are all zero.
 **Raises:** a string error if `n` is negative or `fill` is out of range.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.new(3));            // => Bytes[00 00 00]
 print(Bytes.new(2, 255));       // => Bytes[ff ff]
 ```
@@ -87,8 +83,6 @@ Packs an array of integers, each in `0..=255`, into a buffer.
 **Raises:** a string error if an element is not an `Int`, or is outside `0..=255`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.from_array([104, 105]));    // => Bytes[68 69]
 ```
 
@@ -101,8 +95,6 @@ Encodes a string as its UTF-8 bytes. This always succeeds.
 **Returns:** a new `Bytes` holding the UTF-8 encoding of `s`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.from_string('hi'));         // => Bytes[68 69]
 ```
 
@@ -116,8 +108,6 @@ Decodes a hex string. ASCII whitespace in `s` is ignored, and both letter cases 
 **Raises:** a structured `decode` error if `s` has an odd number of digits or a non-hex character.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.from_hex('deadbeef'));      // => Bytes[de ad be ef]
 ```
 
@@ -131,8 +121,6 @@ Decodes a standard-alphabet base64 string. ASCII whitespace is ignored.
 **Raises:** a structured `decode` error if `s` is not valid base64.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.from_base64('Zm9v'));       // => Bytes[66 6f 6f]
 ```
 
@@ -145,8 +133,6 @@ Copies the buffer into an array, one `Int` per byte.
 **Returns:** an `Array` of integers in `0..=255`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.to_array(Bytes.from_string('hi')));     // => [104, 105]
 ```
 
@@ -160,8 +146,6 @@ Decodes the buffer as UTF-8 text.
 **Raises:** a structured `decode` error if the bytes are not valid UTF-8.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.to_string(Bytes.from_array([104, 105])));   // => hi
 ```
 
@@ -174,8 +158,6 @@ Encodes the buffer as lower-case hex, two digits per byte, with no separators.
 **Returns:** the hex `String`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.to_hex(Bytes.from_array([222, 173])));      // => dead
 ```
 
@@ -188,8 +170,6 @@ Encodes the buffer as standard-alphabet base64 with `=` padding.
 **Returns:** the base64 `String`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.to_base64(Bytes.from_string('foo')));       // => Zm9v
 ```
 
@@ -204,8 +184,6 @@ Appends one byte to the end of `b`, in place.
 **Raises:** a string error if `byte` is out of range.
 
 ```tigr
-Bytes := import 'Bytes';
-
 b := Bytes.from_array([1, 2]);
 Bytes.push(b, 3);
 print(b);               // => Bytes[01 02 03]
@@ -221,8 +199,6 @@ Appends every byte of `other` to `b`, in place. `other` is snapshotted first, so
 **Returns:** `b`, the same buffer.
 
 ```tigr
-Bytes := import 'Bytes';
-
 b := Bytes.from_array([1, 2]);
 Bytes.extend(b, Bytes.from_array([9, 9]));
 print(b);               // => Bytes[01 02 09 09]
@@ -239,8 +215,6 @@ Copies `b[start..end]` into a new buffer. A negative index counts from the end, 
 **Returns:** a new `Bytes` holding the selected range.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.slice(Bytes.from_array([10, 20, 30, 40]), 1, 3));   // => Bytes[14 1e]
 ```
 
@@ -254,8 +228,6 @@ Builds a new buffer holding `a` followed by `b`. This is the function form of th
 **Returns:** a new `Bytes`.
 
 ```tigr
-Bytes := import 'Bytes';
-
 print(Bytes.concat(Bytes.from_array([1]), Bytes.from_array([2, 3])));   // => Bytes[01 02 03]
 ```
 
@@ -268,8 +240,6 @@ A reader takes the buffer and a byte offset, and returns the decoded `Int`. A wr
 Every reader has the signature `read_TYPE(b, offset) -> Int`, and every writer has the signature `write_TYPE(b, offset, value) -> Bytes`. The two families are listed function by function below.
 
 ```tigr
-Bytes := import 'Bytes';
-
 buf := Bytes.new(4);
 Bytes.write_u32_be(buf, 0, 305419896);
 print(Bytes.to_hex(buf));                       // => 12345678
@@ -279,8 +249,6 @@ print(Bytes.read_u32_be(buf, 0));               // => 305419896
 Byte order changes the result. The same two bytes `[18, 52]` read as a 16-bit integer give a different value big-endian versus little-endian, and a signed reader sign-extends:
 
 ```tigr
-Bytes := import 'Bytes';
-
 pair := Bytes.from_array([18, 52]);
 print(Bytes.read_u16_be(pair, 0));              // => 4660
 print(Bytes.read_u16_le(pair, 0));              // => 13330

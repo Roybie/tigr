@@ -1,5 +1,14 @@
 # Plan: ambient stdlib + host-extensible LSP
 
+> **Status: IMPLEMENTED** on branch `ambient-stdlib` (commits `bf64881`
+> core slice, `4cb7102` host + LSP). All public stdlib is ambient; host
+> modules registered via `embed::Session` are ambient too; the LSP reads a
+> `tigr.modules.json` manifest (+ `initializationOptions`) to suppress
+> false diagnostics and power hover/completion for host modules. 687 core
+> (embed) + 454 tigr + 50 LSP tests green. Remaining: none required;
+> optional polish is manifest hot-reload (file-watcher) and go-to-def into
+> ambient stdlib source modules (a pre-existing LSP limitation).
+
 ## Problem
 
 Every stdlib use today needs an explicit binding first: `String := import 'String'`

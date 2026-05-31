@@ -10,8 +10,6 @@ Three pieces of syntax work directly on a set. `s[x]` tests membership and retur
 Every operation is O(1) amortized, except the set-algebra functions, which are O(n).
 
 ```tigr
-Set := import 'Set';
-
 s := Set.new([1, 2, 2, 3]);
 print(s[2]);   // => true
 print(#s);     // => 3
@@ -43,8 +41,6 @@ Creates a set. With no argument it is empty; with an array, the set is built fro
 **Raises:** `invalid_key_type` if an element is a `Float` or a collection.
 
 ```tigr
-Set := import 'Set';
-
 print(Set.items(Set.new()));            // => []
 print(Set.items(Set.new([3, 1, 1])));   // => [3, 1]
 ```
@@ -60,8 +56,6 @@ Inserts `x` into `s` in place. Adding a value already present is a no-op.
 **Raises:** `invalid_key_type` if `x` is a `Float` or a collection.
 
 ```tigr
-Set := import 'Set';
-
 s := Set.new();
 Set.add(s, 'a');
 Set.add(s, 'a');
@@ -78,8 +72,6 @@ Tests whether `x` is a member of `s`. This is the same test as `s[x]`.
 **Returns:** `true` if `x` is a member, otherwise `false`.
 
 ```tigr
-Set := import 'Set';
-
 s := Set.new([10, 20]);
 print(Set.has(s, 10));   // => true
 print(Set.has(s, 99));   // => false
@@ -95,8 +87,6 @@ Removes `x` from `s` in place.
 **Returns:** `true` if `x` was present and removed, `false` if it was not there.
 
 ```tigr
-Set := import 'Set';
-
 s := Set.new([1, 2]);
 print(Set.delete(s, 2));   // => true
 print(Set.delete(s, 2));   // => false
@@ -111,8 +101,6 @@ Collects the set's elements into an array.
 **Returns:** an `Array` of the elements in insertion order.
 
 ```tigr
-Set := import 'Set';
-
 print(Set.items(Set.new([3, 1, 2])));   // => [3, 1, 2]
 ```
 
@@ -125,8 +113,6 @@ Counts the elements. This is the same value as `#s`.
 **Returns:** the element count as an `Int`.
 
 ```tigr
-Set := import 'Set';
-
 print(Set.size(Set.new([1, 2, 3])));   // => 3
 ```
 
@@ -139,8 +125,6 @@ Removes every element from `s` in place.
 **Returns:** `s`, now empty.
 
 ```tigr
-Set := import 'Set';
-
 s := Set.new([1, 2, 3]);
 Set.clear(s);
 print(#s);   // => 0
@@ -156,8 +140,6 @@ Builds the set of every element in either `a` or `b`.
 **Returns:** a fresh `Set`. `a` and `b` are not modified.
 
 ```tigr
-Set := import 'Set';
-
 a := Set.new([1, 2]);
 b := Set.new([2, 3]);
 print(Set.items(Set.union(a, b)));   // => [1, 2, 3]
@@ -173,8 +155,6 @@ Builds the set of elements found in both `a` and `b`.
 **Returns:** a fresh `Set`. `a` and `b` are not modified.
 
 ```tigr
-Set := import 'Set';
-
 a := Set.new([1, 2, 3]);
 b := Set.new([2, 3, 4]);
 print(Set.items(Set.intersection(a, b)));   // => [2, 3]
@@ -190,8 +170,6 @@ Builds the set of `a`'s elements that are not in `b`.
 **Returns:** a fresh `Set`. `a` and `b` are not modified.
 
 ```tigr
-Set := import 'Set';
-
 a := Set.new([1, 2, 3]);
 b := Set.new([2, 3, 4]);
 print(Set.items(Set.difference(a, b)));   // => [1]

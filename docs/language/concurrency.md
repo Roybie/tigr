@@ -15,16 +15,15 @@ print(join(t));   // => 42
 
 A spawned function is copied across the heap boundary, so it may capture only **sendable** values: primitives, `String`, `Bytes`, `Range`, `BigInt`, the four collections, channels, tasks, and functions whose own captures are themselves sendable. Capturing an iterator, a native function, or a function with a still-open capture raises a catchable `not_sendable`. A cyclic collection raises `cycle`.
 
-Because the function is copied, it cannot see later mutations in the parent, and it runs its own `import`s. An actor's uncaught error surfaces at `join`, catchable like any other error: a `raise`d value re-raises verbatim, and a built-in error arrives as a `${kind, message, trace, worker}` object.
+Because the function is copied, it cannot see later mutations in the parent. Stdlib modules are ambient in the actor, so the body uses them directly; any local-file `import` it writes runs fresh in the actor. An actor's uncaught error surfaces at `join`, catchable like any other error: a `raise`d value re-raises verbatim, and a built-in error arrives as a `${kind, message, trace, worker}` object.
 
 ## Channels
 
 A `Channel` carries messages between actors. It is the one reference type that crosses thread boundaries, and a sent value is deep-copied into the receiving actor's heap. Channels are bidirectional: any holder can both send and receive.
 
 ```tigr
-Channel := import 'Channel';
 ch := Channel.new();
-spawn fn() { C := import 'Channel'; C.send(ch, 'hi') };
+spawn fn() { Channel.send(ch, 'hi') };
 print(Channel.recv(ch).value);   // => hi
 ```
 
@@ -37,7 +36,6 @@ The `${value: v}` and `${closed: true}` shape is designed for `match`, so a rece
 `select` waits on several channels at once and runs the arm of the first one to have a message, binding the named variable to that value. A trailing `else` arm makes `select` non-blocking: it runs when no channel is ready.
 
 ```tigr
-Channel := import 'Channel';
 jobs := Channel.new();
 Channel.send(jobs, 'task-1');
 
@@ -108,15 +106,13 @@ A handle may be joined more than once; every `join` returns the recorded result.
 
 ### Intra-actor channels: `LocalChannel`
 
-`import 'LocalChannel'` is a channel *between green threads* of one actor. Because every coroutine shares the actor's heap, a message moves directly, with no deep copy and no transfer-encoding (contrast the cross-actor [`Channel`](../stdlib/channel.md), which copies). `send` is unbounded and never blocks; `recv` on an empty channel `yield`s the coroutine until a value or a close arrives.
+`LocalChannel` is a channel *between green threads* of one actor. Because every coroutine shares the actor's heap, a message moves directly, with no deep copy and no transfer-encoding (contrast the cross-actor [`Channel`](../stdlib/channel.md), which copies). `send` is unbounded and never blocks; `recv` on an empty channel `yield`s the coroutine until a value or a close arrives.
 
 ```tigr
-LC := import 'LocalChannel';
-
-ch := LC.new();
+ch := LocalChannel.new();
 go fn() {
-    for (i, 1..=3) { LC.send(ch, i) };
-    LC.close(ch);
+    for (i, 1..=3) { LocalChannel.send(ch, i) };
+    LocalChannel.close(ch);
 };
 looping := true;
 while (looping) {

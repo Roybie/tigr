@@ -1,10 +1,13 @@
 # Standard library
 
-Tigr's standard library is 22 modules plus a handful of global builtin functions. Every module is loaded with `import`:
+Tigr's standard library is 22 modules plus a handful of global builtin functions. Every module is **ambient**: you reach it by name, with no `import`.
 
 ```tigr
-Array := import 'Array';
+print(Math.sqrt(144));      // => 12.0
+print(String.upper('hi'));  // => HI
 ```
+
+You can still write `M := import 'Math'` to alias a module or to be explicit, and a local binding of the same name shadows the ambient module. Only local files and third-party code need an `import` (by path). The rule is simple: a capitalized stdlib name is always in scope; anything you wrote yourself you import.
 
 Modules come in two kinds. **Source modules** are written in Tigr itself and live in `stdlib/*.tg`; **native modules** are implemented in Rust. The kind rarely matters when you use a module, but each page notes it.
 

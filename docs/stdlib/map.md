@@ -3,15 +3,13 @@
 > Pure-tigr source module, `stdlib/Map.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#map-v09)
 
-A `Map` is an arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`, whose keys are strings only, a `Map` key may be any `null`, `Bool`, `Int`, or `String` value; a `Float` or a collection key raises `invalid_key_type`. `type(m)` is `'map'`, and a `Map` is not JSON-serializable. Import it as `Map := import 'Map'`.
+A `Map` is an arbitrary-keyed, insertion-ordered dictionary. Unlike `Object`, whose keys are strings only, a `Map` key may be any `null`, `Bool`, `Int`, or `String` value; a `Float` or a collection key raises `invalid_key_type`. `type(m)` is `'map'`, and a `Map` is not JSON-serializable. It is ambient, so a bare module name works without an `import`.
 
 Four pieces of syntax work directly on a map. `m[k]` reads an entry and returns `null` when the key is absent. `m[k] = v` inserts or overwrites an entry. `#m` is the entry count. `for (k, v, m) { ... }` iterates entries in insertion order. The `get` and `set` functions below do the same work as the index syntax, so they are rarely needed directly.
 
 Every operation is O(1) amortized, except `keys`, `values`, and `entries`, which build their result in O(n). The functions are thin re-exports of the native `_NativeMap` backend.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new();
 m[1] = 'one';       // Int key
 m['1'] = 'string';  // distinct String key
@@ -45,8 +43,6 @@ Creates a map. With no argument it is empty. With an `Object`, the new map copie
 **Raises:** `invalid_key_type` if a key is a `Float` or a collection.
 
 ```tigr
-Map := import 'Map';
-
 print(Map.keys(Map.new(${a: 1, b: 2})));            // => [a, b]
 print(Map.entries(Map.new([[1, 'x'], [2, 'y']])));  // => [[1, x], [2, y]]
 ```
@@ -61,8 +57,6 @@ Reads the value stored under `key`. This is the same lookup as `m[key]`.
 **Returns:** the entry's value, or `null` if the key is absent.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new();
 Map.set(m, 'k', 10);
 print(Map.get(m, 'k'));         // => 10
@@ -81,8 +75,6 @@ Inserts or overwrites the entry for `key` in place. This is the same write as `m
 **Raises:** `invalid_key_type` if `key` is a `Float` or a collection.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new();
 Map.set(m, 'a', 1);
 Map.set(m, 'a', 2);
@@ -99,8 +91,6 @@ Tests whether `key` is present. Unlike `m[key]`, this tells a missing key apart 
 **Returns:** `true` if the key is present, otherwise `false`.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new(${name: 'ada'});
 m['x'] = null;
 print(Map.has(m, 'name'));      // => true
@@ -118,8 +108,6 @@ Removes the entry for `key` in place.
 **Returns:** `true` if the key was present and removed, `false` if it was not there.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new([[1, 'a'], [2, 'b']]);
 print(Map.delete(m, 1));        // => true
 print(Map.delete(m, 1));        // => false
@@ -134,8 +122,6 @@ Collects the map's keys.
 **Returns:** an `Array` of the keys in insertion order.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new([[3, 'c'], [1, 'a']]);
 print(Map.keys(m));             // => [3, 1]
 ```
@@ -149,8 +135,6 @@ Collects the map's values.
 **Returns:** an `Array` of the values in insertion order.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new([[3, 'c'], [1, 'a']]);
 print(Map.values(m));           // => [c, a]
 ```
@@ -164,8 +148,6 @@ Collects the map's entries as `[key, value]` pairs.
 **Returns:** an `Array` of `[key, value]` pairs in insertion order.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new([[1, 'a'], [2, 'b']]);
 print(Map.entries(m));          // => [[1, a], [2, b]]
 ```
@@ -179,8 +161,6 @@ Counts the entries. This is the same value as `#m`.
 **Returns:** the entry count as an `Int`.
 
 ```tigr
-Map := import 'Map';
-
 print(Map.size(Map.new([[1, 'a'], [2, 'b'], [3, 'c']])));   // => 3
 ```
 
@@ -193,8 +173,6 @@ Removes every entry from `m` in place.
 **Returns:** `m`, now empty.
 
 ```tigr
-Map := import 'Map';
-
 m := Map.new([[1, 'a'], [2, 'b']]);
 Map.clear(m);
 print(#m);              // => 0

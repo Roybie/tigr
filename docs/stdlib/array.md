@@ -3,13 +3,11 @@
 > Pure-tigr source module, `stdlib/Array.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#array)
 
-An array is the built-in ordered collection. The `Array` module adds utilities on top of the array literal, indexing, and `for` syntax that the language already gives you. Import it as `Array := import 'Array'`. The in-place mutators (`push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`, `clear`) are backed by native code; everything else is pure tigr.
+An array is the built-in ordered collection. The `Array` module adds utilities on top of the array literal, indexing, and `for` syntax that the language already gives you. It is ambient, so a bare module name works without an `import`. The in-place mutators (`push`, `extend`, `pop`, `shift`, `unshift`, `insert`, `remove`, `clear`) are backed by native code; everything else is pure tigr.
 
 Several functions take a callback, a function value you supply that the module calls for you. Unless a function's description says otherwise, the callback is invoked as `callback(element, index, whole_array)`. Tigr drops extra arguments, so a one-parameter `fn(x)` works just as well as `fn(x, i, arr)`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.sum(Array.filter([1, 2, 3, 4, 5], fn(x) { x % 2 == 0 })));   // => 6
 ```
 
@@ -68,8 +66,6 @@ Appends `value` to `arr` in place. O(1) amortized, which makes building an array
 **Returns:** `arr`, the same array, so calls can be chained.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2];
 Array.push(a, 3);
 print(a);   // => [1, 2, 3]
@@ -85,8 +81,6 @@ Appends every element of `other` to `arr` in place.
 **Returns:** `arr`, the same array.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2];
 Array.extend(a, [3, 4]);
 print(a);   // => [1, 2, 3, 4]
@@ -101,8 +95,6 @@ Removes and returns the last element of `arr` in place.
 **Returns:** the removed element, or `null` if `arr` was empty.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2, 3];
 print(Array.pop(a));   // => 3
 print(a);              // => [1, 2]
@@ -117,8 +109,6 @@ Removes and returns the first element of `arr` in place.
 **Returns:** the removed element, or `null` if `arr` was empty.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2, 3];
 print(Array.shift(a));   // => 1
 print(a);                // => [2, 3]
@@ -134,8 +124,6 @@ Prepends `value` to the front of `arr` in place.
 **Returns:** `arr`, the same array.
 
 ```tigr
-Array := import 'Array';
-
 a := [2, 3];
 Array.unshift(a, 1);
 print(a);   // => [1, 2, 3]
@@ -152,8 +140,6 @@ Inserts `value` at `index` in place. A negative `index` counts from the end, and
 **Returns:** `arr`, the same array.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2, 4];
 Array.insert(a, 2, 3);
 print(a);   // => [1, 2, 3, 4]
@@ -170,8 +156,6 @@ Removes elements from `arr` in place. With two arguments it removes the single e
 **Returns:** the single removed element with two arguments (`null` if out of range), or a new array of the removed elements with three.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2, 3, 4];
 print(Array.remove(a, 1));      // => 2
 print(Array.remove(a, 0, 2));   // => [1, 3]
@@ -187,8 +171,6 @@ Removes every element from `arr` in place.
 **Returns:** `arr`, now empty.
 
 ```tigr
-Array := import 'Array';
-
 a := [1, 2, 3];
 Array.clear(a);
 print(a);   // => []
@@ -204,8 +186,6 @@ Builds an array of length `len` where element `i` is `func(i)`.
 **Returns:** a new `Array` of length `len`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.create(5, fn(i) { i * i }));   // => [0, 1, 4, 9, 16]
 ```
 
@@ -219,8 +199,6 @@ Joins two arrays into one.
 **Returns:** a fresh `Array`. Neither `a` nor `b` is modified.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.concat([1, 2], [3, 4]));   // => [1, 2, 3, 4]
 ```
 
@@ -234,8 +212,6 @@ Applies `func` to every element and collects the results.
 **Returns:** a new `Array` of the mapped values.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.map([1, 2, 3], fn(x) { x * 10 }));   // => [10, 20, 30]
 ```
 
@@ -249,8 +225,6 @@ Keeps the elements for which `pred` returns a truthy value.
 **Returns:** a new `Array` of the kept elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.filter([1, 2, 3, 4], fn(x) { x % 2 == 0 }));   // => [2, 4]
 ```
 
@@ -265,8 +239,6 @@ Folds the array left to right into a single value.
 **Returns:** the final accumulator value.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.reduce([1, 2, 3, 4], fn(acc, x) { acc + x }, 0));   // => 10
 ```
 
@@ -279,8 +251,6 @@ Concatenates one level of nested arrays. A non-array element is kept as is.
 **Returns:** a new `Array` flattened by one level.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.flatten([[1, 2], [3], [4, 5]]));   // => [1, 2, 3, 4, 5]
 ```
 
@@ -293,8 +263,6 @@ Reverses the order of the elements.
 **Returns:** a new `Array` with the elements in reverse order.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.reverse([1, 2, 3]));   // => [3, 2, 1]
 ```
 
@@ -308,8 +276,6 @@ Finds the first index whose element is `==` to `elem`.
 **Returns:** the first matching index, or `null` if `elem` is not present.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.index(['a', 'b', 'c'], 'b'));   // => 1
 print(Array.index(['a', 'b', 'c'], 'z'));   // => null
 ```
@@ -324,8 +290,6 @@ Finds the first element for which `pred` is truthy.
 **Returns:** the first matching element, or `null` if none match.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.find([1, 3, 4, 7], fn(x) { x % 2 == 0 }));   // => 4
 ```
 
@@ -339,8 +303,6 @@ Finds the index of the first element for which `pred` is truthy.
 **Returns:** the first matching index, or `-1` if none match.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.find_index([1, 3, 4, 7], fn(x) { x % 2 == 0 }));   // => 2
 ```
 
@@ -354,8 +316,6 @@ Tests whether `pred` holds for at least one element.
 **Returns:** `true` if any element matches, otherwise `false`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.any([1, 2, 3], fn(x) { x > 2 }));   // => true
 ```
 
@@ -369,8 +329,6 @@ Tests whether `pred` holds for every element.
 **Returns:** `true` if every element matches, otherwise `false`. An empty array gives `true`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.all([2, 4, 6], fn(x) { x % 2 == 0 }));   // => true
 ```
 
@@ -384,8 +342,6 @@ Takes the first `n` elements. A negative `n` counts from the end, so `head(arr, 
 **Returns:** a new `Array` of the first `n` elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.head([1, 2, 3, 4], 2));    // => [1, 2]
 print(Array.head([1, 2, 3, 4], -1));   // => [1, 2, 3]
 ```
@@ -400,8 +356,6 @@ Takes the last `n` elements. A negative `n` counts from the start, so `tail(arr,
 **Returns:** a new `Array` of the last `n` elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.tail([1, 2, 3, 4], 2));    // => [3, 4]
 print(Array.tail([1, 2, 3, 4], -1));   // => [2, 3, 4]
 ```
@@ -416,8 +370,6 @@ Takes the first `n` elements, clamping `n` to `[0, #arr]`. Unlike `head`, a nega
 **Returns:** a new `Array` of the first `n` elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.take([1, 2, 3, 4], 2));   // => [1, 2]
 print(Array.take([1, 2, 3, 4], 9));   // => [1, 2, 3, 4]
 ```
@@ -432,8 +384,6 @@ Drops the first `n` elements and keeps the rest, clamping `n` to `[0, #arr]`.
 **Returns:** a new `Array` of the remaining elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.drop([1, 2, 3, 4], 2));   // => [3, 4]
 ```
 
@@ -448,8 +398,6 @@ Takes the elements in the range `[start, end)`. Out-of-range bounds are clamped.
 **Returns:** a new `Array` of the selected elements, empty if `start >= end`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.slice([1, 2, 3, 4, 5], 1, 4));   // => [2, 3, 4]
 ```
 
@@ -463,8 +411,6 @@ Adds up the elements.
 **Raises:** the usual arithmetic error if an element is not a number.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.sum([1, 2, 3, 4]));   // => 10
 ```
 
@@ -477,8 +423,6 @@ Finds the largest element by `>` comparison.
 **Returns:** the largest element, or `null` if `arr` is empty.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.max_of([3, 1, 4, 1, 5]));   // => 5
 ```
 
@@ -491,8 +435,6 @@ Finds the smallest element by `<` comparison.
 **Returns:** the smallest element, or `null` if `arr` is empty.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.min_of([3, 1, 4, 1, 5]));   // => 1
 ```
 
@@ -505,8 +447,6 @@ Keeps the first occurrence of each distinct element, preserving order. This is O
 **Returns:** a new `Array` of the first-seen unique elements.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.uniq([1, 2, 2, 3, 1, 3]));   // => [1, 2, 3]
 ```
 
@@ -520,8 +460,6 @@ Pairs elements of `a` and `b` by position.
 **Returns:** a new `Array` of `[a[i], b[i]]` pairs. Its length is `min(#a, #b)`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.zip([1, 2, 3], ['a', 'b', 'c']));   // => [[1, a], [2, b], [3, c]]
 ```
 
@@ -535,8 +473,6 @@ Joins the elements into a string, calling `str` on each one.
 **Returns:** the joined `String`, or `''` for an empty array.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.join([1, 2, 3], '-'));   // => 1-2-3
 ```
 
@@ -550,9 +486,6 @@ Groups elements into a `Map` keyed by `key(element)`. Each value is the array of
 **Returns:** a `Map` from key to array of elements.
 
 ```tigr
-Array := import 'Array';
-Map := import 'Map';
-
 g := Array.group_by([1, 2, 3, 4, 5], fn(x) { x % 2 });
 print(Map.get(g, 0));   // => [2, 4]
 print(Map.get(g, 1));   // => [1, 3, 5]
@@ -568,8 +501,6 @@ Splits `arr` into consecutive sub-arrays of length `size`. The last chunk is sho
 **Returns:** a new `Array` of sub-arrays, or `[]` if `size < 1`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.chunk([1, 2, 3, 4, 5], 2));   // => [[1, 2], [3, 4], [5]]
 ```
 
@@ -583,8 +514,6 @@ Builds every contiguous sub-array of length `size` (a sliding window).
 **Returns:** a new `Array` of windows, or `[]` if `size < 1` or `size > #arr`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.windows([1, 2, 3, 4], 2));   // => [[1, 2], [2, 3], [3, 4]]
 ```
 
@@ -598,8 +527,6 @@ Splits `arr` into the elements that match `pred` and those that do not.
 **Returns:** a two-element `Array`, `[matching, non_matching]`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.partition([1, 2, 3, 4], fn(x) { x % 2 == 0 }));   // => [[2, 4], [1, 3]]
 ```
 
@@ -613,8 +540,6 @@ Maps each element through `func`, then flattens the result one level. This is `m
 **Returns:** a new `Array`, flattened by one level.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.flat_map([1, 2, 3], fn(x) { [x, x * 10] }));   // => [1, 10, 2, 20, 3, 30]
 ```
 
@@ -628,8 +553,6 @@ Counts the elements for which `pred` is truthy.
 **Returns:** the count as an `Int`.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.count_of([1, 2, 3, 4, 5], fn(x) { x > 2 }));   // => 3
 ```
 
@@ -642,8 +565,6 @@ Sorts the elements in ascending order, comparing them directly. This is an inser
 **Returns:** a new sorted `Array`. The input is not modified.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.sort([3, 1, 4, 1, 5, 9, 2]));   // => [1, 1, 2, 3, 4, 5, 9]
 ```
 
@@ -657,8 +578,6 @@ Sorts the elements in ascending order, comparing `key(element)` rather than the 
 **Returns:** a new sorted `Array`. The input is not modified.
 
 ```tigr
-Array := import 'Array';
-
 print(Array.sort_by(['ccc', 'a', 'bb'], fn(w) { #w }));   // => [a, bb, ccc]
 ```
 

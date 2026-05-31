@@ -3,7 +3,7 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#os)
 
-`Os` provides process and environment access, imported with `import 'Os'`. It reads command-line arguments and environment variables, reports the working directory, runs subprocesses, and exits the process. One entry, `args`, is a plain value rather than a function, because command-line arguments do not change while a program runs.
+`Os` provides process and environment access, available without an `import`. It reads command-line arguments and environment variables, reports the working directory, runs subprocesses, and exits the process. One entry, `args`, is a plain value rather than a function, because command-line arguments do not change while a program runs.
 
 ## Functions
 
@@ -23,8 +23,6 @@ The command-line arguments. This is a value, not a function: index it directly w
 **Returns:** an `Array` of `String` arguments, shaped `[interpreter, script, user_arg1, ...]`. The first entry is the interpreter path, the second is the script path, and the rest are arguments passed by the user.
 
 ```tigr
-Os := import 'Os';
-
 print(type(Os.args));     // => array
 print(#Os.args >= 2);     // => true
 ```
@@ -39,8 +37,6 @@ Reads the value of an environment variable.
 **Raises:** a string error if `name` is not a `String`.
 
 ```tigr
-Os := import 'Os';
-
 print(Os.env('TIGR_NOT_SET'));   // => null
 home := Os.env('HOME');
 print(home != null);             // => true
@@ -54,8 +50,6 @@ Returns the current working directory.
 **Raises:** a string error if the working directory cannot be read.
 
 ```tigr
-Os := import 'Os';
-
 print(type(Os.cwd()));   // => string
 ```
 
@@ -72,9 +66,6 @@ Runs a subprocess, waits for it to finish, and captures its output. A non-zero e
 `run` is a blocking call. Inside a green thread it is offloaded to a background worker pool, so waiting on the subprocess does not freeze the actor's other coroutines; see [concurrency](../language/concurrency.md). With no other coroutine to run, it executes inline with no overhead.
 
 ```tigr
-Os := import 'Os';
-String := import 'String';
-
 r := Os.run('echo', 'hello', 'world');
 print(r.code);                   // => 0
 print(String.trim(r.stdout));    // => hello world
@@ -89,8 +80,6 @@ Exits the process immediately with the given status code. This is a real process
 **Raises:** a string error if `code` is not an `Int`.
 
 ```tigr
-Os := import 'Os';
-
 // Os.exit(0) would terminate the process here.
 print('still running');   // => still running
 ```

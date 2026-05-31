@@ -3,7 +3,7 @@
 > Pure-tigr source module, `stdlib/Url.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#url-v015)
 
-`Url` provides parsing, building, and percent-coding helpers for URLs and query strings, layered on the native `String` and `Bytes` modules. It exposes no runtime type of its own; it works with plain strings and objects. Import it as `Url := import 'Url'`.
+`Url` provides parsing, building, and percent-coding helpers for URLs and query strings, layered on the native `String` and `Bytes` modules. It exposes no runtime type of its own; it works with plain strings and objects. It is ambient, so a bare module name works without an `import`.
 
 `parse(url)` splits an absolute URL into `${scheme, host, port, path, query, fragment}`, and `build(parts)` is its inverse, so `build(parse(u))` round-trips. `encode` and `decode` are RFC-3986 percent-coding done byte-wise over the UTF-8 encoding, so non-ASCII text survives a round trip. `encode_query` and `parse_query` convert between an `Object` and an `a=1&b=x%20y` query string.
 
@@ -29,8 +29,6 @@ Splits an absolute URL into its parts. `port` is an `Int` or `null`, `path` defa
 **Raises:** an error when the URL has no `://` scheme separator.
 
 ```tigr
-Url := import 'Url';
-
 p := Url.parse('https://example.com:8443/docs/intro?q=tigr#top');
 print(p.scheme);        // => https
 print(p.host);          // => example.com
@@ -49,8 +47,6 @@ Reassembles a parts object into a URL string. It is the inverse of `parse`.
 **Returns:** the assembled URL as a `String`.
 
 ```tigr
-Url := import 'Url';
-
 print(Url.build(${scheme: 'http', host: 'localhost', port: 3000,
             path: '/api', query: 'x=1', fragment: null}));
 // => http://localhost:3000/api?x=1
@@ -65,8 +61,6 @@ Percent-encodes `s`. Bytes in the RFC-3986 unreserved set `A-Za-z0-9-._~` pass t
 **Returns:** the percent-encoded `String`.
 
 ```tigr
-Url := import 'Url';
-
 print(Url.encode('a b/c'));     // => a%20b%2Fc
 print(Url.encode('café'));      // => caf%C3%A9
 ```
@@ -81,8 +75,6 @@ Percent-decodes `s`. A `+` is left literal, since `+`-means-space is form semant
 **Raises:** a structured `decode` error on a malformed or truncated `%`-escape.
 
 ```tigr
-Url := import 'Url';
-
 print(Url.decode('a%20b%2Fc'));                             // => a b/c
 print(try { Url.decode('bad%2') } catch (e) { e.kind });    // => decode
 ```
@@ -96,8 +88,6 @@ Parses an `a=1&b=x%20y` query string into an object. Both the key and the value 
 **Returns:** an `Object` of decoded key/value pairs.
 
 ```tigr
-Url := import 'Url';
-
 q := Url.parse_query('name=Ada+Lovelace&lang=tigr&lang=rust');
 print(q.name);          // => Ada Lovelace
 print(q.lang);          // => rust
@@ -112,8 +102,6 @@ Encodes an object into an `a=1&b=x%20y` query string. Values are stringified wit
 **Returns:** the encoded query string as a `String`.
 
 ```tigr
-Url := import 'Url';
-
 print(Url.encode_query(${q: 'a b', n: 5}));     // => q=a%20b&n=5
 ```
 

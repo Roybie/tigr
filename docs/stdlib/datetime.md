@@ -3,7 +3,7 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#datetime-v06)
 
-`DateTime` converts between epoch milliseconds and calendar dates, imported with `import 'DateTime'`. Everything is UTC: there is no timezone support. A *components object* is `${year, month, day, hour, minute, second, ms, weekday, yearday}`, where `month` is 1 to 12, `weekday` is 0 for Sunday through 6 for Saturday, and `yearday` is the 1-based day of the year. To read the actual wall clock as a raw offset, see [`Time`](time.md).
+`DateTime` converts between epoch milliseconds and calendar dates, available without an `import`. Everything is UTC: there is no timezone support. A *components object* is `${year, month, day, hour, minute, second, ms, weekday, yearday}`, where `month` is 1 to 12, `weekday` is 0 for Sunday through 6 for Saturday, and `yearday` is the 1-based day of the year. To read the actual wall clock as a raw offset, see [`Time`](time.md).
 
 ## Functions
 
@@ -24,8 +24,6 @@ Reads the current UTC time and breaks it into calendar components.
 **Raises:** a string error if the system clock is set before the epoch.
 
 ```tigr
-DateTime := import 'DateTime';
-
 today := DateTime.now();
 print(today.year >= 2024);   // => true
 ```
@@ -40,8 +38,6 @@ Converts an epoch-milliseconds value into a components object.
 **Raises:** a string error if `ms` is not an `Int`.
 
 ```tigr
-DateTime := import 'DateTime';
-
 d := DateTime.from_ms(1700000000000);
 print(d.year);      // => 2023
 print(d.month);     // => 11
@@ -60,8 +56,6 @@ Converts a components object back into epoch milliseconds. Missing fields take d
 **Raises:** a string error if `obj` is not an `Object`, or if a present field is not an `Int`.
 
 ```tigr
-DateTime := import 'DateTime';
-
 print(DateTime.to_ms(${year: 2021, month: 1, day: 1}));   // => 1609459200000
 
 d := DateTime.from_ms(1700000000000);
@@ -79,8 +73,6 @@ Renders an epoch-milliseconds value as text. Note that `format` takes millisecon
 **Raises:** a string error if `ms` is not an `Int`, `fmt` is not a `String`, `fmt` uses an unknown directive, or `fmt` ends with a trailing `%`.
 
 ```tigr
-DateTime := import 'DateTime';
-
 print(DateTime.format(1700000000000, '%Y-%m-%d %H:%M:%S'));   // => 2023-11-14 22:13:20
 print(DateTime.format(1700000000000, 'day %j of %Y'));        // => day 318 of 2023
 ```
@@ -95,8 +87,6 @@ Parses an ISO-8601 datetime string into epoch milliseconds. The string is `YYYY-
 **Raises:** a string error if `str` is not a `String` or is not a valid ISO-8601 datetime.
 
 ```tigr
-DateTime := import 'DateTime';
-
 print(DateTime.parse('2021-06-15'));            // => 1623715200000
 print(DateTime.parse('2021-06-15T12:30:00'));   // => 1623760200000
 

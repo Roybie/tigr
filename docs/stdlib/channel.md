@@ -3,21 +3,18 @@
 > Pure-tigr source module, `stdlib/Channel.tg`
 > Spec: [LANGUAGE.md Appendix L](../../LANGUAGE.md#appendix-l--changes-in-v014)
 
-A `Channel` carries messages between actors (the v0.14 concurrency model). It is the one reference type that crosses actor threads: a value sent through a channel is deep-copied into the receiving actor's heap. Channels are bidirectional, so any holder may both send and receive. `type(ch)` is `'channel'`, and a `Channel` is not JSON-serializable. Import it as `Channel := import 'Channel'`.
+A `Channel` carries messages between actors (the v0.14 concurrency model). It is the one reference type that crosses actor threads: a value sent through a channel is deep-copied into the receiving actor's heap. Channels are bidirectional, so any holder may both send and receive. `type(ch)` is `'channel'`, and a `Channel` is not JSON-serializable. It is ambient, so a bare module name works without an `import`.
 
 `Channel.new()` is unbounded. `Channel.new(n)` bounds the buffer at `n` messages, so `send` blocks (backpressure) while the buffer is full. `recv` and `try_recv` return an object to inspect or `match`: `${value: v}` for a message, `${closed: true}` once the channel is closed and drained, and `${empty: true}` from `try_recv` when nothing is ready. The functions are thin re-exports of the native `_NativeChannel` backend, except `new`, which defaults the capacity.
 
 `send` and `recv` are blocking natives: inside a green thread they are offloaded to a worker pool, so a coroutine waiting on a channel does not stall the actor's siblings (see [concurrency](../language/concurrency.md)). This also means one green thread may `recv` from a channel that a *sibling* green thread feeds, in the same actor, without deadlocking. `try_recv` and `close` never wait and run inline.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new();
 producer := spawn fn() {
-    C := import 'Channel';
-    C.send(ch, 'ping');
-    C.send(ch, 'pong');
-    C.close(ch)
+    Channel.send(ch, 'ping');
+    Channel.send(ch, 'pong');
+    Channel.close(ch)
 };
 print(Channel.recv(ch).value);          // => ping
 print(Channel.recv(ch).value);          // => pong
@@ -45,8 +42,6 @@ Creates a channel. With no argument the channel is unbounded. With a positive `I
 **Returns:** a new `Channel`.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new(2);
 print(type(ch));                // => channel
 ```
@@ -62,8 +57,6 @@ Enqueues `msg`, deep-copying it into the channel. On a full bounded channel `sen
 **Raises:** `channel_closed` if the channel is already closed, or `not_sendable` / `cycle` if `msg` cannot cross the heap boundary.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new();
 Channel.send(ch, 7);
 print(Channel.try_recv(ch).value);      // => 7
@@ -78,13 +71,10 @@ Blocks for the next message.
 **Returns:** `${value: v}` for the next message, or `${closed: true}` once the channel is closed and every buffered message has been drained.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new(4);
 t := spawn fn() {
-    C := import 'Channel';
-    for (i, 1..=3) { C.send(ch, i * 10) };
-    C.close(ch)
+    for (i, 1..=3) { Channel.send(ch, i * 10) };
+    Channel.close(ch)
 };
 sum := 0;
 drained := false;
@@ -109,8 +99,6 @@ Checks for a message without ever blocking.
 **Returns:** `${value: v}` for a ready message, `${closed: true}` once the channel is closed and drained, or `${empty: true}` when nothing is ready right now.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new();
 print(Channel.try_recv(ch).empty);      // => true
 Channel.send(ch, 42);
@@ -126,8 +114,6 @@ Closes the channel, waking every blocked sender and receiver. A `recv` after the
 **Returns:** `null`.
 
 ```tigr
-Channel := import 'Channel';
-
 ch := Channel.new();
 Channel.close(ch);
 print(try { Channel.send(ch, 1) } catch (e) { e.kind });   // => channel_closed

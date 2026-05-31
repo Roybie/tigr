@@ -3,22 +3,18 @@
 > Pure-tigr source module, `stdlib/Http.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#http-v015)
 
-`Http` is an HTTP/1.1 client and server helper, layered on the native `Net`, `String`, `Bytes`, and `JSON` modules. It exposes no runtime type of its own; requests and responses are plain objects. Import it as `Http := import 'Http'`.
+`Http` is an HTTP/1.1 client and server helper, layered on the native `Net`, `String`, `Bytes`, and `JSON` modules. It exposes no runtime type of its own; requests and responses are plain objects. It is ambient, so a bare module name works without an `import`.
 
 The client side is `request(opts)` plus the `get`, `post`, `put`, `delete`, `head`, and `patch` wrappers. A request returns `${status, status_text, headers, body}`, where `headers` keys are lowercased (a duplicate header collapses, last value wins) and `body` is always `Bytes`. Decode the body with the `text(resp)` and `json(resp)` helpers. 3xx redirects are followed automatically, capped at 10.
 
-The server side is the low-level pair `read_request(sock)` and `write_response(sock, resp)`, plus `serve(listener, handler)`, an accept loop that `spawn`s one actor per connection. Because a spawned closure is deep-copied across the actor boundary, the `handler` passed to `serve` must be sendable: it must `import` any modules it needs inside its own body, never capture them. v1 has no keep-alive, so every request sends `Connection: close`.
+The server side is the low-level pair `read_request(sock)` and `write_response(sock, resp)`, plus `serve(listener, handler)`, an accept loop that `spawn`s one actor per connection. Because a spawned closure is deep-copied across the actor boundary, the `handler` passed to `serve` must be sendable. Stdlib modules are ambient inside the spawned actor, so the body reaches for `JSON`, `String`, and the rest directly with no `import`; what it cannot do is capture a non-sendable value (a module object or a native function) from the enclosing scope. v1 has no keep-alive, so every request sends `Connection: close`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) { 'hello ' + req.path })
+    Http.serve(listener, fn(req) { 'hello ' + req.path })
 };
 
 resp := Http.get(base + '/world');
@@ -56,14 +52,10 @@ Performs one HTTP request, following 3xx redirects automatically.
 **Raises:** a structured error on a connection or protocol failure, `too_many_redirects` past the cap, or `unsupported_scheme` for a non-http/https URL.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) { 'agent=' + str(req.headers['user-agent']) })
+    Http.serve(listener, fn(req) { 'agent=' + str(req.headers['user-agent']) })
 };
 
 resp := Http.request(${
@@ -87,14 +79,10 @@ Performs a GET request. A convenience wrapper over `request`.
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) { req.method + ' ' + req.path })
+    Http.serve(listener, fn(req) { req.method + ' ' + req.path })
 };
 
 print(Http.text(Http.get(base + '/page')));     // => GET /page
@@ -114,18 +102,11 @@ Performs a POST request with an optional body.
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-JSON := import 'JSON';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) {
-        Hh := import 'Http';
-        J  := import 'JSON';
-        ${status: 201, headers: ${}, body: J.stringify(${echo: J.parse(Hh.text(req)).name})}
+    Http.serve(listener, fn(req) {
+        ${status: 201, headers: ${}, body: JSON.stringify(${echo: JSON.parse(Http.text(req)).name})}
     })
 };
 
@@ -148,16 +129,11 @@ Performs a PUT request with an optional body.
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) {
-        Hh := import 'Http';
-        'got: ' + Hh.text(req)
+    Http.serve(listener, fn(req) {
+        'got: ' + Http.text(req)
     })
 };
 
@@ -177,14 +153,10 @@ Performs a DELETE request.
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) { req.method + ' ' + req.path })
+    Http.serve(listener, fn(req) { req.method + ' ' + req.path })
 };
 
 print(Http.text(Http.delete(base + '/item/1')));    // => DELETE /item/1
@@ -203,14 +175,10 @@ Performs a HEAD request. The server sends no body for a HEAD, so the response `b
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) { 'body text' })
+    Http.serve(listener, fn(req) { 'body text' })
 };
 
 resp := Http.head(base + '/');
@@ -232,16 +200,11 @@ Performs a PATCH request with an optional body.
 **Raises:** the same errors as `request`.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) {
-        Hh := import 'Http';
-        'patched: ' + Hh.text(req)
+    Http.serve(listener, fn(req) {
+        'patched: ' + Http.text(req)
     })
 };
 
@@ -259,9 +222,6 @@ Decodes a response or request body as UTF-8 text.
 **Returns:** the body decoded as a `String`.
 
 ```tigr
-Http := import 'Http';
-Bytes := import 'Bytes';
-
 print(Http.text(${body: Bytes.from_string('hello')}));   // => hello
 ```
 
@@ -275,10 +235,6 @@ Parses a response or request body as JSON.
 **Raises:** a JSON parse error when the body is not valid JSON.
 
 ```tigr
-Http  := import 'Http';
-Bytes := import 'Bytes';
-JSON  := import 'JSON';
-
 src := JSON.stringify(${n: 5});
 print(Http.json(${body: Bytes.from_string(src)}).n);    // => 5.0
 ```
@@ -293,19 +249,14 @@ Reads one HTTP request from an accepted connection. The body is read only when a
 **Raises:** an `eof` error when the connection closes before a request line arrives.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    N := import 'Net';
-    conn := N.accept(listener);
-    req := H.read_request(conn);
-    H.write_response(conn, ${status: 200, headers: ${}, body: 'method was ' + req.method});
-    N.close(conn);
-    N.close(listener)
+    conn := Net.accept(listener);
+    req := Http.read_request(conn);
+    Http.write_response(conn, ${status: 200, headers: ${}, body: 'method was ' + req.method});
+    Net.close(conn);
+    Net.close(listener)
 };
 
 print(Http.text(Http.get(base + '/')));     // => method was GET
@@ -322,19 +273,14 @@ Writes an HTTP response to a connection. `Content-Length` and `Connection: close
 **Returns:** the number of bytes written.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    N := import 'Net';
-    conn := N.accept(listener);
-    H.read_request(conn);
-    H.write_response(conn, ${status: 201, headers: ${}, body: 'created'});
-    N.close(conn);
-    N.close(listener)
+    conn := Net.accept(listener);
+    Http.read_request(conn);
+    Http.write_response(conn, ${status: 201, headers: ${}, body: 'created'});
+    Net.close(conn);
+    Net.close(listener)
 };
 
 resp := Http.get(base + '/');
@@ -348,19 +294,15 @@ join(server);
 Runs an accept loop on `listener`, handing each connection to its own `spawn`ed actor. A `handler` returning a `String` becomes a `200 text/plain` response; an `Object` is sent as the response as-is. A handler that raises yields a best-effort `500`, so one bad request never stops the loop. `serve` runs until its `listener` is closed: `close(listener)` from any actor makes the next `accept` raise `closed`, which `serve` catches and returns from cleanly.
 
 - `listener` *(socket)*: a listening socket from `Net.listen`, or from `Net.listen_tls`, which makes `serve` an HTTPS server. A TLS listener's `accept` yields encrypted sockets transparently, so neither `serve` nor the `handler` changes.
-- `handler` *(Function)*: a sendable function taking a request and returning a `String` or a response `Object`. It must `import` any modules it uses inside its own body.
+- `handler` *(Function)*: a sendable function taking a request and returning a `String` or a response `Object`. It runs in its own spawned actor, where stdlib modules are ambient, so it uses them directly; it must not capture non-sendable values from the enclosing scope.
 
 **Returns:** `null`, once the listener is closed.
 
 ```tigr
-Http := import 'Http';
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 base := 'http://127.0.0.1:' + str(Net.local_addr(listener).port);
 server := spawn fn() {
-    H := import 'Http';
-    H.serve(listener, fn(req) {
+    Http.serve(listener, fn(req) {
         ${status: 200, headers: ${'content-type': 'text/plain'}, body: 'echo ' + req.path}
     })
 };

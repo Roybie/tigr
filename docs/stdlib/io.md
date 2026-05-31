@@ -3,7 +3,7 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#io)
 
-`IO` covers file and stdio access, imported with `import 'IO'`. It exposes two styles of file IO:
+`IO` covers file and stdio access, available without an `import`. It exposes two styles of file IO:
 
 - **Whole-file ops** (`read_file`, `write_file`, `append_file`, and the `_bytes` variants) load or replace a file in one call. Convenient for small files; raises a catchable string-valued error on failure.
 - **Streaming handle ops** (`open`, `read`, `read_line`, `read_until`, `read_exact`, `read_all`, `write`, `seek`, `tell`, `close`) process a file incrementally. The only way to handle a file larger than memory. Errors are structured `${kind, message}` (matching `Net`), so `catch (e) { e.kind == 'eof' }` works.
@@ -52,8 +52,6 @@ Reads the entire file at `path` and returns its contents decoded as UTF-8.
 **Raises:** a string error if the file is missing, unreadable, or not valid UTF-8.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_a.txt', 'hello tigr');
 print(IO.read_file('/tmp/tigr_doc_a.txt'));   // => hello tigr
 IO.remove('/tmp/tigr_doc_a.txt');
@@ -70,8 +68,6 @@ Writes `text` to `path`, overwriting any existing file and creating it if absent
 **Raises:** a string error if the path cannot be written.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_b.txt', 'first');
 IO.write_file('/tmp/tigr_doc_b.txt', 'second');
 print(IO.read_file('/tmp/tigr_doc_b.txt'));   // => second
@@ -89,8 +85,6 @@ Appends `text` to the end of the file at `path`, creating the file if it does no
 **Raises:** a string error if the path cannot be opened or written.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_c.txt', 'a');
 IO.append_file('/tmp/tigr_doc_c.txt', 'b');
 print(IO.read_file('/tmp/tigr_doc_c.txt'));   // => ab
@@ -107,8 +101,6 @@ Reads the entire file at `path` as raw bytes, with no UTF-8 decoding.
 **Raises:** a string error if the file is missing or unreadable.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_d.txt', 'hi');
 b := IO.read_bytes('/tmp/tigr_doc_d.txt');
 print(#b);   // => 2
@@ -126,9 +118,6 @@ Writes a `Bytes` buffer to `path`, overwriting any existing file and creating it
 **Raises:** a string error if the path cannot be written.
 
 ```tigr
-IO := import 'IO';
-Bytes := import 'Bytes';
-
 IO.write_bytes('/tmp/tigr_doc_e.bin', Bytes.from_string('raw'));
 print(IO.read_file('/tmp/tigr_doc_e.bin'));   // => raw
 IO.remove('/tmp/tigr_doc_e.bin');
@@ -145,9 +134,6 @@ Appends a `Bytes` buffer to the end of the file at `path`, creating the file if 
 **Raises:** a string error if the path cannot be opened or written.
 
 ```tigr
-IO := import 'IO';
-Bytes := import 'Bytes';
-
 IO.write_bytes('/tmp/tigr_doc_f.bin', Bytes.from_string('one'));
 IO.append_bytes('/tmp/tigr_doc_f.bin', Bytes.from_string('two'));
 print(IO.read_file('/tmp/tigr_doc_f.bin'));   // => onetwo
@@ -163,8 +149,6 @@ Tests whether anything exists at `path`, file or directory.
 **Returns:** `true` if the path exists, otherwise `false`.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_g.txt', 'x');
 print(IO.exists('/tmp/tigr_doc_g.txt'));    // => true
 IO.remove('/tmp/tigr_doc_g.txt');
@@ -181,8 +165,6 @@ Lists the entries of the directory at `path`.
 **Raises:** a string error if `path` is not a directory or cannot be read.
 
 ```tigr
-IO := import 'IO';
-
 IO.mkdir('/tmp/tigr_doc_dir');
 IO.write_file('/tmp/tigr_doc_dir/a.txt', 'a');
 print(IO.list_dir('/tmp/tigr_doc_dir'));   // => [a.txt]
@@ -199,8 +181,6 @@ Creates the directory at `path`, along with any missing parent directories.
 **Raises:** a string error if the directory cannot be created.
 
 ```tigr
-IO := import 'IO';
-
 IO.mkdir('/tmp/tigr_doc_mk/nested');
 print(IO.is_dir('/tmp/tigr_doc_mk/nested'));   // => true
 IO.remove('/tmp/tigr_doc_mk');
@@ -216,8 +196,6 @@ Deletes the file at `path`, or, if `path` is a directory, removes it and all its
 **Raises:** a string error if the path does not exist or cannot be removed.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_h.txt', 'x');
 IO.remove('/tmp/tigr_doc_h.txt');
 print(IO.exists('/tmp/tigr_doc_h.txt'));   // => false
@@ -232,8 +210,6 @@ Tests whether `path` is a directory.
 **Returns:** `true` if `path` is a directory, otherwise `false` (including when it does not exist).
 
 ```tigr
-IO := import 'IO';
-
 IO.mkdir('/tmp/tigr_doc_isd');
 print(IO.is_dir('/tmp/tigr_doc_isd'));   // => true
 print(IO.is_dir('/tmp/tigr_doc_isd/missing'));   // => false
@@ -249,8 +225,6 @@ Tests whether `path` is a regular file.
 **Returns:** `true` if `path` is a regular file, otherwise `false` (including when it does not exist).
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_isf.txt', 'x');
 print(IO.is_file('/tmp/tigr_doc_isf.txt'));   // => true
 print(IO.is_file('/tmp'));   // => false
@@ -267,8 +241,6 @@ Reads filesystem metadata for `path`.
 **Raises:** a string error if the path does not exist.
 
 ```tigr
-IO := import 'IO';
-
 IO.write_file('/tmp/tigr_doc_st.txt', 'hello tigr');
 s := IO.stat('/tmp/tigr_doc_st.txt');
 print(s.size);      // => 10
@@ -281,8 +253,6 @@ IO.remove('/tmp/tigr_doc_st.txt');
 For files too large to fit in memory, open a file handle and read from it incrementally. The pattern mirrors the [`Net`](net.md) socket API.
 
 ```tigr
-IO := import 'IO';
-
 f := IO.open('huge.log', 'r');
 while ((line := IO.read_line(f)) != null) {
     if line[0..5] == 'ERROR' { print(line) }
@@ -312,8 +282,6 @@ Opens `path` and returns a file handle for streaming reads or writes.
 **Raises:** `invalid_mode` if `mode` is anything else; `io` if the file cannot be opened in the requested mode.
 
 ```tigr
-IO := import 'IO';
-
 f := IO.open('/tmp/tigr_doc_open.txt', 'w');
 IO.write(f, 'streamed');
 IO.close(f);
@@ -332,9 +300,6 @@ Reads up to `n` bytes from `file`. May return fewer bytes than requested; an emp
 **Raises:** `mode` if `file` is not opened for reading; `closed` if it has been closed; `io` on a read failure.
 
 ```tigr
-IO := import 'IO';
-Bytes := import 'Bytes';
-
 IO.write_file('/tmp/tigr_doc_read.txt', 'hello world');
 f := IO.open('/tmp/tigr_doc_read.txt', 'r');
 print(Bytes.to_string(IO.read(f, 5)));   // => hello
@@ -362,8 +327,6 @@ Reads one line. With no argument, reads from standard input; with a file handle,
 **Raises:** with a file handle: `mode`, `closed`, `io`, or `decode` (invalid UTF-8). With no argument: a string error if stdin cannot be read.
 
 ```tigr
-IO := import 'IO';
-
 // File form: stream a large file line by line.
 f := IO.open('/etc/hosts', 'r');
 while ((line := IO.read_line(f)) != null) {
@@ -403,9 +366,6 @@ Writes every byte of `data` to `file` and returns the byte count written.
 **Raises:** `mode` if `file` is not opened for writing; `closed` if it has been closed; `io` on a write failure.
 
 ```tigr
-IO := import 'IO';
-Bytes := import 'Bytes';
-
 f := IO.open('/tmp/tigr_doc_write.bin', 'w');
 IO.write(f, 'header\n');
 IO.write(f, Bytes.from_array([1, 2, 3]));
@@ -448,8 +408,6 @@ Writes its arguments to standard error, matching `print`'s formatting: each argu
 **Returns:** the last argument, or `null` if called with none.
 
 ```tigr
-IO := import 'IO';
-
 IO.eprint('warning:', 'disk low');   // written to stderr
 ```
 

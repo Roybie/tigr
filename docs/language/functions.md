@@ -101,7 +101,6 @@ print(counter.bump());   // => 1
 When you want the receiver passed as the first argument, use the pipe operator. `obj |> method(args)` rewrites to `method(obj, args)`, which is the idiomatic way to chain stdlib calls:
 
 ```tigr
-Array := import 'Array';
 double := fn(x) { x * 2 };
 print([1, 2, 3] |> Array.map(double));   // => [2, 4, 6]
 ```

@@ -3,13 +3,11 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#net-v015)
 
-The `Net` module does TCP, UDP, and TLS networking. A socket is a value type in its own right: `type(s)` is `'socket'`, and a socket is sendable across actor boundaries the same way a channel is, so an accepted connection can be passed into a `spawn`ed per-connection handler. Import the module with `Net := import 'Net'`. Reads come in two layers. The low-level `read(sock, n)` returns up to `n` bytes, with an empty `Bytes` meaning end-of-stream. On top of it sit the framed helpers `read_exact`, `read_line`, `read_until`, and `read_all`; the socket carries an internal buffer, so a helper that reads past a frame boundary keeps the surplus for the next call. A failure raises a structured `${kind, message}` error, where `kind` is one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`, `addr_in_use`, `decode`, or `io`.
+The `Net` module does TCP, UDP, and TLS networking. A socket is a value type in its own right: `type(s)` is `'socket'`, and a socket is sendable across actor boundaries the same way a channel is, so an accepted connection can be passed into a `spawn`ed per-connection handler. It is ambient, so a bare module name works without an `import`. Reads come in two layers. The low-level `read(sock, n)` returns up to `n` bytes, with an empty `Bytes` meaning end-of-stream. On top of it sit the framed helpers `read_exact`, `read_line`, `read_until`, and `read_all`; the socket carries an internal buffer, so a helper that reads past a frame boundary keeps the surplus for the next call. A failure raises a structured `${kind, message}` error, where `kind` is one of `timeout`, `closed`, `eof`, `refused`, `dns`, `tls`, `addr_in_use`, `decode`, or `io`.
 
 The waiting calls are offloaded when they run inside a green thread, so a coroutine waiting on the network does not stall the actor's siblings (see [concurrency](../language/concurrency.md)). Steady-state socket I/O (`accept`, `read`, `write`, `read_exact`, `read_line`, `read_until`, `read_all`, and `recv_from`) is driven on a single async-I/O reactor thread, so one actor can keep tens of thousands of connections open at once. `connect`, `connect_tls`, and `send_to` go to a worker pool instead, since each may need a blocking DNS lookup. The non-waiting calls (`listen`, `listen_tls`, `bind`, `local_addr`, `peer_addr`, `set_timeout`, `close`) run inline.
 
 ```tigr
-Net := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 print(Net.local_addr(listener).host);       // => 127.0.0.1
 ```
@@ -49,8 +47,6 @@ Creates a TCP listener bound to `host:port`. Pass port `0` to let the OS pick a 
 **Raises:** a structured error, for example `addr_in_use` if the port is taken.
 
 ```tigr
-Net := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 print(Net.local_addr(listener).host);       // => 127.0.0.1
 ```
@@ -65,12 +61,9 @@ Blocks until the next inbound connection arrives, then returns it.
 **Raises:** `closed` if the listener is closed, including by another actor while this `accept` is waiting.
 
 ```tigr
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net := import 'Net';
     conn := Net.accept(listener);
     Net.close(conn);
     Net.close(listener);
@@ -93,14 +86,9 @@ Opens a TCP stream to `host:port`.
 **Raises:** a structured error, for example `refused` if nothing is listening, or `dns` if the host name does not resolve.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     line := Net.read_line(conn);
     Net.write(conn, Bytes.from_string('hello, ' + line));
@@ -128,9 +116,6 @@ Opens a TLS-encrypted stream. The `host` is also the name checked against the se
 **Raises:** a structured error, for example `tls` if the certificate fails verification, or `dns` if the host name does not resolve.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 conn := Net.connect_tls('example.com', 443);
 Net.write(conn, Bytes.from_string('GET / HTTP/1.0\r\nHost: example.com\r\n\r\n'));
 status := Net.read_line(conn);
@@ -151,8 +136,6 @@ Creates a TLS server listener bound to `host:port`. `accept` on the returned lis
 **Raises:** `tls` if the certificate or key PEM is malformed, the chain is empty, or the certificate and key do not match; `addr_in_use` if the port is taken.
 
 ```tigr
-Net := import 'Net';
-
 // `cert` and `key` are PEM strings: read them from a file or embed them.
 listener := Net.listen_tls('127.0.0.1', 8443, cert, key);
 conn := Net.accept(listener);           // a TLS server socket
@@ -172,8 +155,6 @@ Creates a UDP datagram socket bound to `host:port`.
 **Raises:** a structured error, for example `addr_in_use` if the port is taken.
 
 ```tigr
-Net := import 'Net';
-
 sock := Net.bind('127.0.0.1', 0);
 print(Net.local_addr(sock).host);               // => 127.0.0.1
 ```
@@ -191,9 +172,6 @@ Sends one UDP datagram to `host:port`.
 **Raises:** a structured error if the address cannot be resolved or the send fails.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 a := Net.bind('127.0.0.1', 0);
 b := Net.bind('127.0.0.1', 0);
 addr := Net.local_addr(b);
@@ -211,9 +189,6 @@ Receives one UDP datagram, up to `n` bytes.
 **Raises:** a structured error if the receive fails.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 a := Net.bind('127.0.0.1', 0);
 b := Net.bind('127.0.0.1', 0);
 addr := Net.local_addr(b);
@@ -233,14 +208,9 @@ Reads up to `n` bytes from a stream. This is the low-level read; it returns as s
 **Raises:** a structured error such as `closed` or `timeout`.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     Net.write(conn, Bytes.from_string('abc'));
     Net.close(conn);
@@ -265,13 +235,9 @@ Writes every byte of `bytes` to a stream.
 **Raises:** a structured error such as `closed` or `timeout`.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net := import 'Net';
     conn := Net.accept(listener);
     Net.read_all(conn);
     Net.close(conn);
@@ -295,14 +261,9 @@ Reads exactly `n` bytes, blocking until all of them have arrived.
 **Raises:** `eof` if the stream ends before `n` bytes arrive, or another structured error.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     Net.write(conn, Bytes.from_string('abcdef'));
     Net.close(conn);
@@ -326,14 +287,9 @@ Reads one line, terminated by `\n`. A trailing `\r\n` or `\n` is stripped from t
 **Raises:** `decode` if the line is not valid UTF-8, or another structured error.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     Net.write(conn, Bytes.from_string('one\ntwo\n'));
     Net.close(conn);
@@ -358,14 +314,9 @@ Reads up to and including the next occurrence of `byte`.
 **Raises:** a structured error such as `closed` or `timeout`.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     Net.write(conn, Bytes.from_string('field;rest'));
     Net.close(conn);
@@ -389,14 +340,9 @@ Reads every remaining byte until end-of-stream.
 **Raises:** a structured error such as `closed` or `timeout`.
 
 ```tigr
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net   := import 'Net';
-    Bytes := import 'Bytes';
     conn := Net.accept(listener);
     Net.write(conn, Bytes.from_string('payload'));
     Net.close(conn);
@@ -419,8 +365,6 @@ Returns the socket's own bound address.
 **Returns:** an object `${host, port}`.
 
 ```tigr
-Net := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 print(Net.local_addr(listener).host);           // => 127.0.0.1
 ```
@@ -435,12 +379,9 @@ Returns the address of the connected peer.
 **Raises:** a structured error if the socket is not connected.
 
 ```tigr
-Net  := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 server := spawn fn() {
-    Net := import 'Net';
     conn := Net.accept(listener);
     Net.close(conn);
     Net.close(listener);
@@ -462,8 +403,6 @@ Bounds subsequent reads and writes on `sock` to `ms` milliseconds. A read or wri
 **Returns:** `null`.
 
 ```tigr
-Net := import 'Net';
-
 sock := Net.bind('127.0.0.1', 0);
 Net.set_timeout(sock, 500);
 caught := try { Net.recv_from(sock, 16) } catch (e) { e.kind };
@@ -479,8 +418,6 @@ Closes the socket. The call is idempotent. Closing a socket unblocks a reader st
 **Returns:** `null`.
 
 ```tigr
-Net := import 'Net';
-
 sock := Net.listen('127.0.0.1', 0);
 Net.close(sock);
 Net.close(sock);                        // idempotent, no error

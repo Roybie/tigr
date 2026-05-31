@@ -3,7 +3,7 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#time)
 
-`Time` provides wall-clock access, imported with `import 'Time'`. It reads the current time as an offset from the UNIX epoch and pauses the running thread. The two clock readings, `now_ms` and `now_ns`, are most useful for measuring how long a piece of code takes: read the clock before and after, then subtract. For calendar dates instead of raw offsets, see [`DateTime`](datetime.md).
+`Time` provides wall-clock access, available without an `import`. It reads the current time as an offset from the UNIX epoch and pauses the running thread. The two clock readings, `now_ms` and `now_ns`, are most useful for measuring how long a piece of code takes: read the clock before and after, then subtract. For calendar dates instead of raw offsets, see [`DateTime`](datetime.md).
 
 ## Functions
 
@@ -22,8 +22,6 @@ Reads the current wall-clock time as milliseconds since the UNIX epoch (1970-01-
 **Raises:** a string error if the system clock is set before the epoch.
 
 ```tigr
-Time := import 'Time';
-
 start := Time.now_ms();
 Time.sleep_ms(10);
 elapsed := Time.now_ms() - start;
@@ -38,8 +36,6 @@ Reads the current wall-clock time as nanoseconds since the UNIX epoch. This is t
 **Raises:** a string error if the system clock is set before the epoch.
 
 ```tigr
-Time := import 'Time';
-
 t := Time.now_ns();
 print(type(t));   // => int
 ```
@@ -54,8 +50,6 @@ Blocks the current thread for `n` milliseconds.
 **Raises:** a string error if `n` is negative or not an `Int`.
 
 ```tigr
-Time := import 'Time';
-
 print(Time.sleep_ms(0));   // => null
 ```
 

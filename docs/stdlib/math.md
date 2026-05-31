@@ -3,13 +3,11 @@
 > Pure-tigr source module, `stdlib/Math.tg`
 > Spec: [LANGUAGE.md §13.3](../../LANGUAGE.md#math)
 
-The `Math` module provides numeric functions and two constants. Trig, logarithm, and exponential functions are backed by native code; the small helpers (`abs`, `sign`, `min`, `max`, `clamp`) are pure tigr. Import it as `Math := import 'Math'`.
+The `Math` module provides numeric functions and two constants. Trig, logarithm, and exponential functions are backed by native code; the small helpers (`abs`, `sign`, `min`, `max`, `clamp`) are pure tigr. It is ambient, so a bare module name works without an `import`.
 
 The numeric functions raise on a non-`Number` argument. Angles are in radians.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.sqrt(144));   // => 12.0
 ```
 
@@ -20,8 +18,6 @@ print(Math.sqrt(144));   // => 12.0
 The ratio of a circle's circumference to its diameter, `3.141592653589793`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.PI);   // => 3.141592653589793
 ```
 
@@ -30,8 +26,6 @@ print(Math.PI);   // => 3.141592653589793
 Euler's number, the base of the natural logarithm, `2.718281828459045`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.E);   // => 2.718281828459045
 ```
 
@@ -64,8 +58,6 @@ Computes the square root of `x`.
 **Returns:** the square root as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.sqrt(16));   // => 4.0
 ```
 
@@ -78,8 +70,6 @@ Computes the natural logarithm (base `E`) of `x`.
 **Returns:** the natural logarithm as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.log(Math.E));   // => 1.0
 ```
 
@@ -92,8 +82,6 @@ Computes the base-2 logarithm of `x`.
 **Returns:** the base-2 logarithm as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.log2(8));   // => 3.0
 ```
 
@@ -106,8 +94,6 @@ Computes the base-10 logarithm of `x`.
 **Returns:** the base-10 logarithm as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.log10(1000));   // => 3.0
 ```
 
@@ -120,8 +106,6 @@ Computes `E` raised to the power `x`.
 **Returns:** `E ^^ x` as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.exp(0));   // => 1.0
 ```
 
@@ -134,8 +118,6 @@ Computes the sine of `x`, where `x` is in radians.
 **Returns:** the sine as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.sin(0));   // => 0.0
 ```
 
@@ -148,8 +130,6 @@ Computes the cosine of `x`, where `x` is in radians.
 **Returns:** the cosine as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.cos(0));   // => 1.0
 ```
 
@@ -162,8 +142,6 @@ Computes the tangent of `x`, where `x` is in radians.
 **Returns:** the tangent as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.tan(0));   // => 0.0
 ```
 
@@ -177,8 +155,6 @@ Raises `x` to the power `y`. The result is always a `Float`. The `^^` operator d
 **Returns:** `x` raised to `y` as a `Float`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.pow(2, 10));   // => 1024.0
 ```
 
@@ -191,8 +167,6 @@ Computes the absolute value of `x`.
 **Returns:** the absolute value, with the same numeric type as `x`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.abs(-7));     // => 7
 print(Math.abs(-2.5));   // => 2.5
 ```
@@ -206,8 +180,6 @@ Reports the sign of `x`.
 **Returns:** `-1` if `x` is negative, `1` if positive, `0` if zero.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.sign(-9));   // => -1
 print(Math.sign(0));    // => 0
 print(Math.sign(4));    // => 1
@@ -223,8 +195,6 @@ Returns the smaller of `a` and `b`, using `<` to compare.
 **Returns:** `a` if `a < b`, otherwise `b`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.min(3, 8));   // => 3
 ```
 
@@ -238,8 +208,6 @@ Returns the larger of `a` and `b`, using `>` to compare.
 **Returns:** `a` if `a > b`, otherwise `b`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.max(3, 8));   // => 8
 ```
 
@@ -254,8 +222,6 @@ Constrains `x` to the range `[lo, hi]`.
 **Returns:** `lo` if `x < lo`, `hi` if `x > hi`, otherwise `x`.
 
 ```tigr
-Math := import 'Math';
-
 print(Math.clamp(15, 0, 10));   // => 10
 print(Math.clamp(-3, 0, 10));   // => 0
 print(Math.clamp(7, 0, 10));    // => 7

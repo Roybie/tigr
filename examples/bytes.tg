@@ -5,9 +5,6 @@
 // that isn't text, and — later — network traffic. This walks a small
 // binary packet through build → write → read → parse.
 
-Bytes := import 'Bytes';
-IO    := import 'IO';
-
 // -------- constructing buffers --------
 print('from an array: ' + str(Bytes.to_array(Bytes.from_array([0xDE, 0xAD]))));
 print('from a string: ' + str(#Bytes.from_string('héllo')) + ' bytes (UTF-8)');

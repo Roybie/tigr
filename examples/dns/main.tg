@@ -1,5 +1,3 @@
-String := import 'String';
-Os     := import 'Os';
 DNS    := import './dns';
 
 TYPE_FROM_STRING := ${

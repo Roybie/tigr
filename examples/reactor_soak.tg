@@ -12,9 +12,6 @@
 // client and handler coroutine is parked in `Net.read_line` at once,
 // all of them multiplexed onto the one reactor thread.
 
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 BATCHES   := 10;
 PER_BATCH := 100;          // kept under the listen backlog (128)
 

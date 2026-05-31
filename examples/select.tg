@@ -3,13 +3,11 @@
 // `select` runs the arm of the first channel to have a message. An
 // `else` arm makes it non-blocking.
 
-Channel := import 'Channel';
-
 fast := Channel.new();
 slow := Channel.new();
 
 // An actor produces a value on `fast`; `slow` stays empty.
-spawn fn() { C := import 'Channel'; C.send(fast, 'hello from fast') };
+spawn fn() { Channel.send(fast, 'hello from fast') };
 
 // Block until one channel is ready, then run that arm.
 winner := select {

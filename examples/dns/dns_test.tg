@@ -2,8 +2,6 @@
 //
 // Run with `tigr dns_test.tg` from this directory.
 
-Test  := import 'Test';
-Bytes := import 'Bytes';
 DNS  := import './dns';
 
 // Expected wire format for a standard recursive DNS query:

@@ -6,8 +6,6 @@
 // when a coroutine returns. Contrast `spawn`, which starts a whole
 // separate actor (OS thread + heap) — see spawn.tg.
 
-LC := import 'LocalChannel';
-
 // --- go + yield: cooperative interleaving ---------------------------
 //
 // Two coroutines and the main program take turns at their `yield`s.
@@ -45,15 +43,15 @@ print(for[] (h, squares) { join(h) });  // => [1, 4, 9, 16, 25, 36, 49, 64]
 // A producer coroutine sends through a channel; the consumer `recv`s.
 // `recv` on an empty channel yields, so the producer gets to run.
 
-ch := LC.new();
+ch := LocalChannel.new();
 producer := go fn() {
-    for (i, 1..=5) { LC.send(ch, i * 10) };
-    LC.close(ch);
+    for (i, 1..=5) { LocalChannel.send(ch, i * 10) };
+    LocalChannel.close(ch);
 };
 received := [];
 draining := true;
 while draining {
-    msg := LC.recv(ch);
+    msg := LocalChannel.recv(ch);
     if msg.closed == true {
         draining = false
     } else {

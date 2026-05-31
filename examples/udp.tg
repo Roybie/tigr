@@ -3,9 +3,6 @@
 // UDP has no connection: a socket is `bind`-ed to an address, then
 // sends and receives discrete datagrams with `send_to` / `recv_from`.
 
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 receiver := Net.bind('127.0.0.1', 0);
 port := Net.local_addr(receiver).port;
 sender := Net.bind('127.0.0.1', 0);

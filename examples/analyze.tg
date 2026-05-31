@@ -6,13 +6,6 @@
 // the ones containing `TODO` — processing files in parallel while a
 // background actor prints progress as each one completes.
 
-IO      := import 'IO';
-Os      := import 'Os';
-Path    := import 'Path';
-Array   := import 'Array';
-Time    := import 'Time';
-Channel := import 'Channel';
-
 start := Time.now_ms();
 
 dir   := Os.args[2] || 'stdlib';
@@ -49,11 +42,6 @@ monitor := spawn fn() {
 // captures only sendable data (the `dir` string, the `progress`
 // channel) and imports its own modules.
 report := parallel[] (name, files) {
-    IO      := import 'IO';
-    Path    := import 'Path';
-    String  := import 'String';
-    Channel := import 'Channel';
-
     text  := IO.read_file(Path.join(dir, name));
     lines := #String.lines(text);
 

@@ -1,9 +1,3 @@
-Bytes := import 'Bytes';
-String := import 'String';
-Net := import 'Net';
-Object := import 'Object';
-Random := import 'Random';
-
 PORT := 53;
 
 _type_to_string := fn(t) {

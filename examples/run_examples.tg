@@ -6,12 +6,6 @@
 //
 //   usage: tigr examples/run_examples.tg
 
-IO     := import 'IO';
-Os     := import 'Os';
-Path   := import 'Path';
-Array  := import 'Array';
-String := import 'String';
-
 interpreter := Os.args[0];          // the tigr binary that launched us
 self        := Os.args[1];          // path to this script
 dir         := Path.dirname(self);  // the examples folder

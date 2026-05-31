@@ -3,8 +3,6 @@
 // `Url` is a pure-tigr stdlib module — no network access, so this
 // example runs anywhere.
 
-Url := import 'Url';
-
 // Parse splits an absolute URL into its parts.
 u := Url.parse('https://example.com:8443/search?q=tigr+lang&page=2#results');
 print('scheme  ', u.scheme);

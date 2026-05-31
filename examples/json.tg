@@ -3,9 +3,6 @@
 // Builds a tigr value, writes it as JSON, reads it back, mutates,
 // writes it again — the JSON and IO modules working together.
 
-JSON := import 'JSON';
-IO   := import 'IO';
-
 // Build initial data structure.
 data := ${
     name: 'tigr',

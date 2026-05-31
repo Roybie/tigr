@@ -6,9 +6,6 @@
 // cleanly. Everything runs over the loopback interface — no network
 // access needed.
 
-Http  := import 'Http';
-Net   := import 'Net';
-
 listener := Net.listen('127.0.0.1', 0);
 port := Net.local_addr(listener).port;
 print('serving on 127.0.0.1:' + str(port));
@@ -18,20 +15,18 @@ print('serving on 127.0.0.1:' + str(port));
 // lets the example terminate. The actor imports its own modules and
 // captures only the (sendable) listener.
 server := spawn fn() {
-    H := import 'Http';
-    N := import 'Net';
     for (i, 1..=3) {
-        conn := N.accept(listener);
-        req := H.read_request(conn);
+        conn := Net.accept(listener);
+        req := Http.read_request(conn);
         body := 'you asked for ' + req.path;
-        H.write_response(conn, ${
+        Http.write_response(conn, ${
             status:  200,
             headers: ${'content-type': 'text/plain'},
             body:    body,
         });
-        N.close(conn)
+        Net.close(conn)
     };
-    N.close(listener);
+    Net.close(listener);
     null
 };
 

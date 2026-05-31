@@ -4,21 +4,18 @@
 // and push results to another — the classic way to cap concurrency
 // when there are far more jobs than you want threads.
 
-Channel := import 'Channel';
-
 jobs    := Channel.new();
 results := Channel.new();
 
 // Start four workers. Each pulls jobs until the queue is closed.
 workers := for[] (id, 1..=4) {
     spawn fn() {
-        C := import 'Channel';
         work := fn() {
-            job := C.recv(jobs);
+            job := Channel.recv(jobs);
             if job.closed {
                 null
             } else {
-                C.send(results, job.value * job.value);
+                Channel.send(results, job.value * job.value);
                 work()
             }
         };

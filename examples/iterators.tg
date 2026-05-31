@@ -4,8 +4,6 @@
 // time. It never builds the intermediate arrays that a
 // `Array.map |> Array.filter` chain would.
 
-Iter := import 'Iter';
-
 // A lazy pipeline. map() and filter() run no work until collect()
 // pulls — and nothing in between is ever materialized.
 squares := [1, 2, 3, 4, 5]

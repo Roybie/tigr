@@ -13,8 +13,6 @@
 // Needs network access — `tigr test` skips examples, so this never
 // runs offline.
 
-Http := import 'Http';
-
 url := 'https://example.com';
 n := 6;
 statuses := for[] (i, 0..n) { null };

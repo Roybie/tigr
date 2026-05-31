@@ -9,9 +9,6 @@
 // The proof is wall-clock: four child processes that each sleep for
 // 0.25s finish together in about a quarter-second, not a full second.
 
-Os   := import 'Os';
-Time := import 'Time';
-
 // --- four blocking sleeps, run concurrently -------------------------
 
 start := Time.now_ms();

@@ -81,8 +81,6 @@ print([...take(evens(fib()), 6)]);              // [0, 2, 8, 34, 144, 610]
 
 // The Iter module is itself built from generators, so a generator
 // you write drops straight into an Iter pipeline.
-Iter := import 'Iter';
-
 print(naturals()
     |> Iter.map(fn(n) { n * n })
     |> Iter.filter(fn(n) { n % 2 == 1 })

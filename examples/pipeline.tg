@@ -4,27 +4,23 @@
 // by channels. Every stage closes its output channel when its input
 // is drained, so the shutdown signal flows down the pipeline.
 
-Channel := import 'Channel';
-
 raw  := Channel.new();
 done := Channel.new();
 
 // Stage 1 — produce the numbers 1..6.
 producer := spawn fn() {
-    C := import 'Channel';
-    for (i, 1..=6) { C.send(raw, i) };
-    C.close(raw)
+    for (i, 1..=6) { Channel.send(raw, i) };
+    Channel.close(raw)
 };
 
 // Stage 2 — square each number and forward it.
 transformer := spawn fn() {
-    C := import 'Channel';
     step := fn() {
-        m := C.recv(raw);
+        m := Channel.recv(raw);
         if m.closed {
-            C.close(done)
+            Channel.close(done)
         } else {
-            C.send(done, m.value * m.value);
+            Channel.send(done, m.value * m.value);
             step()
         }
     };

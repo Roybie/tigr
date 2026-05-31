@@ -9,9 +9,6 @@
 // `Http` module — `Http.get('https://example.com')` does the request
 // framing, redirect following, and response parsing for you.
 
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 host := 'example.com';
 conn := Net.connect_tls(host, 443);
 

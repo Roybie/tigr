@@ -13,9 +13,6 @@
 // trusted CA so verification succeeds. Embedded as raw strings — `"…"`
 // neither interpolates nor escapes, so the PEM newlines pass through.
 
-Net   := import 'Net';
-Bytes := import 'Bytes';
-
 TLS_CERT := "-----BEGIN CERTIFICATE-----
 MIIDJDCCAgygAwIBAgIUHGaC7x8IAUhI5G7GcTFbJgCIiNMwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDUxODE1MzIwNVoYDzIxMjYw
@@ -75,20 +72,17 @@ print('TLS echo server listening on 127.0.0.1:' + str(port));
 // actor, then join the handlers and stop. The handler body below is
 // the same as `tcp_echo.tg` — `accept` already returned a TLS socket.
 server := spawn fn() {
-    N := import 'Net';
     handlers := for[] (i, 1..=3) {
-        conn := N.accept(listener);
+        conn := Net.accept(listener);
         spawn fn() {
-            M := import 'Net';
-            B := import 'Bytes';
-            line := M.read_line(conn);
-            M.write(conn, B.from_string('echo: ' + line + '\n'));
-            M.close(conn);
+            line := Net.read_line(conn);
+            Net.write(conn, Bytes.from_string('echo: ' + line + '\n'));
+            Net.close(conn);
             null
         }
     };
     for (h, handlers) { join(h) };
-    N.close(listener);
+    Net.close(listener);
     null
 };
 

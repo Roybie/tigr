@@ -7,8 +7,6 @@
 // *explicitly* — there is no auto-promotion — and then works with the
 // ordinary operators.
 
-BigInt := import 'BigInt';
-
 // -------- factorial of 100 --------
 // 100! has 158 digits — `Int` overflows at 21!.
 fact := fn(n) {

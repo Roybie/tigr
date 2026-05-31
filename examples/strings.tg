@@ -6,8 +6,6 @@
 // engine. (`matches_glob` is a small slice of pattern matching: shell
 // `*`/`?`/`[...]` globs, not a full regular-expression language.)
 
-String := import 'String';
-
 // -------- tokenizing a messy line --------
 
 line := '  the   quick \t brown   fox  ';

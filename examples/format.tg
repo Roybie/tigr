@@ -6,8 +6,6 @@
 // The placeholder marker is `%(...)`, not `{}`, because tigr already
 // interpolates `{}` in every string literal.
 
-String := import 'String';
-
 // -------- padded numbers --------
 
 print('zero-padded ids:');

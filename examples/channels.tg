@@ -3,16 +3,13 @@
 // A channel is the one reference type that crosses actor threads.
 // Values sent through it are deep-copied into the receiver's heap.
 
-Channel := import 'Channel';
-
 ch := Channel.new();
 
 // A producer actor sends five numbers, then closes the channel.
 // (An actor imports its own modules — it shares nothing with us.)
 producer := spawn fn() {
-    C := import 'Channel';
-    for (i, 1..=5) { C.send(ch, i * 10) };
-    C.close(ch)
+    for (i, 1..=5) { Channel.send(ch, i * 10) };
+    Channel.close(ch)
 };
 
 // The parent consumes until the channel is closed and drained.

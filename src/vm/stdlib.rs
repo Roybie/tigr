@@ -28,6 +28,20 @@ pub fn names() -> &'static [&'static str] {
     &BUILTIN_NAMES
 }
 
+/// The names of the ambient stdlib modules — usable without an
+/// explicit `import`. The source-stdlib modules come first, then the
+/// public native modules; both sub-lists are stable, so a given build
+/// always assigns the same global index to a given module. Appended
+/// after [`names`] to form the full global namespace: the compiler
+/// resolves these as `Global`s, and the VM seeds each with a lazy
+/// placeholder that resolves-and-memoizes on first use.
+pub fn ambient_module_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> =
+        crate::vm::source_stdlib::names().to_vec();
+    v.extend_from_slice(crate::vm::native_modules::names());
+    v
+}
+
 /// Build the `Value::NativeFn` instances in the same order as `names`.
 pub fn builtins() -> Vec<Value> {
     BUILTINS

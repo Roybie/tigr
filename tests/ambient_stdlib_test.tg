@@ -1,0 +1,54 @@
+// tests/ambient_stdlib_test.tg — ambient stdlib: every public module is
+// usable WITHOUT an `import`. These tests deliberately reference modules
+// bare (no `X := import 'X'`); the compiler resolves them as globals and
+// the VM resolves+memoizes each on first use.
+//
+// Run directly (`tigr tests/ambient_stdlib_test.tg`) or via discovery
+// (`tigr test`).
+
+Test := import 'Test';
+
+Test.suite('ambient stdlib — bare use, no import', [
+    Test.case('a source module (Math) works ambiently', fn() {
+        Test.assert_eq(Math.max(3, 7), 7);
+        Test.assert_eq(Math.abs(-4), 4)
+    }),
+
+    Test.case('a native module (JSON) works ambiently', fn() {
+        Test.assert_eq(JSON.stringify([1, 2]), '[1,2]')
+    }),
+
+    Test.case('repeated reference resolves once and stays usable', fn() {
+        // Exercises the memoized LoadGlobal path across many uses.
+        acc := '';
+        for (i, 0..4) {
+            acc = acc + String.upper('x')
+        };
+        Test.assert_eq(acc, 'XXXX')
+    }),
+
+    Test.case('every public module resolves to an object', fn() {
+        mods := [
+            Array, Channel, Http, Iter, LocalChannel, Map, Math, Object,
+            Set, String, Test, Url, IO, Path, Time, DateTime, JSON,
+            Random, Bytes, BigInt, Os
+        ];
+        for (m, mods) {
+            Test.assert_eq(type(m), 'object')
+        }
+    }),
+]);
+
+Test.suite('ambient stdlib — shadowing and explicit import', [
+    Test.case('a local declaration shadows the ambient module', fn() {
+        Math := ${ max: fn(a, b) { 999 } };
+        Test.assert_eq(Math.max(3, 7), 999)
+    }),
+
+    Test.case('an explicit import still works (binds a local)', fn() {
+        S := import 'String';
+        Test.assert_eq(S.upper('hi'), 'HI');
+        // ...and the ambient binding is unaffected outside this scope.
+        Test.assert_eq(String.lower('HI'), 'hi')
+    }),
+]);

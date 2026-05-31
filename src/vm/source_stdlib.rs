@@ -11,6 +11,16 @@
 //! which resolve via `native_modules::resolve` exclusively — there's
 //! no source/native cycle.
 
+/// The bare names of every source-stdlib module, in a stable order.
+/// Used to seed the ambient global namespace (these modules are usable
+/// without an explicit `import`); must stay in sync with [`source`].
+pub fn names() -> &'static [&'static str] {
+    &[
+        "Array", "Channel", "Http", "Iter", "LocalChannel", "Map",
+        "Math", "Object", "Set", "String", "Test", "Url",
+    ]
+}
+
 /// Embedded source for a bare-name module, or `None` if not part of
 /// the source stdlib.
 pub fn source(name: &str) -> Option<&'static str> {

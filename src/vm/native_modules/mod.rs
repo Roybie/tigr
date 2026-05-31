@@ -43,6 +43,21 @@ use crate::vm::offload::BlockingJob;
 use crate::vm::socket::ReactorOp;
 use crate::vm::value::{Arity, NativeFn, NativeKind, Value, WaitKind};
 
+/// The bare names of the *public* native modules, in a stable order.
+/// Used to seed the ambient global namespace (usable without an
+/// explicit `import`). The `_Native*` backends are intentionally
+/// excluded — they stay import-only internals. `Os`/`Net` are listed
+/// unconditionally so the ambient name set (and thus global indices)
+/// is platform-independent; on targets where they are unavailable,
+/// [`resolve`] returns `None` and a reference fails at runtime with a
+/// clean "no module of that name" error, exactly as `import` does.
+pub fn names() -> &'static [&'static str] {
+    &[
+        "IO", "Path", "Time", "DateTime", "JSON", "Random", "Bytes",
+        "BigInt", "Os", "Net",
+    ]
+}
+
 /// Look up a bare-name module. Returns `None` if no native module of
 /// that name exists — callers should then fall back to filesystem
 /// resolution or surface an "module not found" error.

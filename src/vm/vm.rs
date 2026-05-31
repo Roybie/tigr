@@ -63,7 +63,12 @@ pub(crate) struct CallFrame {
 
 enum FrameKind {
     Function,
-    Import(PathBuf),
+    /// Evaluating an imported module. On `Return` the result is cached
+    /// against `key`. `ambient` is `Some(idx)` only when this frame was
+    /// pushed to lazily resolve an ambient module reference (a bare use
+    /// with no `import`): its `Return` also memoizes the module into
+    /// `globals[idx]` and clears that slot's lazy marker.
+    Import { key: PathBuf, ambient: Option<usize> },
     /// REPL session frame. Persistent — never popped, never closed —
     /// so locals declared by prior lines survive between Halts. The
     /// `try_catch` walker treats this frame as a wall so an uncaught
@@ -128,6 +133,31 @@ struct TryFrame {
 /// also pushes frames — the rare deep re-entrant Rust-stack case.
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
 
+/// Seed the globals vec: the built-in functions followed by a `Null`
+/// placeholder for each ambient stdlib module. The placeholders are
+/// never loaded directly — `LoadGlobal` consults the `ambient` table
+/// (see [`ambient_table`]) and resolves the module on first use,
+/// overwriting its placeholder. Order must match the compiler's globals
+/// name list (`stdlib::names()` then `stdlib::ambient_module_names()`).
+fn ambient_globals() -> Vec<Value> {
+    let mut g = stdlib::builtins();
+    g.extend(stdlib::ambient_module_names().iter().map(|_| Value::Null));
+    g
+}
+
+/// Build the lazy-module table parallel to [`ambient_globals`]: `None`
+/// for every built-in slot, then `Some(name)` for each ambient module.
+fn ambient_table() -> Vec<Option<Arc<str>>> {
+    let mut t: Vec<Option<Arc<str>>> =
+        stdlib::names().iter().map(|_| None).collect();
+    t.extend(
+        stdlib::ambient_module_names()
+            .iter()
+            .map(|n| Some(Arc::from(*n))),
+    );
+    t
+}
+
 pub struct Vm {
     frames: Vec<CallFrame>,
     /// Ceiling on `frames.len()`; see [`DEFAULT_MAX_CALL_DEPTH`]. Public
@@ -135,6 +165,12 @@ pub struct Vm {
     pub max_call_depth: usize,
     stack: Vec<Value>,
     globals: Vec<Value>,
+    /// Parallel to `globals`: `Some(name)` marks a global slot as an
+    /// unresolved ambient stdlib/host module (its `globals` entry is a
+    /// `Null` placeholder). `LoadGlobal` resolves it on first use, then
+    /// memoizes the module into `globals[idx]` and sets this to `None`.
+    /// Builtin and already-resolved slots are `None`.
+    ambient: Vec<Option<Arc<str>>>,
     open_upvalues: Vec<GcRef<UpvalueKind>>,
     /// Per-Vm cache of `import 'path'` results, keyed by absolute path.
     /// Spec §12 was no-caching in v0.2; v0.3 adds caching so a module
@@ -267,7 +303,8 @@ impl Vm {
             frames: Vec::with_capacity(64),
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             stack: Vec::with_capacity(256),
-            globals: stdlib::builtins(),
+            globals: ambient_globals(),
+            ambient: ambient_table(),
             open_upvalues: Vec::new(),
             module_cache: HashMap::new(),
             host_modules: HashMap::new(),
@@ -663,6 +700,137 @@ impl Vm {
         err
     }
 
+    /// Resolve a bare-name module (`import 'Name'`, or an ambient
+    /// reference with no `import`): cache hit, source stdlib, native
+    /// modules, host source, host native — built-ins win over host
+    /// registrations, which cannot shadow core. A synchronous hit
+    /// (cache / native / host native) pushes the module onto the stack;
+    /// a source module pushes an Import frame whose `Return` pushes the
+    /// value. `ambient`, when `Some(idx)`, also memoizes the resolved
+    /// module into `globals[idx]` and clears that slot's lazy marker —
+    /// the lazy-global path for ambient stdlib. The caller must
+    /// `continue` the dispatch loop afterwards; the importing frame's
+    /// `ip` is set to `ip` here so it resumes past the Import/LoadGlobal.
+    fn import_bare(
+        &mut self,
+        name: &str,
+        ip: usize,
+        ambient: Option<usize>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        // Resume the importing frame after the opcode, whether we push a
+        // value (sync) or an Import frame (source module).
+        self.frames.last_mut().unwrap().ip = ip;
+        let key = PathBuf::from(format!("<bare:{}>", name));
+        if let Some(cached) = self.module_cache.get(&key) {
+            let cached = cached.clone();
+            self.memoize_ambient(ambient, &cached);
+            self.stack.push(cached);
+            return Ok(());
+        }
+        // Currently mid-resolution (a module referencing itself before
+        // its `Return` cached it) — a cycle. Fail cleanly rather than
+        // recursing without bound.
+        if self.in_flight.contains(&key) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ImportFailed(
+                    name.to_string(),
+                    "circular import".into(),
+                ),
+                line,
+            ));
+        }
+        if let Some(source) = crate::vm::source_stdlib::source(name) {
+            return self.push_import_frame(
+                key,
+                name,
+                source,
+                format!("<stdlib:{}>", name),
+                ambient,
+                line,
+            );
+        }
+        if let Some(module) = crate::vm::native_modules::resolve(name) {
+            self.module_cache.insert(key, module.clone());
+            self.memoize_ambient(ambient, &module);
+            self.stack.push(module);
+            return Ok(());
+        }
+        // Host-registered source modules resolve after the built-in
+        // resolvers (so they cannot shadow core) but before host natives.
+        if let Some(source) = self.host_source_modules.get(name).cloned() {
+            return self.push_import_frame(
+                key,
+                name,
+                source.as_ref(),
+                format!("<host-stdlib:{}>", name),
+                ambient,
+                line,
+            );
+        }
+        // Host-registered native modules resolve last.
+        if let Some(module) = self.host_modules.get(name).cloned() {
+            self.module_cache.insert(key, module.clone());
+            self.memoize_ambient(ambient, &module);
+            self.stack.push(module);
+            return Ok(());
+        }
+        Err(RuntimeError::new(
+            RuntimeErrorKind::ImportFailed(
+                name.to_string(),
+                "no module of that name".into(),
+            ),
+            line,
+        ))
+    }
+
+    /// Compile a tigr-source module and push it as an `Import` frame on
+    /// this Vm. The frame's `Return` caches the result under `key` (and,
+    /// when `ambient` is `Some`, memoizes it into the global slot). The
+    /// importing frame's `ip` must already be committed by the caller.
+    fn push_import_frame(
+        &mut self,
+        key: PathBuf,
+        name: &str,
+        source: &str,
+        label: String,
+        ambient: Option<usize>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let sid = self.source_map.borrow_mut().add(label, source);
+        let main = match crate::vm::compile_source_with_id(source, None, sid) {
+            Ok(m) => m,
+            Err(e) => return Err(self.import_failed_from_inner(name, e, line)),
+        };
+        self.in_flight.insert(key.clone());
+        let mc = gc::alloc_closure(Closure {
+            function: Arc::new(main),
+            upvalues: Vec::new(),
+        });
+        let base = self.stack.len();
+        self.stack.push(Value::Function(mc));
+        self.frames.push(CallFrame {
+            closure: mc,
+            ip: 0,
+            base_slot: base,
+            try_frames: Vec::new(),
+            kind: FrameKind::Import { key, ambient },
+        });
+        Ok(())
+    }
+
+    /// Memoize a synchronously-resolved ambient module into its global
+    /// slot so subsequent references are a plain `LoadGlobal`. A no-op
+    /// for ordinary (`import`-driven) resolution where `ambient` is None.
+    fn memoize_ambient(&mut self, ambient: Option<usize>, module: &Value) {
+        if let Some(idx) = ambient {
+            self.globals[idx] = module.clone();
+            if let Some(slot) = self.ambient.get_mut(idx) {
+                *slot = None;
+            }
+        }
+    }
+
     /// Fill in `err.source` from the chunk on top of the call stack
     /// when it isn't already set. Called at the `exec` boundary —
     /// before `try_catch` may unwind frames.
@@ -757,8 +925,8 @@ impl Vm {
             // If we just abandoned an in-flight import, drop the
             // in-flight marker so subsequent imports of that path can
             // try again (otherwise the cycle-detection set would leak).
-            if let FrameKind::Import(path) = popped.kind {
-                self.in_flight.remove(&path);
+            if let FrameKind::Import { key, .. } = popped.kind {
+                self.in_flight.remove(&key);
             }
         }
         false
@@ -1041,9 +1209,16 @@ impl Vm {
                         // the result in the cache (spec §12 — v0.3 adds
                         // caching) and clear the in-flight marker so a
                         // sibling import of the same path is allowed.
-                        FrameKind::Import(path) => {
-                            self.module_cache.insert(path.clone(), result.clone());
-                            self.in_flight.remove(&path);
+                        FrameKind::Import { key, ambient } => {
+                            self.module_cache.insert(key.clone(), result.clone());
+                            self.in_flight.remove(&key);
+                            // A lazily-resolved ambient source module:
+                            // memoize it into its global slot so later
+                            // references are a plain `LoadGlobal`.
+                            if let Some(idx) = ambient {
+                                self.globals[idx] = result.clone();
+                                self.ambient[idx] = None;
+                            }
                         }
                         // An iterator-object `next()` call just returned.
                         // Interpret its `${ done, value }` result here
@@ -1575,6 +1750,18 @@ impl Vm {
                 OpCode::LoadGlobal => {
                     let idx = chunk.code[ip] as usize;
                     ip += 1;
+                    // An unresolved ambient module (stdlib/host, used
+                    // without `import`): resolve once and memoize into
+                    // the slot. Native/cached modules resolve inline;
+                    // source modules push an Import frame whose Return
+                    // writes the slot — so `continue` (the frame may
+                    // change) rather than falling through.
+                    if let Some(name) =
+                        self.ambient.get(idx).and_then(|o| o.clone())
+                    {
+                        self.import_bare(&name, ip, Some(idx), line)?;
+                        continue;
+                    }
                     self.stack.push(self.globals[idx].clone());
                 }
 
@@ -2129,115 +2316,15 @@ impl Vm {
                     };
 
                     // Bare names (no path separators or extension)
-                    // resolve in three steps:
-                    //   1. Cache hit under `<bare:Name>` key.
-                    //   2. Source stdlib (Array / Math / String).
-                    //      Compile the embedded `.tg` and push it as
-                    //      an Import frame — its Return caches.
-                    //   3. Native modules (IO / Os / Time / _Native*).
-                    //      Cache the resulting Object directly.
+                    // resolve via the shared helper — the same path the
+                    // ambient lazy-global `LoadGlobal` uses, here with no
+                    // global writeback (`ambient = None`).
                     let is_bare = !path_str.contains('/')
                         && !path_str.contains('\\')
                         && !path_str.contains('.');
                     if is_bare {
-                        let key = PathBuf::from(format!("<bare:{}>", path_str));
-                        if let Some(cached) = self.module_cache.get(&key) {
-                            self.stack.push(cached.clone());
-                            self.frames.last_mut().unwrap().ip = ip;
-                            continue;
-                        }
-                        if let Some(source) = crate::vm::source_stdlib::source(&path_str) {
-                            let sid = self.source_map.borrow_mut().add(
-                                format!("<stdlib:{}>", path_str),
-                                source,
-                            );
-                            let main = match crate::vm::compile_source_with_id(
-                                source, None, sid,
-                            ) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    return Err(self.import_failed_from_inner(
-                                        &path_str, e, line,
-                                    ));
-                                }
-                            };
-                            self.in_flight.insert(key.clone());
-                            let mc = gc::alloc_closure(Closure {
-                                function: Arc::new(main),
-                                upvalues: Vec::new(),
-                            });
-                            self.frames.last_mut().unwrap().ip = ip;
-                            let base = self.stack.len();
-                            self.stack.push(Value::Function(mc));
-                            self.frames.push(CallFrame {
-                                closure: mc,
-                                ip: 0,
-                                base_slot: base,
-                                try_frames: Vec::new(),
-                                kind: FrameKind::Import(key),
-                            });
-                            continue;
-                        }
-                        if let Some(module) = crate::vm::native_modules::resolve(&path_str) {
-                            self.module_cache.insert(key, module.clone());
-                            self.stack.push(module);
-                            self.frames.last_mut().unwrap().ip = ip;
-                            continue;
-                        }
-                        // Host-registered *source* modules resolve after
-                        // the built-in resolvers (so they cannot shadow
-                        // core) but before host natives. Compile the
-                        // embedded `.tg` and push it as an Import frame,
-                        // exactly like the source stdlib above; its
-                        // Return caches under the `<bare:Name>` key.
-                        if let Some(source) = self.host_source_modules.get(&*path_str).cloned() {
-                            let sid = self.source_map.borrow_mut().add(
-                                format!("<host-stdlib:{}>", path_str),
-                                &*source,
-                            );
-                            let main = match crate::vm::compile_source_with_id(
-                                &source, None, sid,
-                            ) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    return Err(self.import_failed_from_inner(
-                                        &path_str, e, line,
-                                    ));
-                                }
-                            };
-                            self.in_flight.insert(key.clone());
-                            let mc = gc::alloc_closure(Closure {
-                                function: Arc::new(main),
-                                upvalues: Vec::new(),
-                            });
-                            self.frames.last_mut().unwrap().ip = ip;
-                            let base = self.stack.len();
-                            self.stack.push(Value::Function(mc));
-                            self.frames.push(CallFrame {
-                                closure: mc,
-                                ip: 0,
-                                base_slot: base,
-                                try_frames: Vec::new(),
-                                kind: FrameKind::Import(key),
-                            });
-                            continue;
-                        }
-                        // Host-registered native modules resolve last, so
-                        // they cannot shadow a built-in. Cache under the
-                        // same `<bare:Name>` key as natives.
-                        if let Some(module) = self.host_modules.get(&*path_str).cloned() {
-                            self.module_cache.insert(key, module.clone());
-                            self.stack.push(module);
-                            self.frames.last_mut().unwrap().ip = ip;
-                            continue;
-                        }
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::ImportFailed(
-                                path_str.to_string(),
-                                "no module of that name".into(),
-                            ),
-                            line,
-                        ));
+                        self.import_bare(&path_str, ip, None, line)?;
+                        continue;
                     }
 
                     // File path: resolve → cache → in-flight check →
@@ -2304,7 +2391,7 @@ impl Vm {
                         ip: 0,
                         base_slot: base,
                         try_frames: Vec::new(),
-                        kind: FrameKind::Import(path),
+                        kind: FrameKind::Import { key: path, ambient: None },
                     });
                     continue;
                 }
@@ -3496,7 +3583,7 @@ fn trace_frame(frame: &CallFrame, m: &mut Marker) {
     match &frame.kind {
         FrameKind::IterPull { iter, .. } => m.mark_iter(*iter),
         FrameKind::SpreadPull { target, .. } => m.mark_array(*target),
-        FrameKind::Function | FrameKind::Import(_) | FrameKind::Repl => {}
+        FrameKind::Function | FrameKind::Import { .. } | FrameKind::Repl => {}
     }
 }
 

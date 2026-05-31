@@ -257,9 +257,16 @@ impl Compiler {
     }
 
     fn new(base_dir: Option<PathBuf>, source: SourceId) -> Self {
+        // The global namespace is the built-in functions followed by the
+        // ambient stdlib modules. Appending the module names lets a bare
+        // `String.format(...)` resolve as a `Global` (no `import`); the
+        // VM seeds matching slots with lazy placeholders. The two lists
+        // must stay in the same order as the VM's globals vec.
+        let mut globals = stdlib::names().to_vec();
+        globals.extend(stdlib::ambient_module_names());
         Compiler {
             funcs: Vec::new(),
-            globals: stdlib::names().to_vec(),
+            globals,
             base_dir,
             source,
             fn_name_hint: None,

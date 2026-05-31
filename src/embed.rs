@@ -85,6 +85,19 @@ impl Session {
         self.vm.register_module(name, module);
     }
 
+    /// Register a host-provided **pure-tigr source** module under a bare
+    /// `import` name. `import '<name>'` compiles and evaluates `src` on
+    /// first use and caches the result, resolving exactly as the
+    /// built-in `Math` / `Array` modules do. Call **before**
+    /// [`load`](Session::load)ing any program that imports it. A host
+    /// module can never shadow a built-in; see
+    /// [`Vm::register_source_module`]. Use this to ship framework
+    /// helpers written in tigr — ones that must `wait` or close over
+    /// callbacks, which a native module cannot express.
+    pub fn register_source_module(&mut self, name: &str, src: &str) {
+        self.vm.register_source_module(name, src);
+    }
+
     /// Seed the pseudo-random stream that the `Random` module and the
     /// bare `rand()` builtin both draw from (see [`crate::vm::rng`]).
     /// This lets the *host* own the seed — record it at session start
@@ -401,6 +414,36 @@ mod tests {
         assert!(Value::Int(1).get_field("x").is_none());
         // RuntimeErrorKind is exported for host-built natives.
         let _ = RuntimeError::new(RuntimeErrorKind::TypeMismatch("x".into()), 0);
+    }
+
+    /// A host *source* module is compiled on first import, resolves
+    /// under its bare name, and its exported functions are callable —
+    /// the delivery path for pure-tigr framework helpers. Importing it
+    /// twice evaluates it only once (the second hits the module cache).
+    #[test]
+    fn registers_and_imports_host_source_module() {
+        let mut s = Session::new();
+        s.register_source_module(
+            "Num",
+            "lerp := fn(a, b, t) { a + (b - a) * t };\n${ lerp: lerp }",
+        );
+        s.load("Num := import 'Num'; mid := Num.lerp(0, 10, 0.5); again := import 'Num';")
+            .expect("load");
+        match s.binding("mid").expect("mid") {
+            Value::Float(v) => assert_eq!(v, 5.0),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    /// A host source module named after a built-in must NOT shadow it:
+    /// the source stdlib resolves first. A bogus `Math` whose `abs`
+    /// returns -1 must lose to the real `Math.abs` (returns 5).
+    #[test]
+    fn host_source_module_does_not_shadow_builtin() {
+        let mut s = Session::new();
+        s.register_source_module("Math", "${ abs: fn(x) { 0 - 1 } }");
+        s.load("Math := import 'Math'; v := Math.abs(0 - 5);").expect("load");
+        assert_eq!(int(&s.binding("v").expect("v")), 5);
     }
 
     /// A host module named after a built-in must NOT shadow it: the

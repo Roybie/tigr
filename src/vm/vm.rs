@@ -146,6 +146,16 @@ pub struct Vm {
     /// shadow a core module. Empty on the wasm playground (nothing
     /// registers there), so this field is free on every target.
     host_modules: HashMap<String, Value>,
+    /// Pure-tigr source modules registered by an embedding host via
+    /// [`Vm::register_source_module`]. Consulted by the bare-name
+    /// `import` path *after* the built-in source stdlib and native
+    /// modules but before [`host_modules`](Vm::host_modules), so a host
+    /// can ship its own importable `.tg` modules (e.g. a `Tween` written
+    /// in tigr) without one ever shadowing a core module. The stored
+    /// source is compiled lazily on first import and the result cached
+    /// in `module_cache`, exactly like the embedded source stdlib. Empty
+    /// on the wasm playground, so the field is free on every target.
+    host_source_modules: HashMap<String, Arc<str>>,
     /// Paths currently being evaluated. A second import of any of
     /// these is a circular-import error (catchable via `try`).
     in_flight: HashSet<PathBuf>,
@@ -261,6 +271,7 @@ impl Vm {
             open_upvalues: Vec::new(),
             module_cache: HashMap::new(),
             host_modules: HashMap::new(),
+            host_source_modules: HashMap::new(),
             in_flight: HashSet::new(),
             source_map,
             scheduler: Scheduler::new(),
@@ -287,6 +298,20 @@ impl Vm {
     /// running any program that imports the name.
     pub fn register_module(&mut self, name: &str, module: Value) {
         self.host_modules.insert(name.to_string(), module);
+    }
+
+    /// Register a host-provided **pure-tigr source** module under a bare
+    /// `import` name. `import '<name>'` compiles and evaluates `src` the
+    /// first time it is reached and caches the resulting module value,
+    /// resolving exactly as the built-in `Math` / `Array` source modules
+    /// do. Like [`register_module`](Vm::register_module) it resolves
+    /// after the built-in resolvers, so a host source module can never
+    /// shadow a core module. Use this to ship framework helpers written
+    /// in tigr (a `Tween` that must `wait`, easing curves) that a native
+    /// module could not express. Call before running any program that
+    /// imports the name.
+    pub fn register_source_module(&mut self, name: &str, src: &str) {
+        self.host_source_modules.insert(name.to_string(), Arc::from(src));
     }
 
     /// Call a tigr closure (or native) with `args`, re-entrantly, from
@@ -2159,9 +2184,47 @@ impl Vm {
                             self.frames.last_mut().unwrap().ip = ip;
                             continue;
                         }
-                        // Host-registered modules resolve last, so they
-                        // cannot shadow a built-in. Cache under the same
-                        // `<bare:Name>` key as natives.
+                        // Host-registered *source* modules resolve after
+                        // the built-in resolvers (so they cannot shadow
+                        // core) but before host natives. Compile the
+                        // embedded `.tg` and push it as an Import frame,
+                        // exactly like the source stdlib above; its
+                        // Return caches under the `<bare:Name>` key.
+                        if let Some(source) = self.host_source_modules.get(&*path_str).cloned() {
+                            let sid = self.source_map.borrow_mut().add(
+                                format!("<host-stdlib:{}>", path_str),
+                                &*source,
+                            );
+                            let main = match crate::vm::compile_source_with_id(
+                                &source, None, sid,
+                            ) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    return Err(self.import_failed_from_inner(
+                                        &path_str, e, line,
+                                    ));
+                                }
+                            };
+                            self.in_flight.insert(key.clone());
+                            let mc = gc::alloc_closure(Closure {
+                                function: Arc::new(main),
+                                upvalues: Vec::new(),
+                            });
+                            self.frames.last_mut().unwrap().ip = ip;
+                            let base = self.stack.len();
+                            self.stack.push(Value::Function(mc));
+                            self.frames.push(CallFrame {
+                                closure: mc,
+                                ip: 0,
+                                base_slot: base,
+                                try_frames: Vec::new(),
+                                kind: FrameKind::Import(key),
+                            });
+                            continue;
+                        }
+                        // Host-registered native modules resolve last, so
+                        // they cannot shadow a built-in. Cache under the
+                        // same `<bare:Name>` key as natives.
                         if let Some(module) = self.host_modules.get(&*path_str).cloned() {
                             self.module_cache.insert(key, module.clone());
                             self.stack.push(module);

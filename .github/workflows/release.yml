@@ -57,6 +57,14 @@ jobs:
             echo "::error::tag v$tag does not match Cargo.toml version $crate" >&2
             exit 1
           fi
+          # A version bump that forgets to regenerate Cargo.lock makes every
+          # target fail seconds into the `--locked` build. Catch it up front.
+          locked="$(sed -n '/^name = "tigr"$/{n;s/version = "\(.*\)"/\1/p;}' Cargo.lock | head -1)"
+          echo "Cargo.lock=$locked"
+          if [ "$locked" != "$crate" ]; then
+            echo "::error::Cargo.lock pins tigr at $locked but Cargo.toml is $crate — run \`cargo update -p tigr\` and commit" >&2
+            exit 1
+          fi
 
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
@@ -85,9 +93,12 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           # Windows produces `.exe` binaries; every other target produces
-          # bare names. `tar` is available on the windows-latest runner.
+          # bare names. `tar` is available on the windows-latest runner, but
+          # GNU tar reads the `D:\...` workspace path as a remote `host:path`
+          # spec ("Cannot connect to D: resolve failed") — `--force-local`
+          # tells it the colon is a drive letter, not a host separator.
           if [ -f tigr.exe ]; then
-            tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr.exe tigr-lsp.exe
+            tar --force-local -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr.exe tigr-lsp.exe
           else
             tar -czf "$GITHUB_WORKSPACE/tigr-${{ matrix.target }}.tar.gz" tigr tigr-lsp
           fi

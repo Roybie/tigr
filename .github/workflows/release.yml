@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Guard against shipping a release whose `tigr --version` would lie:
       # `--version` reads CARGO_PKG_VERSION, so the tag must match Cargo.toml.
@@ -106,7 +106,7 @@ jobs:
       # softprops/action-gh-release creates the release for the pushed tag
       # on first upload and appends assets on subsequent matrix jobs.
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: tigr-${{ matrix.target }}.tar.gz

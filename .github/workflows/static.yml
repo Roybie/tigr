@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # web/pkg/ is git-ignored (wasm-pack generates a `*` .gitignore in
       # it), so the playground's tigr.js + tigr_bg.wasm must be built

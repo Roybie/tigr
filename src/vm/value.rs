@@ -533,6 +533,23 @@ impl Value {
         }
     }
 
+    /// Set a field of an `Object` value by key, inserting it if absent and
+    /// updating in place (keeping its position) if present. Returns `false`,
+    /// touching nothing, if `self` is not an object. The write complement of
+    /// [`get_field`](Value::get_field): host/embedder code can update a
+    /// caller-owned object in place (e.g. a `${ x, y }` rewritten every frame),
+    /// so a hot per-entity native need not allocate a fresh object to return.
+    /// Objects are reference values, so the caller observes the change.
+    pub fn set_field(&self, key: &str, value: Value) -> bool {
+        match self {
+            Value::Object(o) => {
+                o.borrow_mut().insert(key.into(), value);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Truthiness per spec §5. Lua-style: only `null` and `false` are
     /// falsy. Everything else — including `0`, `0.0`, `''`, `[]`, `${}`,
     /// empty ranges/maps/sets — is truthy. Test emptiness with `#x`.

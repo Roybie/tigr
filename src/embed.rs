@@ -511,8 +511,9 @@ mod tests {
     }
 
     /// Host-facing helpers: `Value::get_field` reads an `Object` field,
-    /// and `RuntimeErrorKind` is reachable from `embed::*` so a host can
-    /// build native errors with the same idiom the stdlib natives use.
+    /// `Value::set_field` writes one in place (a host updating a caller-owned
+    /// object), and `RuntimeErrorKind` is reachable from `embed::*` so a host
+    /// can build native errors with the same idiom the stdlib natives use.
     #[test]
     fn object_field_read_and_error_kind() {
         let mut s = Session::new();
@@ -523,6 +524,17 @@ mod tests {
         assert!(cfg.get_field("missing").is_none());
         // A non-object yields None rather than panicking.
         assert!(Value::Int(1).get_field("x").is_none());
+
+        // set_field updates an existing field in place, and the object is a
+        // reference value, so the binding the program holds observes it.
+        assert!(cfg.set_field("width", Value::Int(800)));
+        assert!(matches!(cfg.get_field("width"), Some(Value::Int(800))));
+        // It also inserts an absent key, and reports false on a non-object
+        // (leaving it untouched) rather than panicking.
+        assert!(cfg.set_field("height", Value::Int(600)));
+        assert!(matches!(cfg.get_field("height"), Some(Value::Int(600))));
+        assert!(!Value::Int(1).set_field("x", Value::Int(0)));
+
         // RuntimeErrorKind is exported for host-built natives.
         let _ = RuntimeError::new(RuntimeErrorKind::TypeMismatch("x".into()), 0);
     }

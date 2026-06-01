@@ -27,6 +27,7 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -98,6 +99,22 @@ impl Session {
         self.vm.register_source_module(name, src);
     }
 
+    /// Install a host resolver for *path* imports (`import './player'`,
+    /// `import 'a/b'`). The resolver is handed the resolved, normalised,
+    /// forward-slashed path and returns the module's source, or `None` for
+    /// "not found" (an import error). Bare-name imports (the stdlib and the
+    /// `register_*_module` names) never consult it. Use this to serve a
+    /// game's sibling `.tg` files from a bundle, so an exported build
+    /// resolves a multi-file game the same way a dev filesystem build does;
+    /// see [`Vm::set_import_loader`]. Call before loading a program that
+    /// imports a path.
+    pub fn set_import_loader<F>(&mut self, loader: F)
+    where
+        F: Fn(&str) -> Option<String> + 'static,
+    {
+        self.vm.set_import_loader(loader);
+    }
+
     /// Seed the pseudo-random stream that the `Random` module and the
     /// bare `rand()` builtin both draw from (see [`crate::vm::rng`]).
     /// This lets the *host* own the seed — record it at session start
@@ -135,6 +152,10 @@ impl Session {
 
     fn load_labeled(&mut self, label: String, source: &str) -> Result<(), Error> {
         self.load_no += 1;
+        // The label is the source's name (the game's file path for a host
+        // load), so its directory is where this program's relative imports
+        // resolve — the same base dir a file-loaded program would get.
+        let base_dir = base_dir_from_label(&label);
         let sid = self.sources.borrow_mut().add(label, source);
 
         let tokens = Lexer::new(source).tokenize().map_err(|mut e| {
@@ -157,6 +178,7 @@ impl Session {
             &self.bindings,
             sid,
             &host_ambient,
+            base_dir,
         )?;
 
         let closure = crate::vm::gc::alloc_closure(Closure {
@@ -221,6 +243,7 @@ impl Session {
 
     fn reload_labeled(&mut self, label: String, source: &str) -> Result<(), String> {
         self.load_no += 1;
+        let base_dir = base_dir_from_label(&label);
         let sid = self.sources.borrow_mut().add(label, source);
 
         // 1. Compile off to the side, against *empty* prior bindings —
@@ -239,7 +262,7 @@ impl Session {
             fold::fold_program(&mut program);
             let host_ambient = self.vm.ambient_host_names().to_vec();
             let compiled = Compiler::compile_repl_with_ambient(
-                &program, &empty, sid, &host_ambient,
+                &program, &empty, sid, &host_ambient, base_dir.clone(),
             )?;
             Ok(compiled)
         })();
@@ -367,6 +390,18 @@ impl Session {
     pub fn vm(&mut self) -> &mut Vm {
         &mut self.vm
     }
+}
+
+/// The directory a loaded program's relative imports resolve against,
+/// derived from its source label. A label that is a bare name with no
+/// directory (`<host:1>`, `game.tg`) yields `None`, matching the prior
+/// behaviour where string-loaded source had no base dir; a label that is a
+/// path (`games/comet/comet.tg`) yields its parent.
+fn base_dir_from_label(label: &str) -> Option<PathBuf> {
+    Path::new(label)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
 }
 
 impl Default for Session {
@@ -520,6 +555,48 @@ mod tests {
         s.register_source_module("Math", "${ abs: fn(x) { 0 - 1 } }");
         s.load("Math := import 'Math'; v := Math.abs(0 - 5);").expect("load");
         assert_eq!(int(&s.binding("v").expect("v")), 5);
+    }
+
+    /// A host import loader serves a *path* import out of memory instead
+    /// of the filesystem — the delivery path for a multi-file game's
+    /// sibling `.tg` files in an exported bundle. Imports resolve against
+    /// the entry's directory, so `./sub/lib` from `games/g/main.tg` becomes
+    /// the normalised key `games/g/sub/lib.tg`; a miss is an import error.
+    #[test]
+    fn import_loader_serves_path_modules() {
+        let mut s = Session::new();
+        s.set_import_loader(|key| match key {
+            "games/g/sub/lib.tg" => Some("${ answer: 42 }".to_owned()),
+            _ => None,
+        });
+        s.load_named(
+            "games/g/main.tg",
+            "Lib := import './sub/lib'; result := Lib.answer;",
+        )
+        .expect("load");
+        assert_eq!(int(&s.binding("result").expect("result")), 42);
+    }
+
+    /// A relative `import './lib'` resolves against the entry's directory
+    /// (taken from its label), normalised, then handed to the loader — so a
+    /// string-loaded game's relative imports work the way a file-loaded
+    /// one's would.
+    #[test]
+    fn import_loader_relative_uses_entry_base_dir() {
+        let mut s = Session::new();
+        s.set_import_loader(|key| (key == "games/g/lib.tg").then(|| "${ v: 7 }".to_owned()));
+        s.load_named("games/g/main.tg", "Lib := import './lib'; r := Lib.v;")
+            .expect("load");
+        assert_eq!(int(&s.binding("r").expect("r")), 7);
+    }
+
+    /// A path import the loader cannot resolve is a clean import error, not
+    /// a silent fall-through to the filesystem.
+    #[test]
+    fn import_loader_miss_is_an_error() {
+        let mut s = Session::new();
+        s.set_import_loader(|_| None);
+        assert!(s.load_named("g/main.tg", "X := import './nope';").is_err());
     }
 
     /// A host module named after a built-in must NOT shadow it: the

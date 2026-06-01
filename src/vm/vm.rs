@@ -197,6 +197,17 @@ pub struct Vm {
     /// in `module_cache`, exactly like the embedded source stdlib. Empty
     /// on the wasm playground, so the field is free on every target.
     host_source_modules: HashMap<String, Arc<str>>,
+    /// Optional host resolver for *path* imports (`import './player'`,
+    /// `import 'a/b'`). When set, the Import opcode hands it the resolved,
+    /// normalised path (forward-slashed) and uses the returned source
+    /// instead of reading the filesystem; `None` from the resolver is an
+    /// import error. When unset, path imports read the filesystem as
+    /// before. This lets an embedder serve a game's sibling `.tg` files
+    /// out of a bundle (purr's exported builds) the same way
+    /// [`register_source_module`](Vm::register_source_module) serves
+    /// bare-name modules. Bare-name imports never consult it.
+    #[allow(clippy::type_complexity)]
+    import_loader: Option<Box<dyn Fn(&str) -> Option<String>>>,
     /// Paths currently being evaluated. A second import of any of
     /// these is a circular-import error (catchable via `try`).
     in_flight: HashSet<PathBuf>,
@@ -315,6 +326,7 @@ impl Vm {
             module_cache: HashMap::new(),
             host_modules: HashMap::new(),
             host_source_modules: HashMap::new(),
+            import_loader: None,
             in_flight: HashSet::new(),
             source_map,
             scheduler: Scheduler::new(),
@@ -357,6 +369,21 @@ impl Vm {
     pub fn register_source_module(&mut self, name: &str, src: &str) {
         self.host_source_modules.insert(name.to_string(), Arc::from(src));
         self.register_ambient_module(name);
+    }
+
+    /// Install a host resolver for *path* imports. The Import opcode hands
+    /// it the resolved, normalised, forward-slashed path of an
+    /// `import './x'` / `import 'a/b'` and uses the returned source instead
+    /// of reading the filesystem; `None` is an import error. Bare-name
+    /// imports (the stdlib and `register_*module` names) never consult it.
+    /// Set this to serve a game's sibling `.tg` files from a bundle, so an
+    /// exported build resolves them the same way a dev filesystem build
+    /// does. Call before running any program that imports a path.
+    pub fn set_import_loader<F>(&mut self, loader: F)
+    where
+        F: Fn(&str) -> Option<String> + 'static,
+    {
+        self.import_loader = Some(Box::new(loader));
     }
 
     /// Give a host-registered module an ambient global slot so it is
@@ -2384,6 +2411,11 @@ impl Vm {
                     if path.extension().is_none() {
                         path.set_extension("tg");
                     }
+                    // Collapse `.`/`..` lexically so the cache key and the
+                    // host-loader key are clean (`a/./b` -> `a/b`); this also
+                    // keeps a relative import's key stable regardless of how
+                    // it was written.
+                    path = normalize_import_path(&path);
                     if let Some(cached) = self.module_cache.get(&path) {
                         self.stack.push(cached.clone());
                         self.frames.last_mut().unwrap().ip = ip;
@@ -2400,11 +2432,40 @@ impl Vm {
                     }
                     // Scope the mutable source-map borrow tightly so
                     // `import_failed_from_inner` can re-borrow immutably
-                    // when rendering the inner error on the Err path.
-                    let compile_result = crate::vm::compile_file_into(
-                        &path,
-                        &mut self.source_map.borrow_mut(),
-                    );
+                    // when rendering the inner error on the Err path. A host
+                    // import loader, when set, is authoritative: it resolves
+                    // the path (e.g. out of a bundle) instead of the
+                    // filesystem, and a miss is an import error rather than a
+                    // silent fall-through to disk.
+                    let compile_result = match &self.import_loader {
+                        Some(loader) => {
+                            let key = path.to_string_lossy().replace('\\', "/");
+                            match loader(&key) {
+                                Some(src) => {
+                                    let sid = self
+                                        .source_map
+                                        .borrow_mut()
+                                        .add_path(&path, src.clone());
+                                    crate::vm::compile_source_with_id(
+                                        &src,
+                                        path.parent().map(PathBuf::from),
+                                        sid,
+                                    )
+                                }
+                                None => Err(crate::vm::error::Error::Runtime(RuntimeError::new(
+                                    RuntimeErrorKind::ImportFailed(
+                                        path.display().to_string(),
+                                        "not found in host import source".into(),
+                                    ),
+                                    0,
+                                ))),
+                            }
+                        }
+                        None => crate::vm::compile_file_into(
+                            &path,
+                            &mut self.source_map.borrow_mut(),
+                        ),
+                    };
                     let main = match compile_result {
                         Ok(m) => m,
                         Err(e) => {
@@ -3592,6 +3653,26 @@ impl Vm {
             self.collect();
         }
     }
+}
+
+/// Lexically collapse `.` and `..` components of a resolved import path,
+/// so `a/./b` becomes `a/b` and `a/b/../c` becomes `a/c`. Purely textual
+/// (it never touches the filesystem), which is what the cache key and the
+/// host import loader want: a stable, clean key independent of how the
+/// import was spelled.
+fn normalize_import_path(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn underflow(line: u32) -> RuntimeError {

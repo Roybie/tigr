@@ -405,7 +405,7 @@ impl Compiler {
         existing_locals: &[(String, u8)],
         source: SourceId,
     ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
-        Self::compile_repl_with_ambient(program, existing_locals, source, &[])
+        Self::compile_repl_with_ambient(program, existing_locals, source, &[], None)
     }
 
     /// REPL compile that also makes `host_ambient` module names resolve
@@ -413,13 +413,20 @@ impl Compiler {
     /// names occupy global slots just past the built-ins and stdlib, in
     /// the same order the host registered them with the VM, so the
     /// compiled `LoadGlobal` indices line up with the VM's globals vec.
+    /// `base_dir`, when set, is the directory a relative `import` in this
+    /// program resolves against. The plain REPL passes `None` (relative
+    /// imports resolve against the process cwd); an embedding host that
+    /// knows where the source came from (its file path) passes that
+    /// directory, so a string-loaded program's `import './sibling'` still
+    /// resolves the way a file-loaded one would.
     pub fn compile_repl_with_ambient(
         program: &Block,
         existing_locals: &[(String, u8)],
         source: SourceId,
         host_ambient: &[String],
+        base_dir: Option<PathBuf>,
     ) -> Result<(Function, Vec<(String, u8)>), CompileError> {
-        let mut c = Compiler::new(None, source);
+        let mut c = Compiler::new(base_dir, source);
         c.host_globals = host_ambient.to_vec();
         let result = (|| {
         c.push_function(0, Some("<repl>".to_string()));

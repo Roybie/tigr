@@ -32,8 +32,6 @@ print('grades =', grades);                      // => [pass, fail, pass]
 // 'Iter' runs each element through the whole chain without ever
 // building the intermediate arrays.
 
-Iter := import 'Iter';
-
 // 'x |> f(args)' is simply 'f(x, args)' read top to bottom.
 double := fn(x) { x * 2 };
 print('piped =', 5 |> double() |> double());     // => 20
@@ -148,7 +146,6 @@ naturals := gen fn() {
   i := 0;
   while true { yield i; i = i + 1; };
 };
-Iter := import 'Iter';
 print('first 6 =', naturals() |> Iter.take(6) |> Iter.collect());
 // => [0, 1, 2, 3, 4, 5]
 `,
@@ -174,19 +171,17 @@ print('squares =', squares);
   channels: `// A 'LocalChannel' passes values between green threads. 'recv' on an
 // empty channel yields, so the producer is free to run and fill it.
 
-LC := import 'LocalChannel';
-
-ch := LC.new();
+ch := LocalChannel.new();
 producer := go fn() {
-  for (i, 1..=5) { LC.send(ch, i * 10) };
-  LC.close(ch);
+  for (i, 1..=5) { LocalChannel.send(ch, i * 10) };
+  LocalChannel.close(ch);
 };
 
 // Drain the channel until the producer closes it.
 received := [];
 draining := true;
 while draining {
-  msg := LC.recv(ch);
+  msg := LocalChannel.recv(ch);
   if msg.closed == true {
     draining = false
   } else {

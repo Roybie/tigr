@@ -3,6 +3,7 @@ name = "tigr"
 version = "0.22.1"
 authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
 exclude = ["examples/*"]
 
 # Option A workspace: the `tigr` package stays the root crate (so the

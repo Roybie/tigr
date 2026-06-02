@@ -150,7 +150,14 @@ impl Session {
         self.load_labeled(name.to_owned(), source)
     }
 
-    fn load_labeled(&mut self, label: String, source: &str) -> Result<(), Error> {
+    /// Compile and run one chunk against the live session, returning the
+    /// value it produced. The shared engine behind [`load`](Session::load),
+    /// which discards the value, and [`eval_line`](Session::eval_line),
+    /// which returns it for an interactive console to display. Every chunk
+    /// is compiled against the persistent frame-0 bindings, so it resolves
+    /// and mutates the same top-level state earlier chunks (and the running
+    /// program) declared.
+    fn eval_labeled(&mut self, label: String, source: &str) -> Result<Value, Error> {
         self.load_no += 1;
         // The label is the source's name (the game's file path for a host
         // load), so its directory is where this program's relative imports
@@ -192,12 +199,30 @@ impl Session {
         let snapshot_len = 1 + self.bindings.len();
 
         match self.vm.run_repl_line(closure, snapshot_len) {
-            Ok(_) => {
+            Ok(value) => {
                 self.bindings.extend(new_bindings);
-                Ok(())
+                Ok(value)
             }
             Err(e) => Err(Error::Runtime(e)),
         }
+    }
+
+    fn load_labeled(&mut self, label: String, source: &str) -> Result<(), Error> {
+        self.eval_labeled(label, source).map(|_| ())
+    }
+
+    /// Evaluate a single line against the live session and return its
+    /// value, for an interactive host console (a REPL into a running
+    /// program). Lines share the persistent frame-0 scope with the loaded
+    /// program exactly as repeated [`load`](Session::load) calls do: a bare
+    /// expression returns its value, `x := 1` adds a binding later lines and
+    /// the running program can see, and `x = 8` mutates an existing global
+    /// the program already reads. On a lex/parse/compile/uncaught-runtime
+    /// error the frame is left intact and no binding is committed; render
+    /// the returned [`Error`] against [`sources`](Session::sources).
+    pub fn eval_line(&mut self, source: &str) -> Result<Value, Error> {
+        let label = format!("<console:{}>", self.load_no + 1);
+        self.eval_labeled(label, source)
     }
 
     /// Hot-reload: replace the whole program with `source`, preserving
@@ -667,6 +692,35 @@ mod tests {
         assert_eq!(int(&s.binding("x").expect("x")), 10);
         let r = s.call("dbl", vec![Value::Int(21)]).expect("call dbl");
         assert_eq!(int(&r), 42);
+    }
+
+    /// `eval_line` evaluates in the live frame-0 scope: a bare expression
+    /// returns its value, an assignment mutates a global the loaded program
+    /// already reads, and a `:=` binding is visible to later eval lines.
+    /// This is what lets a host console be a REPL into a running program.
+    #[test]
+    fn eval_line_shares_the_live_scope() {
+        let mut s = Session::new();
+        s.load("x := 10; bump := fn(){ x = x + 1 };").expect("load");
+
+        // A bare expression returns its value.
+        assert_eq!(int(&s.eval_line("x").expect("read x")), 10);
+
+        // An assignment mutates the global the program sees: calling the
+        // loaded `bump` now starts from the console-set value.
+        s.eval_line("x = 100").expect("assign x");
+        assert_eq!(int(&s.binding("x").expect("x")), 100);
+        s.call("bump", vec![]).expect("bump");
+        assert_eq!(int(&s.binding("x").expect("x")), 101);
+
+        // A new binding from one line is visible to the next.
+        s.eval_line("y := x * 2").expect("declare y");
+        assert_eq!(int(&s.eval_line("y").expect("read y")), 202);
+
+        // An error leaves the session intact and renders against the sources.
+        let err = s.eval_line("nope_unbound").expect_err("unbound");
+        assert!(!err.render(&s.sources()).is_empty());
+        assert_eq!(int(&s.binding("x").expect("x still 101")), 101);
     }
 
     /// `seed_rng` pins tigr's shared stream from the host side, so the

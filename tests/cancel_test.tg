@@ -1,0 +1,181 @@
+// tests/cancel_test.tg — cooperative green-thread cancellation: `cancel`.
+//
+// `cancel(handle)` requests cancellation of a `go` coroutine. It is
+// non-blocking and idempotent: it marks the handle so that the next time
+// the coroutine resumes *from a park* — any park, not just `wait`:
+// `yield`, `join`, channel recv, blocking IO, or the host's `wait_frame`
+// — a catchable `cancelled` is raised at that park's call site, unwinding
+// the body through the normal error path. A coroutine that never parks
+// again runs to completion (no preemption). An uncaught `cancelled`
+// terminates only that coroutine, recorded so a later `join` reports
+// `${cancelled: true}` rather than re-raising — it never aborts the actor.
+//
+// Each case fully drains the coroutines it spawns (joining them, after
+// cancelling where needed) so the scheduler queue is empty between cases.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+Test := import 'Test';
+
+[
+    Test.suite('cancel — basics', [
+        Test.case('cancel mid-wait: later statements never run', fn() {
+            log := [];
+            h := go fn() {
+                log = log + ['before'];
+                wait(10);
+                log = log + ['after'];   // unreachable: cancelled at wait
+            };
+            while (#log == 0) { yield };   // let it reach the wait
+            cancel(h);
+            r := join(h);
+            Test.assert_eq([log, r], [['before'], ${ cancelled: true }])
+        }),
+
+        Test.case('cancel returns true for a still-live coroutine', fn() {
+            h := go fn() { wait(10) };
+            while (false) { yield };
+            yield;                         // let it park at the wait
+            marked := cancel(h);
+            join(h);                       // drain
+            Test.assert(marked)
+        }),
+
+        Test.case('cancel of a finished coroutine is a no-op (false)', fn() {
+            h := go fn() { 42 };
+            Test.assert_eq(join(h), 42);   // run it to completion first
+            Test.assert_eq(cancel(h), false)
+        }),
+
+        Test.case('cancel of a non-handle raises type_mismatch', fn() {
+            kind := try { cancel(42); null } catch (e) { e.kind };
+            Test.assert_eq(kind, 'type_mismatch')
+        }),
+    ]),
+
+    Test.suite('cancel — fires at any park', [
+        Test.case('cancellation fires at a wait park', fn() {
+            h := go fn() { wait(10); 'ran' };
+            yield;                         // reach the wait
+            cancel(h);
+            Test.assert_eq(join(h), ${ cancelled: true })
+        }),
+
+        Test.case('cancellation fires at a yield park', fn() {
+            // a coroutine that only ever yields is still cancellable —
+            // the checkpoint is the generic park, not the `wait` builtin.
+            h := go fn() {
+                c := 0;
+                while (true) { c = c + 1; yield };
+            };
+            yield;                         // let it spin once
+            cancel(h);
+            Test.assert_eq(join(h), ${ cancelled: true })
+        }),
+
+        Test.case('cancellation fires at a join park', fn() {
+            // `waiter` parks blocked on `slow`; cancelling `waiter` wakes
+            // it with `cancelled` at the `join` call site.
+            slow := go fn() { wait(10); 1 };
+            waiter := go fn() { join(slow); 'returned' };
+            yield; yield;                  // let waiter reach its join
+            cancel(waiter);
+            r := join(waiter);
+            cancel(slow);                  // drain the still-parked sibling
+            join(slow);
+            Test.assert_eq(r, ${ cancelled: true })
+        }),
+    ]),
+
+    Test.suite('cancel — semantics', [
+        Test.case('cancelled is catchable and reified as kind cancelled', fn() {
+            h := go fn() {
+                try { wait(10); 'no' } catch (e) { e.kind }
+            };
+            yield;
+            cancel(h);
+            Test.assert_eq(join(h), 'cancelled')
+        }),
+
+        Test.case('a catch around the park may clean up and continue', fn() {
+            steps := [];
+            h := go fn() {
+                try { wait(10) } catch (e) {
+                    steps = steps + ['cleanup']
+                };
+                steps = steps + ['after'];   // edge-triggered: not re-cancelled
+                'done'
+            };
+            yield;
+            cancel(h);
+            r := join(h);
+            Test.assert_eq([steps, r], [['cleanup', 'after'], 'done'])
+        }),
+
+        Test.case('a coroutine that never parks again runs to completion', fn() {
+            // marked before it ever parks, with no park in its body — it
+            // is never preempted and finishes normally.
+            h := go fn() { 99 };
+            cancel(h);
+            Test.assert_eq(join(h), 99)
+        }),
+
+        Test.case('self-cancel takes effect at the next park', fn() {
+            hbox := [null];
+            h := go fn() {
+                cancel(hbox[0]);             // mark self
+                wait(10);                    // next park raises cancelled
+                'never'
+            };
+            hbox[0] = h;
+            Test.assert_eq(join(h), ${ cancelled: true })
+        }),
+
+        Test.case('self-cancel with no later park runs to completion', fn() {
+            hbox := [null];
+            h := go fn() {
+                cancel(hbox[0]);
+                'finished'                   // no park: completes
+            };
+            hbox[0] = h;
+            Test.assert_eq(join(h), 'finished')
+        }),
+
+        Test.case('cancel is idempotent', fn() {
+            h := go fn() { wait(10) };
+            yield;
+            first := cancel(h);
+            second := cancel(h);             // still live, marked again
+            r := join(h);
+            Test.assert_eq([first, second, r], [true, true, ${ cancelled: true }])
+        }),
+    ]),
+
+    Test.suite('cancel — join contract', [
+        Test.case('join on a cancelled coroutine returns the cancelled tag', fn() {
+            h := go fn() { wait(10) };
+            yield;
+            cancel(h);
+            Test.assert_eq(join(h), ${ cancelled: true })
+        }),
+
+        Test.case('re-joining a cancelled coroutine returns it again', fn() {
+            h := go fn() { wait(10) };
+            yield;
+            cancel(h);
+            a := join(h);
+            b := join(h);
+            Test.assert_eq([a, b], [${ cancelled: true }, ${ cancelled: true }])
+        }),
+
+        Test.case('cancellation never aborts the actor', fn() {
+            // a cancelled coroutine dies quietly; the actor keeps running
+            // and observable work after the cancel still happens.
+            h := go fn() { wait(10) };
+            yield;
+            cancel(h);
+            join(h);
+            Test.assert(true)               // reaching here proves it
+        }),
+    ]),
+]

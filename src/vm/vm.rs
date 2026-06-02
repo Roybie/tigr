@@ -615,7 +615,18 @@ impl Vm {
     /// coroutine.
     fn fail_current_green(&mut self, err: &RuntimeError) -> GreenFail {
         if let Some(handle) = self.current_handle.take() {
-            let outcome = ResumeOutcome::Raise(err.clone());
+            // A `cancelled` that escaped every `try` terminates only this
+            // coroutine: record it as a finished value `${cancelled: true}`
+            // so a later `join` reports the cancellation rather than
+            // re-raising, and so it never propagates as an actor error.
+            // Any other uncaught error is recorded as a `Raise` for `join`
+            // to re-surface (an uncaught `go` error does not abort the
+            // actor either — it waits at the handle for a `join`).
+            let outcome = if matches!(err.kind, RuntimeErrorKind::Cancelled) {
+                ResumeOutcome::Value(cancelled_result())
+            } else {
+                ResumeOutcome::Raise(err.clone())
+            };
             let id = {
                 let mut h = handle.borrow_mut();
                 h.result = Some(outcome.clone());
@@ -1591,6 +1602,13 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
+                            // `cancel` on a handle needs scheduler access
+                            // to abandon the target's pending park; the
+                            // bare native can only mark the flag.
+                            if let Some(h) = cancel_target(&nf, &args) {
+                                self.do_cancel(h);
+                                continue;
+                            }
                             if !nf.arity.check(args.len()) {
                                 return Err(RuntimeError::new(
                                     RuntimeErrorKind::ArityMismatch {
@@ -1703,6 +1721,13 @@ impl Vm {
                             // result for the compiler-emitted `Return`.
                             if let Some(h) = green_join_target(&nf, &args) {
                                 self.coop_join(h, line)?;
+                                continue;
+                            }
+                            // A tail-positioned `cancel` on a handle —
+                            // marks it (and unparks the target) without
+                            // suspending; pushes its bool for the Return.
+                            if let Some(h) = cancel_target(&nf, &args) {
+                                self.do_cancel(h);
                                 continue;
                             }
                             if !nf.arity.check(args.len()) {
@@ -2912,9 +2937,41 @@ impl Vm {
         self.open_upvalues = gt.open_upvalues;
         self.current_handle = gt.handle;
         self.scheduler.set_current(gt.id, gt.is_main);
+        // A coroutine resumes from a park iff it carries a resume
+        // outcome; a not-yet-started coroutine carries `None` and just
+        // begins at ip 0. The cancellation checkpoint lives on the
+        // resume branch only: every park — `yield`, `wait`, `wait_frame`,
+        // `join`, channel recv, blocking IO — is woken with `Some` and
+        // resumes through here, so checking the handle's
+        // `cancel_requested` flag at this one site makes them all
+        // cancellation points with no per-park code. Gating on a real
+        // resume keeps the no-preemption rule: cancelling a coroutine
+        // that has not yet started (or one whose body never parks) does
+        // not interrupt it — it runs to completion, and cancellation is
+        // observed only at parks.
         match gt.parked_resume {
-            Some(ResumeOutcome::Value(v)) => self.stack.push(v),
-            Some(ResumeOutcome::Raise(e)) => return Err(e),
+            Some(outcome) => {
+                // A cancelled coroutine resumes by raising `cancelled` at
+                // its park call site (the parked resume value is
+                // discarded), unwinding its frames through the normal
+                // error path. Edge-triggered: the flag is cleared as it
+                // fires, so a `catch` may clean up and even re-park
+                // without immediately re-cancelling — ordinary
+                // raise-once semantics.
+                if let Some(h) = self.current_handle {
+                    if h.borrow().cancel_requested {
+                        h.borrow_mut().cancel_requested = false;
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::Cancelled,
+                            0,
+                        ));
+                    }
+                }
+                match outcome {
+                    ResumeOutcome::Value(v) => self.stack.push(v),
+                    ResumeOutcome::Raise(e) => return Err(e),
+                }
+            }
             None => {}
         }
         Ok(())
@@ -2937,7 +2994,11 @@ impl Vm {
             stack.push(Value::Array(gc::alloc_array(Vec::new())));
         }
         let id = self.scheduler.fresh_id();
-        let handle = gc::alloc_green_handle(GreenHandle { id, result: None });
+        let handle = gc::alloc_green_handle(GreenHandle {
+            id,
+            result: None,
+            cancel_requested: false,
+        });
         self.scheduler.enqueue(GreenThread {
             id,
             is_main: false,
@@ -2954,6 +3015,52 @@ impl Vm {
             handle: Some(handle),
         });
         handle
+    }
+
+    /// Entry-side cancellation check, the twin of the resume-side one in
+    /// [`load_green`]. A coroutine can be marked for cancellation while
+    /// it is *running* only by cancelling itself, so a `cancel(self)`
+    /// followed by a park (e.g. `wait(10)`) must raise at the park rather
+    /// than actually sleep — `cancel_unpark` could not reach it because
+    /// it had not parked yet. Called at the head of every park primitive
+    /// that would otherwise block (`coop_wait`/`coop_join`/the blocking
+    /// dispatchers): if the running coroutine's flag is set, consume it
+    /// (edge-triggered, like the resume side) and raise `cancelled` at
+    /// the park call site. `yield` needs no such guard — it re-queues
+    /// immediately and the resume-side check fires on the next pickup.
+    fn check_self_cancelled(&mut self, line: u32) -> Result<(), RuntimeError> {
+        if let Some(h) = self.current_handle {
+            if h.borrow().cancel_requested {
+                h.borrow_mut().cancel_requested = false;
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::Cancelled,
+                    line,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `cancel(handle)` on a green-thread handle. Non-blocking: the
+    /// caller keeps running. Marks the handle for cancellation and, if
+    /// its coroutine is parked in a `join`/IO/timer wait, abandons that
+    /// wait so it resumes promptly (`Scheduler::cancel_unpark`), where
+    /// `load_green` raises `cancelled` at its park site. Pushes `true`
+    /// if the target was still live and is now marked, `false` if it had
+    /// already finished (a harmless no-op). A self-cancel marks the
+    /// running coroutine; it takes effect at its own next park.
+    fn do_cancel(&mut self, handle: GcRef<GreenHandleKind>) {
+        let (id, finished) = {
+            let h = handle.borrow();
+            (h.id, h.result.is_some())
+        };
+        if finished {
+            self.stack.push(Value::Bool(false));
+            return;
+        }
+        handle.borrow_mut().cancel_requested = true;
+        self.scheduler.cancel_unpark(id);
+        self.stack.push(Value::Bool(true));
     }
 
     /// Cooperative `join` on a green-thread handle. If the coroutine
@@ -3007,6 +3114,9 @@ impl Vm {
                 line,
             ));
         }
+        // About to park: if this coroutine cancelled itself, raise here
+        // rather than block on the target.
+        self.check_self_cancelled(line)?;
         let parked = self.save_current(None);
         self.scheduler.block(id, parked);
         match self.pick_next() {
@@ -3081,6 +3191,9 @@ impl Vm {
                 f64::NEG_INFINITY
             }
         };
+        // About to park on the clock: a self-cancelled coroutine raises
+        // here instead of sleeping the timer out.
+        self.check_self_cancelled(line)?;
         let parked = self.save_current(None);
         self.scheduler.park_timer(wake_time, parked);
         match self.pick_next() {
@@ -3125,6 +3238,9 @@ impl Vm {
             self.stack.push(result);
             return Ok(());
         }
+        // About to offload-park: a self-cancelled coroutine raises here,
+        // abandoning the pending call rather than parking on it.
+        self.check_self_cancelled(line)?;
         // Offload path: hand the job to the worker pool and park this
         // coroutine until its completion is pumped back.
         let job_id = self.next_job_id;
@@ -3168,6 +3284,9 @@ impl Vm {
             self.stack.push(result);
             return Ok(());
         }
+        // About to offload-park: a self-cancelled coroutine raises here,
+        // abandoning the pending op rather than parking on it.
+        self.check_self_cancelled(line)?;
         // Offload path: hand the op to the reactor and park this
         // coroutine until its completion is pumped back.
         let job_id = self.next_job_id;
@@ -3695,6 +3814,24 @@ fn green_join_target(
     None
 }
 
+/// The handle a `cancel(handle)` call targets, if this native call is a
+/// `cancel` of a green-thread handle. Like [`green_join_target`], the
+/// `Call`/`TailCall` opcode arms intercept it so the VM can reach the
+/// scheduler (to abandon the target's pending park); the bare
+/// `native_cancel` fallback can only mark the flag. A `cancel` of any
+/// other value falls through to that native, which type-errors.
+fn cancel_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<GcRef<GreenHandleKind>> {
+    if nf.name == "cancel" && args.len() == 1 {
+        if let Value::GreenHandle(h) = &args[0] {
+            return Some(*h);
+        }
+    }
+    None
+}
+
 /// Trace one call frame's GC roots: its closure, plus any heap handle
 /// embedded in a pull-frame kind (`IterPull`/`SpreadPull`).
 fn trace_frame(frame: &CallFrame, m: &mut Marker) {
@@ -3736,6 +3873,14 @@ fn iter_yield_result(value: Value) -> Value {
 /// generator is exhausted.
 fn iter_done_result() -> Value {
     crate::vm::native_modules::object(&[("done", Value::Bool(true))])
+}
+
+/// `${ cancelled: true }` — the recorded result of a green thread that
+/// was cancelled while parked. A `join` on it returns this object
+/// (mirroring the `${closed: true}` / `${value}` shapes elsewhere in the
+/// concurrency surface) instead of re-raising.
+fn cancelled_result() -> Value {
+    crate::vm::native_modules::object(&[("cancelled", Value::Bool(true))])
 }
 
 /// The shared body of every generator's synthetic `next` method:

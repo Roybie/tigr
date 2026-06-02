@@ -2533,9 +2533,22 @@ v0.17; not separately version-numbered in the roadmap.)
     green-thread handles: `join(handle)` cooperatively parks the caller
     (its siblings keep running) until the coroutine returns, then
     evaluates to that return value, and may be called repeatedly. An
-    uncaught `raise` in a `go` body aborts the whole actor, so a
-    fallible body should `catch` internally and return a tagged value
-    for the joiner to inspect. Two-level model: `spawn` is parallelism
+    uncaught `raise` in a `go` body does not abort the actor: the
+    coroutine ends and its error is recorded on the handle, so a later
+    `join` re-raises it; a body that wants the joiner to keep going can
+    `catch` internally and return a tagged value instead. The `cancel`
+    built-in requests cancellation of a `go` coroutine: `cancel(handle)`
+    is non-blocking and idempotent, returning `true` if the coroutine
+    was still live and is now marked or `false` if it had already
+    finished. The mark takes effect the next time the coroutine resumes
+    from a park (any park: `yield`, `wait`, `join`, a channel receive, a
+    blocking IO call, or a host frame wait), where a catchable
+    `cancelled` is raised at the park's call site and unwinds the body
+    through the ordinary error path. There is no preemption: a body that
+    never parks again runs to completion. An uncaught `cancelled` ends
+    only that coroutine, recorded so a later `join` returns
+    `${cancelled: true}` rather than re-raising, and never aborts the
+    actor. Two-level model: `spawn` is parallelism
     across cores with separate heaps and copied messages; `go` is cheap
     concurrency on one core with a shared heap and cooperative hand-off.
 

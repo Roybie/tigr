@@ -62,8 +62,17 @@ pub struct GreenHandle {
     /// `None` while the coroutine is still running. Once it finishes,
     /// `Some(ResumeOutcome::Value(v))` holds the value its body
     /// evaluated to, or `Some(ResumeOutcome::Raise(e))` records an
-    /// uncaught error so a later `join` re-raises it.
+    /// uncaught error so a later `join` re-raises it. A coroutine
+    /// cancelled while parked finishes with `Value(${cancelled: true})`.
     pub(crate) result: Option<ResumeOutcome>,
+    /// Set by `cancel(handle)`. Consulted at every resume-from-park
+    /// (`Vm::load_green`): a set flag turns the resume into a catchable
+    /// `cancelled` raise at the park call site instead of delivering the
+    /// park's value, and is cleared as it fires (edge-triggered, so a
+    /// `catch` may clean up and even park again without re-cancelling).
+    /// Setting it on an already-finished coroutine (`result.is_some()`)
+    /// is a harmless no-op.
+    pub(crate) cancel_requested: bool,
 }
 
 /// A coroutine parked in a cooperative `join`, waiting for another
@@ -330,6 +339,48 @@ impl Scheduler {
         !self.queue.is_empty()
             || !self.io_blocked.is_empty()
             || !self.timer_blocked.is_empty()
+    }
+
+    /// A `cancel(handle)` marked coroutine `id` for cancellation: if it
+    /// is parked in a `join`, an offloaded blocking call, or a `wait`
+    /// timer, abandon that wait and move it onto the run-queue so it
+    /// resumes promptly — where [`crate::vm::vm::Vm::load_green`] turns
+    /// the resume into the `cancelled` raise. Without this, cancelling a
+    /// coroutine asleep in `wait(10)` would not take effect until the ten
+    /// seconds elapsed. The delivered `Null` is nominal: `load_green`
+    /// discards it for the raise. A coroutine that is already on the
+    /// run-queue (yield-parked or not yet started), or is the running one
+    /// (a self-cancel), is left as-is — the flag alone handles it at its
+    /// next resume. Returns `true` if it unparked one. An abandoned IO
+    /// job may still complete later; [`wake_io`] then finds no waiter and
+    /// is a no-op, so nothing deadlocks.
+    pub fn cancel_unpark(&mut self, id: u32) -> bool {
+        let ready = Some(ResumeOutcome::Value(Value::Null));
+        if let Some(pos) =
+            self.blocked.iter().position(|t| t.thread.id == id)
+        {
+            let mut bt = self.blocked.swap_remove(pos);
+            bt.thread.parked_resume = ready;
+            self.queue.push_back(bt.thread);
+            return true;
+        }
+        if let Some(pos) =
+            self.io_blocked.iter().position(|t| t.thread.id == id)
+        {
+            let mut t = self.io_blocked.swap_remove(pos);
+            t.thread.parked_resume = ready;
+            self.queue.push_back(t.thread);
+            return true;
+        }
+        if let Some(pos) =
+            self.timer_blocked.iter().position(|t| t.thread.id == id)
+        {
+            let mut t = self.timer_blocked.swap_remove(pos);
+            t.thread.parked_resume = ready;
+            self.queue.push_back(t.thread);
+            return true;
+        }
+        false
     }
 
     /// Record which coroutine is now running. Called on every switch.

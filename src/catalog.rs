@@ -288,6 +288,9 @@ mod tests {
         let print = cat.builtin("print").expect("print builtin");
         assert!(print.signature.starts_with("print("));
         assert!(cat.builtin("type").is_some());
+        // The concurrency builtins parse too (so the LSP surfaces them).
+        let cancel = cat.builtin("cancel").expect("cancel builtin");
+        assert!(cancel.signature.starts_with("cancel("));
         assert!(cat.builtin("nonesuch").is_none());
     }
 

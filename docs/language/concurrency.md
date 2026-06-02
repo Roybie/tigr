@@ -64,7 +64,7 @@ squares := parallel[] (n, 1..=8) { n * n };
 print(squares);   // => [1, 4, 9, 16, 25, 36, 49, 64]
 ```
 
-Each body is deep-copied per actor, so the same sendability rule as `spawn` applies. The first body to raise aborts the block, and that error propagates out. Sibling actors already started run to completion, but their results are discarded. There is no cancellation primitive.
+Each body is deep-copied per actor, so the same sendability rule as `spawn` applies. The first body to raise aborts the block, and that error propagates out. Sibling actors already started run to completion, but their results are discarded; `parallel[]` cannot interrupt an actor mid-flight. (The cooperative [`cancel`](#cancelling-a-coroutine-cancel) below is a green-thread primitive, not a `parallel[]` one.)
 
 `parallel[]` is the structured, common-case form for a simple fan-out. Reach for raw `spawn`, `Channel`, and `select` when the work is not a plain fan-out, for example a pipeline or a worker pool.
 
@@ -102,7 +102,28 @@ h := go fn() {
 print(join(h));   // => 5050
 ```
 
-A handle may be joined more than once; every `join` returns the recorded result. An uncaught `raise` in a `go` body aborts the whole actor, so a body that might fail should `catch` internally and return a tagged value for the joiner to inspect. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
+A handle may be joined more than once; every `join` returns the recorded result. An uncaught `raise` in a `go` body does not abort the actor: the coroutine ends, and its error is recorded on the handle so a later `join` re-raises it (the raised value reaches `catch` verbatim, a built-in error as the usual `${kind, message, line}` object). A body that wants the joiner to keep going regardless can `catch` internally and return a tagged value instead. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
+
+### Cancelling a coroutine: `cancel`
+
+`cancel(handle)` requests cancellation of a `go` coroutine. It does not block: it marks the handle and returns straight away, `true` if the coroutine was still live and is now marked, `false` if it had already finished. Marking it twice is harmless. The cancellation takes effect the next time the coroutine resumes from a park. Any park counts, not only `wait`: a `yield`, a `join`, a channel receive, a blocking IO call, and a host frame wait (`wait_frame` in a purr game) are all cancellation points. On that resume the park's normal value is replaced by a catchable `cancelled` raised at the park's call site, which unwinds the body the same way any other error does, so a `try`/`catch` and its cleanup still run.
+
+```tigr
+h := go fn() {
+    work_started();
+    wait(10);            // parked here
+    work_finished();     // never reached once cancelled
+};
+yield;                   // let the coroutine reach its wait
+cancel(h);
+print(join(h));          // => ${cancelled: true}
+```
+
+If the coroutine was parked when it got cancelled, `join` on it returns `${cancelled: true}` instead of re-raising. That is the same shape `LocalChannel` uses for `${closed: true}` and `${value}`, so it reads well in a `match`. A `cancel` of anything that is not a green-thread handle is a type error.
+
+Because cancellation fires only at a park, two things follow, both on purpose. First, there is no preemption. A coroutine is interrupted only where it parks, so one whose body has no park, or that is cancelled before it starts and then never parks, runs to completion. Cancellation has nowhere to fire and the coroutine is left alone. Second, `cancelled` is an ordinary catchable error, so a `try` around a park can catch it, clean up, and carry on. It fires once per request and is cleared as it is raised, so a cleanup handler may itself `wait` or `yield` without being cancelled again. A body that catches `cancelled` and keeps going is making the same kind of choice it makes when it catches any other error.
+
+A coroutine can also cancel itself by passing its own handle to `cancel`; the mark takes effect at its own next park. Cancelling one that is asleep in `wait(10)` does not sit through the ten seconds. The pending park is dropped and the coroutine resumes right away to see the cancellation.
 
 ### Intra-actor channels: `LocalChannel`
 

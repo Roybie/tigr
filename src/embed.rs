@@ -50,6 +50,15 @@ pub use crate::vm::native_modules::{
 pub use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 pub use crate::vm::vm::Vm;
 
+/// Tigr's shared seeded PRNG, re-exported so a native host module can
+/// draw from the *same* stream as the `rand()` builtin and the `Random`
+/// module — the stream [`Session::seed_rng`] pins. Drawing from here
+/// (rather than a private host generator) keeps a native module's
+/// randomness part of the one replayable run. See [`crate::vm::rng`].
+pub mod rng {
+    pub use crate::vm::rng::{next_below, next_f64, next_u64};
+}
+
 /// A persistent tigr program a host can load once and call into many
 /// times. See the module docs for the model and a host-loop sketch.
 pub struct Session {

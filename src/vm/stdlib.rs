@@ -100,11 +100,17 @@ const BUILTINS: &[Spec] = &[
     // language builtin — frames are a host concept; purr provides it as
     // `GameTime.wait_frame` via `embed::native_frame_wait`.
     Spec { name: "wait", arity: Arity::Exact(1), kind: NativeKind::Park(park_wait) },
+    // Cooperative cancellation of a `go` green thread. Pure and
+    // non-blocking: it only marks the handle (see [`native_cancel`]); the
+    // cancellation itself fires in the VM the next time that coroutine
+    // resumes from a park (`Vm::load_green`). No VM interception needed —
+    // unlike `join`, `cancel` never suspends the caller.
+    Spec { name: "cancel", arity: Arity::Exact(1), kind: pure(native_cancel) },
 ];
 
-const BUILTIN_NAMES: [&str; 14] = [
+const BUILTIN_NAMES: [&str; 15] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type", "gc", "__select", "join", "wait",
+    "type", "gc", "__select", "join", "wait", "cancel",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -150,6 +156,37 @@ fn park_wait(args: &[Value]) -> Result<WaitKind, RuntimeError> {
                     other.map(|v| v.type_name()).unwrap_or("nothing"),
                 )
                 .into(),
+            )),
+            0,
+        )),
+    }
+}
+
+/// `cancel(handle)` — request cooperative cancellation of a `go` green
+/// thread. Non-blocking and idempotent: it marks the handle so the
+/// target raises a catchable `cancelled` at its *next* park (any
+/// `wait`/`wait_frame`/`join`/channel-recv/blocking-IO/`yield`), which
+/// unwinds its body through the normal error-unwind path so existing
+/// `catch`/cleanup runs. Returns `true` if the target was still live and
+/// is now marked, `false` if it had already finished (a harmless no-op).
+/// Cancellation is observed only at park points — a coroutine that never
+/// parks again runs to completion. Cancelling anything but a green-thread
+/// handle is a type error.
+fn native_cancel(args: &[Value]) -> Result<Value, RuntimeError> {
+    match args.first() {
+        Some(Value::GreenHandle(h)) => {
+            let mut g = h.borrow_mut();
+            // Already finished — nothing to cancel.
+            if g.result.is_some() {
+                return Ok(Value::Bool(false));
+            }
+            g.cancel_requested = true;
+            Ok(Value::Bool(true))
+        }
+        other => Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(format!(
+                "cancel expects a green-thread handle, got {}",
+                other.map(|v| v.type_name()).unwrap_or("nothing"),
             )),
             0,
         )),

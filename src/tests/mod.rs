@@ -5784,6 +5784,87 @@ fn v14_actor_error_propagates_to_join() {
     assert_eq!(format!("{:?}", run(src)), "'div_by_zero'");
 }
 
+// ---- Green-thread cancellation: cancel(handle) ----
+
+/// `cancel` raises a catchable `cancelled` at a parked coroutine's park
+/// site, so the statements after the `wait` never run; `join` then
+/// reports `${cancelled: true}` rather than the body's value.
+#[test]
+fn cancel_fires_at_a_wait_park() {
+    let src = "
+        ran := false;
+        h := go fn() { wait(10); ran = true };
+        yield;
+        cancel(h);
+        r := join(h);
+        [ran, r.cancelled]
+    ";
+    assert_eq!(format!("{:?}", run(src)), "[false, true]");
+}
+
+/// `cancel` on a coroutine that has already finished is a no-op and
+/// returns `false`; on a still-live one it returns `true`.
+#[test]
+fn cancel_returns_false_for_a_finished_coroutine() {
+    let src = "
+        h := go fn() { 42 };
+        join(h);
+        cancel(h)
+    ";
+    assert_eq!(run(src), Value::Bool(false));
+}
+
+/// The checkpoint is the generic park, not the `wait` builtin: a
+/// coroutine that only ever `yield`s is cancellable just the same.
+#[test]
+fn cancel_fires_at_a_yield_park() {
+    let src = "
+        h := go fn() { while (true) { yield } };
+        yield;
+        cancel(h);
+        join(h).cancelled
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
+/// No preemption: a coroutine whose body never parks runs to completion
+/// even when cancelled before it starts.
+#[test]
+fn cancel_does_not_preempt_a_coroutine_that_never_parks() {
+    let src = "
+        h := go fn() { 99 };
+        cancel(h);
+        join(h)
+    ";
+    assert_eq!(run(src), Value::Int(99));
+}
+
+/// An uncaught `cancelled` is reified as the structured `${kind, ...}`
+/// error a `catch` binds, with the snake-case tag `cancelled`.
+#[test]
+fn cancel_is_catchable_with_kind_cancelled() {
+    let src = "
+        h := go fn() { try { wait(10); 'no' } catch (e) { e.kind } };
+        yield;
+        cancel(h);
+        join(h)
+    ";
+    assert_eq!(format!("{:?}", run(src)), "'cancelled'");
+}
+
+/// Self-cancel followed by a park raises at that park rather than
+/// blocking on it — the entry-side cancellation check.
+#[test]
+fn cancel_self_then_park_raises_at_the_park() {
+    let src = "
+        hbox := [null];
+        h := go fn() { cancel(hbox[0]); wait(10); 'never' };
+        hbox[0] = h;
+        join(h).cancelled
+    ";
+    assert_eq!(run(src), Value::Bool(true));
+}
+
 // ---- Bytecode format limits: pool dedup, wide operands, big literals ----
 
 /// The constant pool deduplicates: a literal that appears many times —

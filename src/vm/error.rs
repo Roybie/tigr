@@ -227,6 +227,12 @@ pub enum RuntimeErrorKind {
     NotSendable(String),
     /// A `send` was attempted on a closed channel. v0.14.
     ChannelClosed,
+    /// `cancel(handle)` requested cancellation of a parked green thread:
+    /// raised at the coroutine's park call site when it next resumes,
+    /// unwinding its body through the normal error path. Catchable
+    /// (reified as `${kind: 'cancelled', ...}`); if uncaught it
+    /// terminates only that coroutine, never the actor.
+    Cancelled,
     /// A value raised by `raise expr`, stored verbatim — never coerced
     /// to a string. `catch` binds exactly this value; an uncaught
     /// raise renders it via `str()` (the `Value` `Display` form).
@@ -263,6 +269,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::NoMatch => "no_match",
             RuntimeErrorKind::NotSendable(_) => "not_sendable",
             RuntimeErrorKind::ChannelClosed => "channel_closed",
+            RuntimeErrorKind::Cancelled => "cancelled",
             RuntimeErrorKind::Raised(_) => "raised",
             // Never reified — absorbed by the host driver before any
             // `catch` can see it.
@@ -299,6 +306,9 @@ impl fmt::Display for RuntimeError {
             ),
             RuntimeErrorKind::ChannelClosed => {
                 f.write_str("send on a closed channel")
+            }
+            RuntimeErrorKind::Cancelled => {
+                f.write_str("green thread cancelled")
             }
             RuntimeErrorKind::Raised(v) => write!(f, "{v}"),
             RuntimeErrorKind::HostYield => {

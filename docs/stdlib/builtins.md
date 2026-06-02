@@ -22,6 +22,7 @@ The built-ins are ordinary bindings in the root environment, so they need no `im
 | [`gc() -> Object`](#gc---object) | Returns a read-only snapshot of the tracing garbage collector's state. |
 | [`join(handle) -> value`](#joinhandle---value) | Waits for a concurrent computation to finish and returns its result. |
 | [`wait(seconds) -> null`](#waitseconds---null) | Cooperatively pauses the running coroutine for a number of seconds, letting siblings run. |
+| [`cancel(handle) -> Bool`](#cancelhandle---bool) | Requests cancellation of a `go` coroutine; a catchable `cancelled` is raised at its next park. |
 
 
 ### `print(value1, value2?) -> value`
@@ -192,7 +193,7 @@ Waits for a concurrent computation to finish and returns its result. `join` acce
 - `handle` *(Task or green thread)*: the handle of the computation to wait for.
 
 **Returns:** the value the actor's or coroutine's function evaluated to.
-**Raises:** for a `Task`, whatever the actor raised: a `raise`d value verbatim, or a built-in runtime error as `${kind, message, trace, worker}` with `worker` true; joining the same task twice raises a string error. (An uncaught `raise` in a `go` coroutine aborts the whole actor, so it never surfaces at the coroutine's `join`.)
+**Raises:** for a `Task`, whatever the actor raised: a `raise`d value verbatim, or a built-in runtime error as `${kind, message, trace, worker}` with `worker` true; joining the same task twice raises a string error. For a green-thread handle, an uncaught `raise` in the `go` body does not abort the actor; it is recorded on the handle, so this `join` re-raises it. A coroutine [`cancel`led](#cancelhandle---bool) while parked instead makes `join` return `${cancelled: true}`.
 
 ```tigr
 t := spawn fn() { 6 * 7 };
@@ -222,6 +223,26 @@ a := go fn() { wait(0.2); print('a done') };
 b := go fn() { wait(0.2); print('b done') };
 join(a);
 join(b);   // both finish in ~0.2s, not 0.4s — the waits overlap
+```
+
+### `cancel(handle) -> Bool`
+
+Requests cancellation of a `go` coroutine. It does not block: it marks the handle and returns at once, `true` if the coroutine was still live and is now marked, `false` if it had already finished. Marking it again is harmless. The cancellation takes effect the next time the coroutine resumes from a park, where its body parks at a `yield`, `wait`, `join`, channel receive, blocking IO call, or host frame wait. On that resume a catchable `cancelled` is raised at the park's call site and unwinds the body through the ordinary error path, so a `try`/`catch` around the park still runs and can clean up. A coroutine whose body never parks again is never interrupted: cancellation has no checkpoint to fire at, so it runs to completion. An uncaught `cancelled` ends only that coroutine, never the actor, and a later `join` on it returns `${cancelled: true}`. A coroutine may cancel itself by passing its own handle; the mark takes effect at its own next park. See [Concurrency](../language/concurrency.md#cancelling-a-coroutine-cancel) for the full semantics.
+
+- `handle` *(green thread)*: the `go` handle to cancel. A `Task` or any other value raises.
+
+**Returns:** `true` if the coroutine was live and is now marked for cancellation, `false` if it had already finished.
+**Raises:** `type_mismatch` if the argument is not a green-thread handle.
+
+```tigr
+h := go fn() {
+    work_started();
+    wait(10);            // parked here
+    work_finished();     // not reached once cancelled
+};
+yield;                   // let the coroutine reach its wait
+print(cancel(h));        // => true
+print(join(h));          // => ${cancelled: true}
 ```
 
 ## See also

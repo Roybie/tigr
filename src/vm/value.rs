@@ -533,6 +533,21 @@ impl Value {
         }
     }
 
+    /// The `(key, value)` pairs of an `Object` value, in insertion order,
+    /// or `None` for any non-object. The iteration complement of
+    /// [`get_field`](Value::get_field): host/embedder code that takes a
+    /// caller-built object whose keys it does not know ahead of time (a
+    /// `${ name: 'type', ... }` declaration map) can read the whole set in
+    /// one call. Each value is cloned out (a handle clone for collections)
+    /// and each key copied to an owned `String`, so nothing borrows the GC
+    /// arena past the call.
+    pub fn fields(&self) -> Option<Vec<(String, Value)>> {
+        match self {
+            Value::Object(o) => Some(o.borrow().iter().map(|(k, v)| (k.to_string(), v.clone())).collect()),
+            _ => None,
+        }
+    }
+
     /// Set a field of an `Object` value by key, inserting it if absent and
     /// updating in place (keeping its position) if present. Returns `false`,
     /// touching nothing, if `self` is not an object. The write complement of
@@ -547,6 +562,21 @@ impl Value {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Run `f` against the bytes of a `Bytes` value, borrowing the block in
+    /// place rather than cloning it. Returns `Some(f(..))` for a `Bytes`
+    /// value and `None` for anything else. The read complement of
+    /// [`bytes`](crate::embed::bytes): host/embedder code consumes a byte
+    /// argument (a pixel buffer's RGBA, a blob to decode) without copying
+    /// the whole block out of the GC arena first, so a multi-megabyte
+    /// buffer crosses the boundary by reference. The borrow is held only
+    /// for the duration of `f`, so do the copy or parse inside the closure.
+    pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        match self {
+            Value::Bytes(b) => Some(f(&b.borrow())),
+            _ => None,
         }
     }
 

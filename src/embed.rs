@@ -45,7 +45,7 @@ use crate::vm::value::Closure;
 // `call` returns.
 pub use crate::vm::error::{Error, RuntimeError, RuntimeErrorKind};
 pub use crate::vm::native_modules::{
-    native, native_blocking, native_frame_wait, native_socket, object,
+    bytes, native, native_blocking, native_frame_wait, native_socket, object,
 };
 pub use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 pub use crate::vm::vm::Vm;
@@ -535,8 +535,38 @@ mod tests {
         assert!(matches!(cfg.get_field("height"), Some(Value::Int(600))));
         assert!(!Value::Int(1).set_field("x", Value::Int(0)));
 
+        // `fields` reads every (key, value) pair in insertion order, so a host
+        // can consume a declaration map whose keys it does not know ahead of
+        // time. A non-object yields None rather than an empty vec.
+        let pairs = cfg.fields().expect("object has fields");
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["title", "width", "height"], "insertion order preserved");
+        assert!(Value::Int(1).fields().is_none());
+
         // RuntimeErrorKind is exported for host-built natives.
         let _ = RuntimeError::new(RuntimeErrorKind::TypeMismatch("x".into()), 0);
+    }
+
+    /// Host-facing byte helpers: `embed::bytes` builds a `Bytes` value from
+    /// an owned block, and `Value::with_bytes` borrows the block back in
+    /// place (no clone) for a `Bytes` value, `None` for anything else. The
+    /// round trip also crosses the VM: a program-built `Bytes` reads back
+    /// through `with_bytes`, and a host-built one is visible to the program.
+    #[test]
+    fn bytes_build_and_borrow() {
+        // Build host-side, borrow back without cloning the whole block.
+        let b = bytes(vec![1, 2, 3, 4]);
+        let sum = b.with_bytes(|s| s.iter().map(|&x| x as u32).sum::<u32>());
+        assert_eq!(sum, Some(10));
+        assert_eq!(b.with_bytes(<[u8]>::to_vec), Some(vec![1, 2, 3, 4]));
+        // A non-bytes value yields None rather than panicking.
+        assert!(Value::Int(1).with_bytes(<[u8]>::to_vec).is_none());
+
+        // A program-built Bytes reads back through with_bytes.
+        let mut s = Session::new();
+        s.load("blob := Bytes.from_string('hi');").expect("load");
+        let blob = s.binding("blob").expect("blob");
+        assert_eq!(blob.with_bytes(<[u8]>::to_vec), Some(b"hi".to_vec()));
     }
 
     /// A host *source* module is compiled on first import, resolves

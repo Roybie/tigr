@@ -183,3 +183,12 @@ pub fn object(entries: &[(&'static str, Value)]) -> Value {
     }
     Value::Object(gc::alloc_object(m))
 }
+
+/// Build a `Value::Bytes` from an owned byte block, the byte-buffer
+/// counterpart of [`object`]. A host native that produces raw bytes (a
+/// pixel buffer's RGBA, a decoded blob) returns them with this; read them
+/// back with [`Value::with_bytes`]. The `Vec` moves onto the managed heap,
+/// so there is no copy beyond the allocation the caller already made.
+pub fn bytes(data: Vec<u8>) -> Value {
+    Value::Bytes(gc::alloc_bytes(data))
+}

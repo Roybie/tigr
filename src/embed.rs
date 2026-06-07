@@ -603,6 +603,47 @@ mod tests {
         assert_eq!(blob.with_bytes(<[u8]>::to_vec), Some(b"hi".to_vec()));
     }
 
+    /// `Value::with_array` borrows an `Array`'s backing slice in place
+    /// (no clone) for an `Array` value, `None` for anything else. The
+    /// embedder reads a program-built list of points or numbers without
+    /// copying it out of the GC arena first; elements stay `Value`s, so
+    /// the closure coerces each one itself.
+    #[test]
+    fn array_borrow() {
+        let mut s = Session::new();
+
+        // A flat number list, the polygon/polyline hot path: read it as f32.
+        s.load("pts := [10, 20, 30.5, 40];").expect("load");
+        let pts = s.binding("pts").expect("pts");
+        let flat = pts.with_array(|xs| {
+            xs.iter()
+                .map(|v| match v {
+                    Value::Int(n) => *n as f32,
+                    Value::Float(x) => *x as f32,
+                    _ => f32::NAN,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(flat, Some(vec![10.0, 20.0, 30.5, 40.0]));
+
+        // A list of ${x, y} points: read each element's fields.
+        s.load("poly := [${ x: 1, y: 2 }, ${ x: 3, y: 4 }];").expect("load");
+        let poly = s.binding("poly").expect("poly");
+        let coords = poly.with_array(|xs| {
+            xs.iter()
+                .filter_map(|v| {
+                    let x = v.get_field("x")?;
+                    let y = v.get_field("y")?;
+                    Some((x, y))
+                })
+                .count()
+        });
+        assert_eq!(coords, Some(2));
+
+        // A non-array value yields None rather than panicking.
+        assert!(Value::Int(1).with_array(|xs| xs.len()).is_none());
+    }
+
     /// A host *source* module is compiled on first import, resolves
     /// under its bare name, and its exported functions are callable —
     /// the delivery path for pure-tigr framework helpers. Importing it

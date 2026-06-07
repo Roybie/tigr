@@ -580,6 +580,23 @@ impl Value {
         }
     }
 
+    /// Run `f` against the elements of an `Array` value, borrowing the
+    /// backing slice in place rather than copying it out. Returns
+    /// `Some(f(..))` for an `Array` and `None` for anything else. The
+    /// array analogue of [`with_bytes`](Value::with_bytes): host/embedder
+    /// code that consumes a list argument (a polygon's vertices, a mesh's
+    /// vertex stream, a colour table) reads it without cloning every
+    /// `Value` out of the GC arena first. Elements stay as `Value`s, so
+    /// the closure coerces each one itself (match `Value::Int` / `Float`,
+    /// or `get_field` for a `${x, y}` element). The borrow is held only
+    /// for the duration of `f`, so do the read or copy inside the closure.
+    pub fn with_array<R>(&self, f: impl FnOnce(&[Value]) -> R) -> Option<R> {
+        match self {
+            Value::Array(a) => Some(f(&a.borrow())),
+            _ => None,
+        }
+    }
+
     /// Truthiness per spec §5. Lua-style: only `null` and `false` are
     /// falsy. Everything else — including `0`, `0.0`, `''`, `[]`, `${}`,
     /// empty ranges/maps/sets — is truthy. Test emptiness with `#x`.

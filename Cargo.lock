@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "tigr"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "indexmap",
  "num-bigint",

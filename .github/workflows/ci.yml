@@ -1,0 +1,44 @@
+# Runs the test suites on Linux and Windows for every push to master and
+# every pull request. Windows is included on purpose: the `Net` module
+# (TCP/UDP/TLS) and the async-IO reactor now run there via the `polling`
+# crate, so this job guards that path against regression.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # `ring` (the rustls crypto provider) assembles with NASM on MSVC.
+      - name: Install NASM (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Rust unit tests — VM, GC, compiler, and the socket / reactor
+      # `Send` bounds.
+      - name: cargo test
+        run: cargo test --locked
+
+      # The tigr test suites, Net / TLS / Http / Url included. MSYS bash
+      # resolves `tigr` to `tigr.exe` on the Windows runner.
+      - name: Build tigr
+        run: cargo build --release --locked --bin tigr
+
+      - name: Run tigr test suites
+        shell: bash
+        run: ./target/release/tigr test tests

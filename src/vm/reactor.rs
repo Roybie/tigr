@@ -8,24 +8,34 @@
 //! threads. Idle waiting on a socket should cost a table entry, not an
 //! OS thread.
 //!
-//! This module is that fix — one process-wide **reactor thread**
-//! running `epoll` / `kqueue` (via `mio`) that waits on thousands of
-//! socket fds at once. It is a second offload *backend*: like the
-//! worker pool it ends each op by posting `(job_id, OffloadResult)` to
-//! the owning actor's [`CompletionMailbox`], so the scheduler / VM side
+//! This module is that fix — one process-wide **reactor thread** running
+//! `epoll` / `kqueue` / IOCP-AFD (via the cross-platform [`polling`]
+//! crate) that waits on thousands of socket handles at once. It is a
+//! second offload *backend*: like the worker pool it ends each op by
+//! posting `(job_id, OffloadResult)` to the owning actor's
+//! [`CompletionMailbox`], so the scheduler / VM side
 //! ([`crate::vm::scheduler`]'s `io_blocked`, `decode`, `park_io` /
 //! `wake_io`) is reused unchanged.
 //!
 //! ## Readiness, not completion
 //!
-//! `epoll` is a *readiness* interface. To keep the actor side identical
-//! to the worker pool, the reactor thread itself performs the
-//! non-blocking syscall once an fd is ready and posts the *finished*
-//! result — not a bare "fd is ready" hint. It therefore owns each op's
-//! small state machine (see [`advance`]): a multi-step op like
+//! `polling` is a *readiness* interface. To keep the actor side
+//! identical to the worker pool, the reactor thread itself performs the
+//! non-blocking syscall once a handle is ready and posts the *finished*
+//! result — not a bare "handle is ready" hint. It therefore owns each
+//! op's small state machine (see [`advance`]): a multi-step op like
 //! `read_exact` resumes across several readiness events, accumulating
 //! into its [`SocketOp`] buffer. Like a worker thread it only ever
 //! touches `Send` POD — never the GC heap.
+//!
+//! ## Oneshot re-arm
+//!
+//! `polling` delivers one event per arm (the only mode portable to
+//! Windows AFD), so an op that is still `Pending` after a readiness
+//! event is re-armed with [`Poller::modify`]; a completed op is removed
+//! with [`Poller::delete`]. This is the one semantic difference from a
+//! level-triggered `epoll`: a missed re-arm hangs the op, so the
+//! re-arm path is exercised by the reactor test suite on every OS.
 //!
 //! ## Two executors
 //!
@@ -39,23 +49,40 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::io::RawFd;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token, Waker};
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
+#[cfg(windows)]
+use std::os::windows::io::BorrowedSocket;
+
+use polling::{Event, Events, Poller};
 
 use crate::vm::native_modules::net;
 use crate::vm::offload::{CompletionMailbox, OffloadOk, OffloadResult};
 use crate::vm::socket::{
-    NetError, ReactorOp, SocketHandle, SocketInner, SocketOp, CHUNK,
+    NetError, RawHandle, ReactorOp, SocketHandle, SocketInner, SocketOp, CHUNK,
     MAX_DIRECT_READ,
 };
 
-/// Token reserved for the registration `Waker` — never an op token.
-const WAKE: Token = Token(0);
+/// Borrow a stored raw handle as a `polling` source for `add` /
+/// `modify` / `delete`. The borrow is used transiently and never
+/// outlives the [`SocketHandle`] that keeps the underlying socket open.
+///
+/// # Safety
+/// The caller must hold the [`SocketHandle`] (and thus keep the handle
+/// open) for the duration of the returned borrow — every call site does,
+/// since the op's `PendingOp` owns the socket.
+#[cfg(unix)]
+unsafe fn borrow_source(handle: RawHandle) -> BorrowedFd<'static> {
+    BorrowedFd::borrow_raw(handle)
+}
+#[cfg(windows)]
+unsafe fn borrow_source(handle: RawHandle) -> BorrowedSocket<'static> {
+    BorrowedSocket::borrow_raw(handle)
+}
 
 // ---------------------------------------------------------------------
 // Inline executor — the blocking path
@@ -67,7 +94,7 @@ const WAKE: Token = Token(0);
 /// `socket.rs` methods.
 pub fn run_blocking(rop: ReactorOp) -> OffloadResult {
     let ReactorOp { socket, op, label } = rop;
-    // A prior reactor op may have left the fd non-blocking; the
+    // A prior reactor op may have left the handle non-blocking; the
     // blocking methods below need it blocking again.
     if let Err(e) = socket.set_nonblocking_mode(false) {
         return Err(net::offload_err(label, NetError::Io(e)));
@@ -137,22 +164,22 @@ pub fn run_blocking(rop: ReactorOp) -> OffloadResult {
 // Reactor executor — the non-blocking state machine
 // ---------------------------------------------------------------------
 
-/// Whether one byte of progress is `WouldBlock` — the fd is not ready.
+/// Whether one byte of progress is `WouldBlock` — the handle is not ready.
 fn would_block(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::WouldBlock
 }
 
 /// The result of one [`advance`] pass over an op.
 enum Advance {
-    /// The op finished — post this result, deregister the fd.
+    /// The op finished — post this result, deregister the handle.
     Done(OffloadResult),
-    /// The fd would block; stay registered and wait for the next event.
+    /// The handle would block; stay registered and wait for the next event.
     Pending,
 }
 
 /// Drive `op` against `socket` as far as a non-blocking syscall allows.
 /// Called once at submit time (data may already be buffered) and again
-/// on every readiness event for the op's fd.
+/// on every readiness event for the op's handle.
 fn advance(op: &mut SocketOp, socket: &SocketInner, label: &'static str) -> Advance {
     // A concurrent `close` beats any pending readiness — without this a
     // `shutdown`-induced readable event would resolve as a clean EOF
@@ -337,7 +364,7 @@ fn read_until_step(socket: &SocketInner, delim: u8, label: &'static str) -> Step
 // ---------------------------------------------------------------------
 
 /// A message from an actor thread to the reactor thread, delivered over
-/// the registration channel and announced with the [`Waker`].
+/// the registration channel and announced with [`Poller::notify`].
 enum Msg {
     /// Register a new op and start driving it.
     Submit {
@@ -349,24 +376,27 @@ enum Msg {
     Cancel { socket_id: u64 },
 }
 
-/// An op the reactor is currently driving, keyed by its [`Token`] in
-/// the op table. Holds only `Send` POD — never a GC root.
+/// An op the reactor is currently driving, keyed by its registration
+/// key in the op table. Holds only `Send` POD — never a GC root.
 struct PendingOp {
     socket: SocketHandle,
     op: SocketOp,
     job_id: u64,
     mailbox: Arc<CompletionMailbox>,
     label: &'static str,
-    /// The registered fd, kept so the op can be deregistered.
-    fd: RawFd,
+    /// The registered handle, kept so the op can be re-armed / removed.
+    handle: RawHandle,
+    /// The interests this op waits on, re-applied on each oneshot re-arm.
+    readable: bool,
+    writable: bool,
 }
 
 /// The process-wide reactor handle. Actors talk to the reactor thread
-/// through `tx` (the registration channel) and `waker` (which pulls the
-/// thread out of `poll`).
+/// through `tx` (the registration channel) and `poller.notify()` (which
+/// pulls the thread out of `wait`).
 struct Reactor {
     tx: Mutex<Sender<Msg>>,
-    waker: Waker,
+    poller: Arc<Poller>,
 }
 
 static REACTOR: OnceLock<Reactor> = OnceLock::new();
@@ -374,15 +404,14 @@ static REACTOR: OnceLock<Reactor> = OnceLock::new();
 /// The reactor handle, starting the reactor thread on first use.
 fn reactor() -> &'static Reactor {
     REACTOR.get_or_init(|| {
-        let poll = Poll::new().expect("reactor: create mio Poll");
-        let waker = Waker::new(poll.registry(), WAKE)
-            .expect("reactor: create mio Waker");
+        let poller = Arc::new(Poller::new().expect("reactor: create poller"));
         let (tx, rx) = mpsc::channel();
+        let loop_poller = Arc::clone(&poller);
         thread::Builder::new()
             .name("tigr-reactor".into())
-            .spawn(move || reactor_loop(poll, rx))
+            .spawn(move || reactor_loop(loop_poller, rx))
             .expect("reactor: spawn thread");
-        Reactor { tx: Mutex::new(tx), waker }
+        Reactor { tx: Mutex::new(tx), poller }
     })
 }
 
@@ -396,7 +425,7 @@ pub fn submit(job_id: u64, mailbox: Arc<CompletionMailbox>, rop: ReactorOp) {
         .unwrap()
         .send(Msg::Submit { job_id, mailbox, rop })
         .expect("reactor thread alive");
-    r.waker.wake().expect("reactor: wake");
+    r.poller.notify().expect("reactor: notify");
 }
 
 /// Cancel every reactor op on socket `socket_id` — drives `Net.close`.
@@ -405,31 +434,32 @@ pub fn submit(job_id: u64, mailbox: Arc<CompletionMailbox>, rop: ReactorOp) {
 pub fn cancel(socket_id: u64) {
     if let Some(r) = REACTOR.get() {
         if r.tx.lock().unwrap().send(Msg::Cancel { socket_id }).is_ok() {
-            let _ = r.waker.wake();
+            let _ = r.poller.notify();
         }
     }
 }
 
-/// The reactor thread's event loop. Owns the `Poll`, the op table and
-/// the token counter; never returns.
-fn reactor_loop(mut poll: Poll, rx: Receiver<Msg>) {
-    let mut events = Events::with_capacity(256);
-    let mut ops: HashMap<Token, PendingOp> = HashMap::new();
-    // Op tokens start at 1 — `Token(0)` is the registration waker.
-    let mut next_token: usize = 1;
+/// The reactor thread's event loop. Owns the [`Poller`], the op table
+/// and the key counter; never returns.
+fn reactor_loop(poller: Arc<Poller>, rx: Receiver<Msg>) {
+    let mut events = Events::new();
+    let mut ops: HashMap<usize, PendingOp> = HashMap::new();
+    // Op keys start at 1; `notify` reports `usize::MAX`, never a key.
+    let mut next_key: usize = 1;
     loop {
-        if let Err(e) = poll.poll(&mut events, None) {
+        events.clear();
+        if let Err(e) = poller.wait(&mut events, None) {
             if e.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            panic!("reactor: poll failed: {e}");
+            panic!("reactor: wait failed: {e}");
         }
+        // A `notify` (new submit / cancel) or any op event wakes us.
+        // Drain the registration channel first, so a `Cancel` is
+        // observed before a stale readiness event for the same socket.
+        drain_messages(&rx, &poller, &mut ops, &mut next_key);
         for event in events.iter() {
-            if event.token() == WAKE {
-                drain_messages(&rx, &poll, &mut ops, &mut next_token);
-            } else {
-                advance_token(event.token(), &poll, &mut ops);
-            }
+            advance_token(event.key, &poller, &mut ops);
         }
     }
 }
@@ -437,49 +467,53 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Msg>) {
 /// Drain every queued registration / cancellation message.
 fn drain_messages(
     rx: &Receiver<Msg>,
-    poll: &Poll,
-    ops: &mut HashMap<Token, PendingOp>,
-    next_token: &mut usize,
+    poller: &Poller,
+    ops: &mut HashMap<usize, PendingOp>,
+    next_key: &mut usize,
 ) {
     while let Ok(msg) = rx.try_recv() {
         match msg {
             Msg::Submit { job_id, mailbox, rop } => {
-                start_op(job_id, mailbox, rop, poll, ops, next_token);
+                start_op(job_id, mailbox, rop, poller, ops, next_key);
             }
             Msg::Cancel { socket_id } => {
-                cancel_socket(socket_id, poll, ops);
+                cancel_socket(socket_id, poller, ops);
             }
         }
     }
 }
 
 /// Register a freshly-submitted op and drive it once — data may already
-/// be buffered or the fd already ready, in which case it completes here
-/// and is never registered.
+/// be buffered or the handle already ready, in which case it completes
+/// here and is never registered.
 fn start_op(
     job_id: u64,
     mailbox: Arc<CompletionMailbox>,
     rop: ReactorOp,
-    poll: &Poll,
-    ops: &mut HashMap<Token, PendingOp>,
-    next_token: &mut usize,
+    poller: &Poller,
+    ops: &mut HashMap<usize, PendingOp>,
+    next_key: &mut usize,
 ) {
     let ReactorOp { socket, mut op, label } = rop;
     // Read ops watch the read half, writes the write half — distinct
-    // `dup`'d fds, so a concurrent read + write register independently.
-    // A TLS connection has one fd and oscillates between read and write
-    // readiness as rustls drives its records, so it is registered for
-    // both interests and re-driven on either.
+    // `dup`'d handles, so a concurrent read + write register
+    // independently. A TLS connection has one handle and oscillates
+    // between read and write readiness as rustls drives its records, so
+    // it is registered for both interests and re-driven on either.
     let writes = matches!(op, SocketOp::WriteAll { .. });
-    let fd = if writes { socket.write_raw_fd() } else { socket.read_raw_fd() };
-    let interest = if socket.is_tls() {
-        Interest::READABLE | Interest::WRITABLE
-    } else if writes {
-        Interest::WRITABLE
+    let handle = if writes {
+        socket.write_raw_handle()
     } else {
-        Interest::READABLE
+        socket.read_raw_handle()
     };
-    let Some(fd) = fd else {
+    let (readable, writable) = if socket.is_tls() {
+        (true, true)
+    } else if writes {
+        (false, true)
+    } else {
+        (true, false)
+    };
+    let Some(handle) = handle else {
         // Not reactor-eligible — `dispatch_socket` routes such sockets
         // to the worker pool, so this should be unreachable. Be safe.
         mailbox.post(
@@ -495,53 +529,105 @@ fn start_op(
         mailbox.post(job_id, Err(net::offload_err(label, NetError::Io(e))));
         return;
     }
-    // Try once: buffered data has no fd readiness to wait on, and the
-    // fd may already be ready.
+    // Try once: buffered data has no readiness to wait on, and the
+    // handle may already be ready.
     if let Advance::Done(result) = advance(&mut op, &socket, label) {
         mailbox.post(job_id, result);
         return;
     }
-    let token = Token(*next_token);
-    *next_token = next_token.wrapping_add(1).max(1);
-    let mut source = SourceFd(&fd);
-    if let Err(e) = poll.registry().register(&mut source, token, interest) {
+    let key = *next_key;
+    *next_key = next_key.wrapping_add(1).max(1);
+    // SAFETY: borrowing the raw handle is sound because the `PendingOp`
+    // inserted below owns `socket`, keeping the handle open until the op
+    // is `delete`d (on completion, cancellation, or a re-arm failure).
+    let added = unsafe {
+        let source = borrow_source(handle);
+        poller.add(&source, Event::new(key, readable, writable))
+    };
+    if let Err(e) = added {
         mailbox.post(job_id, Err(net::offload_err(label, NetError::Io(e))));
         return;
     }
-    ops.insert(token, PendingOp { socket, op, job_id, mailbox, label, fd });
+    ops.insert(
+        key,
+        PendingOp {
+            socket,
+            op,
+            job_id,
+            mailbox,
+            label,
+            handle,
+            readable,
+            writable,
+        },
+    );
 }
 
-/// A readiness event fired for `token` — drive that op forward.
-fn advance_token(token: Token, poll: &Poll, ops: &mut HashMap<Token, PendingOp>) {
-    let result = match ops.get_mut(&token) {
+/// A readiness event fired for `key` — drive that op forward, then
+/// either remove it (done) or re-arm it (oneshot, still pending).
+fn advance_token(key: usize, poller: &Poller, ops: &mut HashMap<usize, PendingOp>) {
+    // Driving the op borrows the table mutably; the re-arm / removal
+    // that follows borrows it again, so resolve the outcome first.
+    enum Outcome {
+        Done(OffloadResult),
+        Rearm,
+        Gone,
+    }
+    let outcome = match ops.get_mut(&key) {
         Some(pending) => {
             match advance(&mut pending.op, &pending.socket, pending.label) {
-                Advance::Done(result) => result,
-                Advance::Pending => return,
+                Advance::Done(result) => Outcome::Done(result),
+                Advance::Pending => Outcome::Rearm,
             }
         }
         // The op already completed or was cancelled — a stale event.
-        None => return,
+        None => Outcome::Gone,
     };
-    let pending = ops.remove(&token).unwrap();
-    let mut source = SourceFd(&pending.fd);
-    let _ = poll.registry().deregister(&mut source);
-    pending.mailbox.post(pending.job_id, result);
+    match outcome {
+        Outcome::Gone => {}
+        Outcome::Done(result) => {
+            let pending = ops.remove(&key).unwrap();
+            // SAFETY: `pending` still owns the socket here.
+            let source = unsafe { borrow_source(pending.handle) };
+            let _ = poller.delete(&source);
+            pending.mailbox.post(pending.job_id, result);
+        }
+        Outcome::Rearm => {
+            // `polling` is oneshot — re-arm for the next event.
+            let (handle, readable, writable) = {
+                let p = ops.get(&key).unwrap();
+                (p.handle, p.readable, p.writable)
+            };
+            // SAFETY: the op still owns the socket (still in `ops`).
+            let source = unsafe { borrow_source(handle) };
+            let event = Event::new(key, readable, writable);
+            if let Err(e) = poller.modify(&source, event) {
+                let _ = poller.delete(&source);
+                let pending = ops.remove(&key).unwrap();
+                pending.mailbox.post(
+                    pending.job_id,
+                    Err(net::offload_err(pending.label, NetError::Io(e))),
+                );
+            }
+        }
+    }
 }
 
 /// Fail every op on socket `socket_id` with `closed`, deregistering
-/// each fd. The socket's `closed` flag is already set (by `close`), so
-/// the woken coroutine sees the same `closed` an inline op would raise.
-fn cancel_socket(socket_id: u64, poll: &Poll, ops: &mut HashMap<Token, PendingOp>) {
-    let tokens: Vec<Token> = ops
+/// each handle. The socket's `closed` flag is already set (by `close`),
+/// so the woken coroutine sees the same `closed` an inline op would
+/// raise.
+fn cancel_socket(socket_id: u64, poller: &Poller, ops: &mut HashMap<usize, PendingOp>) {
+    let keys: Vec<usize> = ops
         .iter()
         .filter(|(_, p)| p.socket.id() == socket_id)
-        .map(|(t, _)| *t)
+        .map(|(k, _)| *k)
         .collect();
-    for token in tokens {
-        let pending = ops.remove(&token).unwrap();
-        let mut source = SourceFd(&pending.fd);
-        let _ = poll.registry().deregister(&mut source);
+    for key in keys {
+        let pending = ops.remove(&key).unwrap();
+        // SAFETY: `pending` still owns the socket here.
+        let source = unsafe { borrow_source(pending.handle) };
+        let _ = poller.delete(&source);
         pending.mailbox.post(
             pending.job_id,
             Err(net::offload_err(pending.label, NetError::Closed)),

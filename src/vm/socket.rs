@@ -26,7 +26,10 @@ use std::io::{self, Read, Write};
 use std::net::{
     Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawSocket, RawSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -40,6 +43,24 @@ use rustls::{
 
 /// A shared, `Send` socket handle. Cloning bumps the `Arc` refcount.
 pub type SocketHandle = Arc<SocketInner>;
+
+/// The OS-level handle the reactor registers with `polling`: a file
+/// descriptor on unix, a socket handle on Windows. `read_raw_handle` /
+/// `write_raw_handle` hand these to [`crate::vm::reactor`].
+#[cfg(unix)]
+pub type RawHandle = RawFd;
+#[cfg(windows)]
+pub type RawHandle = RawSocket;
+
+/// The raw OS handle of a `std::net` socket, spelled per platform.
+#[cfg(unix)]
+fn raw_handle_of<T: AsRawFd>(sock: &T) -> RawHandle {
+    sock.as_raw_fd()
+}
+#[cfg(windows)]
+fn raw_handle_of<T: AsRawSocket>(sock: &T) -> RawHandle {
+    sock.as_raw_socket()
+}
 
 /// A TLS connection in unbundled form: the sans-IO `rustls` state
 /// machine plus the raw `TcpStream` it drives. The reactor sets `sock`
@@ -648,49 +669,53 @@ impl SocketInner {
         matches!(self.kind, SocketKind::Tls(_))
     }
 
-    /// The raw fd to register for a read-direction reactor op — the
-    /// read half of a connected stream, the listener fd for `accept`,
-    /// the datagram fd for `recv_from`, or the single TCP fd under a
-    /// TLS connection.
-    pub fn read_raw_fd(&self) -> Option<RawFd> {
+    /// The raw handle to register for a read-direction reactor op — the
+    /// read half of a connected stream, the listener handle for
+    /// `accept`, the datagram handle for `recv_from`, or the single TCP
+    /// handle under a TLS connection.
+    pub fn read_raw_handle(&self) -> Option<RawHandle> {
         match &self.kind {
             SocketKind::TcpStream { read, .. } => {
-                Some(read.lock().unwrap().as_raw_fd())
+                Some(raw_handle_of(&*read.lock().unwrap()))
             }
-            SocketKind::TcpListener(l) => Some(l.as_raw_fd()),
-            SocketKind::Udp(u) => Some(u.as_raw_fd()),
-            SocketKind::Tls(m) => Some(m.lock().unwrap().sock.as_raw_fd()),
+            SocketKind::TcpListener(l) => Some(raw_handle_of(l)),
+            SocketKind::Udp(u) => Some(raw_handle_of(u)),
+            SocketKind::Tls(m) => Some(raw_handle_of(&m.lock().unwrap().sock)),
             SocketKind::TlsListener { listener, .. } => {
-                Some(listener.as_raw_fd())
+                Some(raw_handle_of(listener))
             }
         }
     }
 
-    /// The raw fd to register for a write-direction reactor op. For a
-    /// plain stream the write half is a distinct `dup`'d fd, so a
-    /// concurrent read and write register two independent fds; a TLS
-    /// connection has one fd, registered for both interests.
-    pub fn write_raw_fd(&self) -> Option<RawFd> {
+    /// The raw handle to register for a write-direction reactor op. For
+    /// a plain stream the write half is a distinct `dup`'d handle, so a
+    /// concurrent read and write register two independent handles; a TLS
+    /// connection has one handle, registered for both interests.
+    pub fn write_raw_handle(&self) -> Option<RawHandle> {
         match &self.kind {
             SocketKind::TcpStream { write, .. } => {
-                Some(write.lock().unwrap().as_raw_fd())
+                Some(raw_handle_of(&*write.lock().unwrap()))
             }
-            SocketKind::Tls(m) => Some(m.lock().unwrap().sock.as_raw_fd()),
+            SocketKind::Tls(m) => Some(raw_handle_of(&m.lock().unwrap().sock)),
             _ => None,
         }
     }
 
-    /// Toggle the fd's non-blocking mode. `O_NONBLOCK` lives on the
-    /// shared open file description, so setting it through any clone
-    /// (read / write / shutdown) affects every clone. A redundant
-    /// fcntl is skipped when the mode already matches.
+    /// Toggle the socket's non-blocking mode. On unix `O_NONBLOCK` lives
+    /// on the shared open file description, so one clone's flag is every
+    /// clone's; on Windows each duplicated socket handle carries its own
+    /// flag, so the read and write halves must both be toggled (the
+    /// reactor reads on one and writes on the other). Setting both is a
+    /// harmless redundant `fcntl` on unix. A redundant call is skipped
+    /// when the mode already matches.
     pub fn set_nonblocking_mode(&self, nb: bool) -> io::Result<()> {
         if self.nonblocking.load(Ordering::Acquire) == nb {
             return Ok(());
         }
         match &self.kind {
-            SocketKind::TcpStream { read, .. } => {
+            SocketKind::TcpStream { read, write } => {
                 read.lock().unwrap().set_nonblocking(nb)?;
+                write.lock().unwrap().set_nonblocking(nb)?;
             }
             SocketKind::Tls(m) => {
                 m.lock().unwrap().sock.set_nonblocking(nb)?;

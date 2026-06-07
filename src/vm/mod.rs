@@ -18,25 +18,24 @@ pub mod native_modules;
 pub mod offload;
 pub mod opcode;
 pub mod parser;
-/// The async-IO reactor. The real `epoll`/`kqueue`-backed implementation
-/// needs the unix `mio::unix::SourceFd` seam, so it builds only on
-/// reactor-capable targets — every non-wasm, non-Windows platform.
-/// `wasm32` (no sockets) and `windows` (IOCP gap, Windows Tier 1) both
-/// swap in an inert stub (see `reactor_stub.rs`); `Net` is unregistered
-/// on those targets so the stub is never reached at runtime.
-#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+/// The async-IO reactor. The real readiness-based implementation builds
+/// on every native target — epoll / kqueue / IOCP-AFD behind the
+/// cross-platform `polling` crate. Only `wasm32` (no sockets) swaps in
+/// an inert stub (see `reactor_stub.rs`); `Net` is unregistered there so
+/// the stub is never reached at runtime.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod reactor;
-#[cfg(any(target_arch = "wasm32", windows))]
+#[cfg(target_arch = "wasm32")]
 #[path = "reactor_stub.rs"]
 pub mod reactor;
 pub mod rng;
 pub mod scheduler;
-/// Network sockets. Reactor-capable targets only; `wasm32` and
-/// `windows` swap in a type-only stub (the `Net` module is
-/// unregistered there, so it is never reached at runtime).
-#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+/// Network sockets. Built on every native target; only `wasm32` swaps
+/// in a type-only stub (the `Net` module is unregistered there, so it
+/// is never reached at runtime).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod socket;
-#[cfg(any(target_arch = "wasm32", windows))]
+#[cfg(target_arch = "wasm32")]
 #[path = "socket_stub.rs"]
 pub mod socket;
 pub mod source_map;

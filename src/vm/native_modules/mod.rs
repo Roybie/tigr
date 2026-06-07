@@ -17,11 +17,10 @@ pub mod json;
 pub mod local_channel;
 pub mod map;
 pub mod math;
-// `Net` (sockets/TLS) builds only on reactor-capable targets: it
-// depends on the real `socket`/`reactor` API, which is stubbed on both
-// `wasm32` (no browser sockets) and `windows` (IOCP gap, Tier 1). `Os`
-// (processes/env) below stays on every native target — it is portable.
-#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+// `Net` (sockets/TLS) builds on every native target: it depends on the
+// real `socket`/`reactor` API, stubbed only on `wasm32` (no browser
+// sockets). `Os` (processes/env) below is likewise portable.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 pub mod object;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,10 +79,10 @@ pub fn resolve(name: &str) -> Option<Value> {
         #[cfg(not(target_arch = "wasm32"))]
         "_NativeChannel" => Some(channel::module()),
         // `Net` (sockets/TLS) needs the async reactor, unavailable on
-        // `wasm32` and on Windows Tier 1. Unregistered there so `import
-        // 'Net'` fails with a clean, catchable "no module of that name"
-        // error rather than panicking.
-        #[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+        // `wasm32`. Unregistered there so `import 'Net'` fails with a
+        // clean, catchable "no module of that name" error rather than
+        // panicking.
+        #[cfg(not(target_arch = "wasm32"))]
         "Net" => Some(net::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
@@ -136,10 +135,10 @@ pub fn native_blocking(
 /// on the actor thread to validate arguments and build a
 /// [`ReactorOp`]; the reactor's poll thread carries it out.
 ///
-/// Only the `Net` module builds socket entries, so on targets where
-/// `Net` is unregistered (`wasm32` and `windows`) this helper is
-/// unreferenced — kept for a uniform API.
-#[cfg_attr(any(target_arch = "wasm32", windows), allow(dead_code))]
+/// Only the `Net` module builds socket entries, so on `wasm32` (where
+/// `Net` is unregistered) this helper is unreferenced — kept for a
+/// uniform API.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn native_socket(
     name: &'static str,
     arity: Arity,

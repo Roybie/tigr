@@ -34,31 +34,30 @@ num-integer = "0.1"
 num-traits = "0.2"
 
 # Native dependencies that work on every non-wasm target, Windows
-# included. `rustyline` (the REPL line editor) is portable; the browser
-# playground excludes it because the wasm REPL console is HTML-driven.
+# included — sockets / TLS, the async-IO reactor, and the REPL editor.
+# Only `wasm32` (no browser sockets, HTML-driven REPL console) drops
+# them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `rustyline` (the REPL line editor) is portable.
 rustyline = "14"
-
-# Reactor-capable native dependencies — sockets/TLS and the async-IO
-# reactor. Excluded from `wasm32` (no browser sockets) AND from
-# `windows` (Tier 1: the reactor's unix `SourceFd` seam has no IOCP
-# port yet, and `Net` is stubbed there). Dropping them on Windows also
-# sidesteps the `ring`/NASM crypto toolchain on the Windows runner.
-[target.'cfg(all(not(target_arch = "wasm32"), not(windows)))'.dependencies]
 # v0.15 — TLS for the `Net` module's encrypted client connections.
 # `default-features = false` + `ring` selects the `ring` crypto
 # provider over the default `aws-lc-rs`, which would pull in a C
 # toolchain (cmake / NASM). `rustls-native-certs` loads the host OS
-# trust store so enterprise / custom CAs work and the root set never
-# goes stale — unlike a bundled `webpki-roots` snapshot.
+# trust store — the Windows certificate store included — so enterprise /
+# custom CAs work and the root set never goes stale, unlike a bundled
+# `webpki-roots` snapshot. On Windows `ring` assembles its x86_64 crypto
+# with NASM; the release workflow installs it on that runner.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
-# Phase B (v0.x green-threads) — the async-IO reactor. `mio` wraps
-# epoll / kqueue so one reactor thread can wait on thousands of socket
-# fds at once, instead of one worker thread per parked socket op.
-# `os-poll` gives `Poll`/`Waker`; `os-ext` gives `SourceFd` (we register
-# raw fds from `std::net` sockets rather than migrating to `mio::net`).
-mio = { version = "1", features = ["os-poll", "os-ext"] }
+# The async-IO reactor (Phase B, green-threads). `polling` (smol-rs)
+# wraps epoll / kqueue / IOCP-AFD behind one readiness API, so a single
+# reactor thread can wait on thousands of socket fds at once instead of
+# one worker thread per parked op — and it does so on every platform,
+# Windows included (`mio` could not register externally-created
+# `std::net` sockets there). We register raw fds / sockets directly in
+# oneshot mode, re-arming per event; see `src/vm/reactor.rs`.
+polling = "3"
 
 # wasm32-only dependencies — the `wasm-bindgen` glue for the browser
 # playground (see `src/wasm.rs`). Optional and pulled in by the

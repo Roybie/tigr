@@ -32,12 +32,11 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
-          # Windows Tier 1: the `Net` module is unregistered (the
-          # reactor's unix `SourceFd` seam has no IOCP port yet) and
-          # `rustls`/`mio` are dropped on this target, so no `ring`/NASM
-          # toolchain is needed. The VM, GC, compiler, stdlib, REPL,
-          # actors, `Os.run`, and BigInt all run. `Http`/`Url` (which
-          # import `Net`) are transitively unavailable here.
+          # Windows has full `Net` parity (TCP/UDP/TLS) with the other
+          # native targets: the async-IO reactor runs on IOCP-AFD via the
+          # `polling` crate, and `rustls`+`ring` provide TLS. `ring`
+          # assembles its x86_64 crypto with NASM, installed below on
+          # this runner only.
           - target: x86_64-pc-windows-msvc
             os: windows-latest
 
@@ -68,6 +67,13 @@ jobs:
 
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
+
+      # `ring` (the rustls crypto provider) assembles its x86_64 crypto
+      # with NASM on the MSVC toolchain. Only the Windows runner needs it;
+      # every other target ships the assembler in its base image.
+      - name: Install NASM (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/setup-nasm@v1
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

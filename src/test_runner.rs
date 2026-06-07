@@ -35,28 +35,10 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Test suites that import `Net` — directly, or transitively via the
-/// pure-tigr `Http`/`Url` stdlib modules. On Windows Tier 1 the `Net`
-/// module is unregistered (see `native_modules/mod.rs`), so these would
-/// fail at their top-level `import 'Net'`. Skipped during *directory*
-/// discovery on Windows; an explicit `tigr test tests/net_test.tg` is
-/// still returned verbatim and runs (failing with a clean, catchable
-/// "no module of that name" error). Empty list on every other platform.
-#[cfg(windows)]
-const WINDOWS_SKIP_SUITES: &[&str] = &[
-    "net_test.tg",
-    "http_test.tg",
-    "url_test.tg",
-    "io_reactor_test.tg",
-    "io_offload_test.tg",
-];
-
-/// Whether `name` is a suite to skip during discovery on this platform.
-#[cfg(windows)]
-fn skip_on_platform(name: &str) -> bool {
-    WINDOWS_SKIP_SUITES.contains(&name)
-}
-#[cfg(not(windows))]
+/// Whether `name` is a suite to skip during directory discovery on this
+/// platform. `Net` (and the `Http`/`Url` stdlib modules that build on
+/// it) now runs on every native target — Windows included — so nothing
+/// is skipped. Kept as a hook for any future platform-specific suite.
 fn skip_on_platform(_name: &str) -> bool {
     false
 }

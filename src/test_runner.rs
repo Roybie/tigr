@@ -177,9 +177,16 @@ mod tests {
         touch(&dir.join(".hidden/secret_test.tg")); // skipped
 
         let found = discover(&dir);
+        // Normalize separators so the `/`-spelled assertions below hold
+        // on Windows too, where discovered paths use `\`.
         let names: Vec<String> = found
             .iter()
-            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                p.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
 
         assert!(names.contains(&"math_test.tg".to_string()));

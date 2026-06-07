@@ -3,22 +3,22 @@
 > Native (Rust) module
 > Spec: [LANGUAGE.md §13.2](../../LANGUAGE.md#path-v06)
 
-`Path` manipulates path strings, available without an `import`. Every entry is pure string computation backed by the host's path rules: nothing here touches the filesystem, so the results are deterministic and the same code runs whether or not the path exists. The only error any entry raises is for a non-`String` argument. For path operations that do read the disk, see [`IO`](io.md).
+`Path` manipulates path strings, available without an `import`. Every entry is pure string computation: nothing here touches the filesystem, so the results are deterministic and the same code runs whether or not the path exists. Paths are POSIX-style on every platform — `/` is the one separator and a leading `/` means absolute — so the same logical paths behave identically on Linux, macOS, Windows, and the browser (the native filesystem accepts `/` on Windows too). The only error any entry raises is for a non-`String` argument. For path operations that do read the disk, see [`IO`](io.md).
 
 ## Functions
 
 | Function | Summary |
 |----------|---------|
-| [`join(part1, part2?) -> String`](#joinpart1-part2---string) | Joins path segments into one path, inserting the platform separator between them. |
+| [`join(part1, part2?) -> String`](#joinpart1-part2---string) | Joins path segments into one path, inserting `/` between them. An absolute segment (one starting with `/`) resets the path. |
 | [`dirname(path) -> String`](#dirnamepath---string) | Returns the parent-directory portion of `path`. |
 | [`basename(path) -> String`](#basenamepath---string) | Returns the final component of `path`, the file or directory name without its parent. |
 | [`ext(path) -> String`](#extpath---string) | Returns the file extension of `path`, without the leading dot. |
-| [`is_absolute(path) -> Bool`](#is_absolutepath---bool) | Tests whether `path` is an absolute path under the host's rules. |
+| [`is_absolute(path) -> Bool`](#is_absolutepath---bool) | Tests whether `path` is absolute — POSIX-style, a leading `/` — on every platform. |
 
 
 ### `join(part1, part2?) -> String`
 
-Joins path segments into one path, inserting the platform separator between them.
+Joins path segments into one path, inserting `/` between them. An absolute segment (one starting with `/`) resets the path.
 
 - `part1` *(String)*: the first segment. `join` is variadic, so any number of segments may follow.
 
@@ -74,7 +74,7 @@ print(Path.ext('README'));           // =>
 
 ### `is_absolute(path) -> Bool`
 
-Tests whether `path` is an absolute path under the host's rules.
+Tests whether `path` is absolute — POSIX-style, a leading `/` — on every platform.
 
 - `path` *(String)*: the path to test.
 

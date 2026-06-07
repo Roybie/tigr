@@ -1104,12 +1104,14 @@ cannot be spawned at all (e.g. command not found).
 
 > Navigable reference: [`docs/stdlib/path.md`](docs/stdlib/path.md).
 
-Pure path-string manipulation backed by the host's path rules; nothing
-here touches the filesystem.
+Pure path-string manipulation; nothing here touches the filesystem.
+Paths are POSIX-style on every platform (`/` separators, a leading `/`
+is absolute), so the same logical paths behave identically on Linux,
+macOS, Windows, and the browser.
 
 | Entry         | Signature                          | Behavior                                          |
 |---------------|------------------------------------|---------------------------------------------------|
-| `join`        | `join(...parts) -> String`         | Join path segments with the platform separator    |
+| `join`        | `join(...parts) -> String`         | Join path segments with `/` (an absolute segment resets) |
 | `dirname`     | `dirname(path) -> String`          | The parent directory (`''` if none)               |
 | `basename`    | `basename(path) -> String`         | The final component (`''` if none)                |
 | `ext`         | `ext(path) -> String`              | File extension without the dot (`''` if none)     |

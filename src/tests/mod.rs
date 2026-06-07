@@ -29,6 +29,15 @@ fn run_err(src: &str) -> String {
     }
 }
 
+/// Render a host filesystem path for interpolation into tigr source.
+/// tigr's single-quoted string literals process escapes (`'a\b'` is
+/// `a<backspace>`), so a Windows `\` path would be mangled by the lexer.
+/// The native filesystem accepts `/` on every platform, so normalize the
+/// separators to `/`.
+fn tg_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Render `src`'s error against its own SourceMap, panicking if the
 /// program succeeded. Returns the multi-line snippet output that the
 /// CLI/REPL would print.
@@ -2185,7 +2194,7 @@ fn v03_io_write_then_read_roundtrip() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("data.txt");
-    let path_str = path.to_string_lossy().to_string();
+    let path_str = tg_path(&path);
     let src = format!(
         "IO := import 'IO';
          IO.write_file('{path}', 'roundtrip');
@@ -3288,7 +3297,7 @@ fn v06_io_list_dir() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), "1").unwrap();
     std::fs::write(dir.join("b.txt"), "2").unwrap();
-    let src = format!("IO := import 'IO'; IO.list_dir('{}')", dir.to_string_lossy());
+    let src = format!("IO := import 'IO'; IO.list_dir('{}')", tg_path(&dir));
     match run(&src) {
         Value::Array(a) => {
             let mut names: Vec<String> = a
@@ -3314,7 +3323,7 @@ fn v06_io_mkdir_creates_nested() {
     let nested = dir.join("x").join("y");
     let src = format!(
         "IO := import 'IO'; IO.mkdir('{p}'); IO.is_dir('{p}')",
-        p = nested.to_string_lossy()
+        p = tg_path(&nested)
     );
     assert_eq!(run(&src), Value::Bool(true));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3328,7 +3337,7 @@ fn v06_io_remove_file() {
     std::fs::write(&path, "bye").unwrap();
     let src = format!(
         "IO := import 'IO'; IO.remove('{p}'); IO.exists('{p}')",
-        p = path.to_string_lossy()
+        p = tg_path(&path)
     );
     assert_eq!(run(&src), Value::Bool(false));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3341,7 +3350,7 @@ fn v06_io_remove_dir_recursive() {
     std::fs::write(dir.join("sub").join("f.txt"), "x").unwrap();
     let src = format!(
         "IO := import 'IO'; IO.remove('{p}'); IO.exists('{p}')",
-        p = dir.to_string_lossy()
+        p = tg_path(&dir)
     );
     assert_eq!(run(&src), Value::Bool(false));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3356,8 +3365,8 @@ fn v06_io_is_dir_is_file() {
     let src = format!(
         "IO := import 'IO';
          [IO.is_dir('{d}'), IO.is_file('{d}'), IO.is_dir('{f}'), IO.is_file('{f}')]",
-        d = dir.to_string_lossy(),
-        f = file.to_string_lossy()
+        d = tg_path(&dir),
+        f = tg_path(&file)
     );
     match run(&src) {
         Value::Array(a) => {
@@ -3382,7 +3391,7 @@ fn v06_io_stat_file() {
         "IO := import 'IO';
          s := IO.stat('{f}');
          [s.size, s.is_file, s.is_dir]",
-        f = file.to_string_lossy()
+        f = tg_path(&file)
     );
     match run(&src) {
         Value::Array(a) => {

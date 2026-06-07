@@ -1,6 +1,6 @@
 [package]
 name = "tigr"
-version = "0.23.0"
+version = "0.23.1"
 authors = ["Roy Brunton <notnurbyor@googlemail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"

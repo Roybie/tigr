@@ -714,6 +714,94 @@ install.
   is a stable release to install — but the binaries and curl script do
   not depend on 1.0 and can ship as soon as releases are tagged.
 
+### 32. Green-thread / coroutine liveness query  *(concurrency)*
+
+There is no non-destructive way to ask whether a `go` coroutine is still
+live. `cancel(handle)` returns liveness but *mutates* (it marks the
+handle for cancellation), and `join(handle)` blocks. A consumer that
+only wants to *check* a coroutine — "is this timer still pending?" — has
+nothing to call. This surfaced in the purr framework: its `Timer.running`
+falls back to a flag the module sets on completion/cancel, which a hot
+reload silently desyncs (see the reload note below), so the feature is
+documented as dev-only-flawed pending this item.
+
+- **The query.** A non-destructive predicate over a handle. Semantics
+  for a green handle: live iff `result.is_none()`, and treat a pending
+  `cancel_requested` as not-live so the answer reflects a `cancel`
+  *synchronously*, before the coroutine next parks and unwinds. A pure
+  native (reads the handle, no VM access) is enough for green handles.
+- **Design detail — naming (settle first).** Do **not** add a bare
+  common global like `alive` / `live`: those collide with ubiquitous
+  user variable names (`alive := true`, `entity.alive`), and even as a
+  shadowable global it invites "why does my `alive` behave oddly"
+  confusion. Prefer a less collision-prone form — a method/field on the
+  handle, or a namespaced helper — over a new top-level builtin.
+- **Design detail — actor vs green-thread consistency.** `join` spans
+  both a `Task` (actor) and a `GreenHandle` (green thread); `cancel` is
+  green-thread-only. Decide whether the liveness query covers `Task`
+  handles too, and what "alive" means for an actor running on another
+  thread, so this does not deepen the join/cancel asymmetry. This is the
+  part that needs real design, not a bolt-on.
+- **Reload latent bug (worth fixing regardless).** `Vm::cancel_coroutines`
+  (the hot-reload path in `embed.rs`) calls `scheduler.reset()` but does
+  **not** record a result on the surviving handles. A `GreenThread`
+  carries its `handle` (`scheduler.rs`), so a handle a program holds
+  across a reload dangles at `result = None` forever: a later `join` on
+  it misbehaves, and any result-based liveness reports it as alive. Fix:
+  before resetting, walk the queued/blocked/timer-blocked/io-blocked
+  threads and record `${cancelled: true}` on each live handle (the shape
+  a parked-cancel already records). Do this independent of the query
+  above — it makes both `join` and any future liveness check correct
+  across a reload.
+- **Consumer follow-up.** purr's `Timer.running` switches from its
+  module flag to this query once it lands, removing the hot-reload
+  desync. (purr also has `Signal.listening`, which needs nothing here —
+  it reads its own registry.)
+
+### 33. Windows networking parity  ✅ done  *(networking)*
+
+`Net` (TCP/UDP/TLS) was unix-only: the async-IO reactor registered raw
+socket fds with epoll/kqueue through `mio::unix::SourceFd`, so Windows
+and `wasm32` swapped in inert stubs and `import 'Net'` raised "no
+module" there. Windows now has full parity with linux/macOS.
+
+- Unify the reactor on the `polling` crate (smol-rs), one readiness API
+  over epoll / kqueue / IOCP-AFD. `mio` could not register
+  externally-created `std::net` sockets on Windows; `polling` can. The
+  `advance()` state machine and the blocking executor are unchanged, so
+  unix behaviour and idle-connection scaling are identical (the
+  1000-connection soak stays green).
+- Oneshot re-arm: `polling` delivers one event per arm (the only mode
+  portable to Windows AFD), so a still-`Pending` op is re-armed with
+  `modify`; the unix path was level-triggered and never re-armed.
+- TLS on Windows via `rustls` + `ring` (NASM on the CI runner) with
+  `rustls-native-certs` reading the Windows certificate store.
+- `socket.rs` raw-handle accessors are cfg'd (`AsRawFd` / `AsRawSocket`)
+  behind a `RawHandle` alias, and both stream halves are toggled
+  non-blocking (a Windows duplicated socket handle carries its own
+  flag). A new `Net.read_available(sock, n)` gives a non-blocking,
+  inline read for the `WS` poll loop below.
+- A `ci.yml` runs the suites on Linux and Windows so the path is guarded.
+
+### 34. Cross-platform `WS` WebSocket module  ✅ done  *(networking)*
+
+WebSockets are the one transport that spans every target a tigr program
+runs on (browsers have no raw TCP), so a networked game needs one `WS`
+API everywhere. Poll-based, identical surface on all four targets:
+`connect` / `send` / `poll` / `drain` / `state` / `close`.
+
+- Native: pure-tigr `stdlib/WS.tg` (an RFC 6455 client over `Net`) —
+  client masking, fragmentation reassembly, auto-pong, `wss://` over
+  TLS. The `Http`/`Url` precedent.
+- Web: `src/vm/native_modules/ws_web.rs`, a browser-`WebSocket` backend
+  over five `env` imports, built for a plain-wasm host (purr) but not
+  the `wasm-bindgen` playground. Reference plugin `web/tigr_ws.js`; ABI
+  in `docs/stdlib/ws.md`.
+- Resolution picks the backend per platform automatically: `WS.tg` on
+  native (needs `Net`), the `ws_web` shim on web (needs the JS host).
+- Validated by a hermetic `tests/ws_test.tg` (a tigr `Net` server does
+  the WS server side) and a live `wss://` echo example.
+
 ### Toward 1.0
 
 After v0.14 the language is feature-complete in every dimension this

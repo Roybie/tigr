@@ -1,6 +1,7 @@
-// tests/cancel_test.tg — cooperative green-thread cancellation: `cancel`.
+// tests/go_cancel_test.tg — cooperative green-thread cancellation
+// (`go_cancel`) and the non-destructive liveness query (`go_alive`).
 //
-// `cancel(handle)` requests cancellation of a `go` coroutine. It is
+// `go_cancel(handle)` requests cancellation of a `go` coroutine. It is
 // non-blocking and idempotent: it marks the handle so that the next time
 // the coroutine resumes *from a park* — any park, not just `wait`:
 // `yield`, `join`, channel recv, blocking IO, or the host's `wait_frame`
@@ -10,15 +11,21 @@
 // terminates only that coroutine, recorded so a later `join` reports
 // `${cancelled: true}` rather than re-raising — it never aborts the actor.
 //
-// Each case fully drains the coroutines it spawns (joining them, after
-// cancelling where needed) so the scheduler queue is empty between cases.
+// `go_alive(handle)` is the read-only companion: `true` while the
+// coroutine is live, `false` once it has finished — and `false` the
+// instant a `go_cancel` marks it, before it unwinds.
+//
+// Both are green-only members of the `go_*` family (`join` stays bare
+// because it also joins actor `Task`s). Each case fully drains the
+// coroutines it spawns (joining them, after cancelling where needed) so
+// the scheduler queue is empty between cases.
 //
 // Evaluates to an array of suites so `tigr test` aggregates each tally.
 
 Test := import 'Test';
 
 [
-    Test.suite('cancel — basics', [
+    Test.suite('go_cancel — basics', [
         Test.case('cancel mid-wait: later statements never run', fn() {
             log := [];
             h := go fn() {
@@ -27,37 +34,37 @@ Test := import 'Test';
                 log = log + ['after'];   // unreachable: cancelled at wait
             };
             while (#log == 0) { yield };   // let it reach the wait
-            cancel(h);
+            go_cancel(h);
             r := join(h);
             Test.assert_eq([log, r], [['before'], ${ cancelled: true }])
         }),
 
-        Test.case('cancel returns true for a still-live coroutine', fn() {
+        Test.case('go_cancel returns true for a still-live coroutine', fn() {
             h := go fn() { wait(10) };
             while (false) { yield };
             yield;                         // let it park at the wait
-            marked := cancel(h);
+            marked := go_cancel(h);
             join(h);                       // drain
             Test.assert(marked)
         }),
 
-        Test.case('cancel of a finished coroutine is a no-op (false)', fn() {
+        Test.case('go_cancel of a finished coroutine is a no-op (false)', fn() {
             h := go fn() { 42 };
             Test.assert_eq(join(h), 42);   // run it to completion first
-            Test.assert_eq(cancel(h), false)
+            Test.assert_eq(go_cancel(h), false)
         }),
 
-        Test.case('cancel of a non-handle raises type_mismatch', fn() {
-            kind := try { cancel(42); null } catch (e) { e.kind };
+        Test.case('go_cancel of a non-handle raises type_mismatch', fn() {
+            kind := try { go_cancel(42); null } catch (e) { e.kind };
             Test.assert_eq(kind, 'type_mismatch')
         }),
     ]),
 
-    Test.suite('cancel — fires at any park', [
+    Test.suite('go_cancel — fires at any park', [
         Test.case('cancellation fires at a wait park', fn() {
             h := go fn() { wait(10); 'ran' };
             yield;                         // reach the wait
-            cancel(h);
+            go_cancel(h);
             Test.assert_eq(join(h), ${ cancelled: true })
         }),
 
@@ -69,7 +76,7 @@ Test := import 'Test';
                 while (true) { c = c + 1; yield };
             };
             yield;                         // let it spin once
-            cancel(h);
+            go_cancel(h);
             Test.assert_eq(join(h), ${ cancelled: true })
         }),
 
@@ -79,21 +86,21 @@ Test := import 'Test';
             slow := go fn() { wait(10); 1 };
             waiter := go fn() { join(slow); 'returned' };
             yield; yield;                  // let waiter reach its join
-            cancel(waiter);
+            go_cancel(waiter);
             r := join(waiter);
-            cancel(slow);                  // drain the still-parked sibling
+            go_cancel(slow);               // drain the still-parked sibling
             join(slow);
             Test.assert_eq(r, ${ cancelled: true })
         }),
     ]),
 
-    Test.suite('cancel — semantics', [
+    Test.suite('go_cancel — semantics', [
         Test.case('cancelled is catchable and reified as kind cancelled', fn() {
             h := go fn() {
                 try { wait(10); 'no' } catch (e) { e.kind }
             };
             yield;
-            cancel(h);
+            go_cancel(h);
             Test.assert_eq(join(h), 'cancelled')
         }),
 
@@ -107,7 +114,7 @@ Test := import 'Test';
                 'done'
             };
             yield;
-            cancel(h);
+            go_cancel(h);
             r := join(h);
             Test.assert_eq([steps, r], [['cleanup', 'after'], 'done'])
         }),
@@ -116,14 +123,14 @@ Test := import 'Test';
             // marked before it ever parks, with no park in its body — it
             // is never preempted and finishes normally.
             h := go fn() { 99 };
-            cancel(h);
+            go_cancel(h);
             Test.assert_eq(join(h), 99)
         }),
 
         Test.case('self-cancel takes effect at the next park', fn() {
             hbox := [null];
             h := go fn() {
-                cancel(hbox[0]);             // mark self
+                go_cancel(hbox[0]);          // mark self
                 wait(10);                    // next park raises cancelled
                 'never'
             };
@@ -134,35 +141,35 @@ Test := import 'Test';
         Test.case('self-cancel with no later park runs to completion', fn() {
             hbox := [null];
             h := go fn() {
-                cancel(hbox[0]);
+                go_cancel(hbox[0]);
                 'finished'                   // no park: completes
             };
             hbox[0] = h;
             Test.assert_eq(join(h), 'finished')
         }),
 
-        Test.case('cancel is idempotent', fn() {
+        Test.case('go_cancel is idempotent', fn() {
             h := go fn() { wait(10) };
             yield;
-            first := cancel(h);
-            second := cancel(h);             // still live, marked again
+            first := go_cancel(h);
+            second := go_cancel(h);          // still live, marked again
             r := join(h);
             Test.assert_eq([first, second, r], [true, true, ${ cancelled: true }])
         }),
     ]),
 
-    Test.suite('cancel — join contract', [
+    Test.suite('go_cancel — join contract', [
         Test.case('join on a cancelled coroutine returns the cancelled tag', fn() {
             h := go fn() { wait(10) };
             yield;
-            cancel(h);
+            go_cancel(h);
             Test.assert_eq(join(h), ${ cancelled: true })
         }),
 
         Test.case('re-joining a cancelled coroutine returns it again', fn() {
             h := go fn() { wait(10) };
             yield;
-            cancel(h);
+            go_cancel(h);
             a := join(h);
             b := join(h);
             Test.assert_eq([a, b], [${ cancelled: true }, ${ cancelled: true }])
@@ -173,9 +180,60 @@ Test := import 'Test';
             // and observable work after the cancel still happens.
             h := go fn() { wait(10) };
             yield;
-            cancel(h);
+            go_cancel(h);
             join(h);
             Test.assert(true)               // reaching here proves it
+        }),
+    ]),
+
+    Test.suite('go_alive — liveness query', [
+        Test.case('a parked coroutine reads as alive', fn() {
+            h := go fn() { wait(10) };
+            yield;                         // let it park at the wait
+            live := go_alive(h);
+            go_cancel(h);                  // drain
+            join(h);
+            Test.assert(live)
+        }),
+
+        Test.case('a finished coroutine reads as not alive', fn() {
+            h := go fn() { 7 };
+            join(h);                       // run to completion
+            Test.assert_eq(go_alive(h), false)
+        }),
+
+        Test.case('go_cancel makes it not-alive synchronously', fn() {
+            // the answer reflects the cancel at once, before the target
+            // next parks and unwinds.
+            h := go fn() { wait(10) };
+            yield;
+            before := go_alive(h);
+            go_cancel(h);
+            after := go_alive(h);          // false immediately
+            join(h);                       // drain
+            Test.assert_eq([before, after], [true, false])
+        }),
+
+        Test.case('a cancelled coroutine reads as not alive after join', fn() {
+            h := go fn() { wait(10) };
+            yield;
+            go_cancel(h);
+            join(h);
+            Test.assert_eq(go_alive(h), false)
+        }),
+
+        Test.case('go_alive does not consume the handle', fn() {
+            // querying it twice and then joining still yields the value.
+            h := go fn() { yield; 'v' };
+            yield;
+            a := go_alive(h);
+            b := go_alive(h);
+            Test.assert_eq([a, b, join(h)], [true, true, 'v'])
+        }),
+
+        Test.case('go_alive of a non-handle raises type_mismatch', fn() {
+            kind := try { go_alive(42); null } catch (e) { e.kind };
+            Test.assert_eq(kind, 'type_mismatch')
         }),
     ]),
 ]

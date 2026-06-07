@@ -23,8 +23,9 @@ use crate::vm::socket::SocketHandle;
 use crate::vm::task::TaskHandle;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind};
 use crate::vm::gc::{
-    ArrayKind, BytesKind, ClosureKind, GcRef, GeneratorKind, GreenHandleKind,
-    IterKind, LocalChannelKind, MapKind, ObjectKind, SetKind, UpvalueKind,
+    ArrayKind, BytesKind, ClosureKind, DeferredKind, GcRef, GeneratorKind,
+    GreenHandleKind, IterKind, LocalChannelKind, MapKind, ObjectKind, SetKind,
+    UpvalueKind,
 };
 
 #[derive(Clone)]
@@ -108,6 +109,13 @@ pub enum Value {
     // `Channel` it never leaves this heap, so it carries `Value`s
     // directly (no transfer-encoding). GC-managed; identity equality.
     LocalChannel(GcRef<LocalChannelKind>),
+
+    // A first-class deferred result. Minted with `Deferred.new()`,
+    // completed with `Deferred.resolve(d, v)` / `Deferred.reject(d, e)`,
+    // and awaited with `join(d)` — a write-once value any coroutine can
+    // wait on and anything (including a host) can complete. Like
+    // `GreenHandle`: GC-managed, intra-actor only, identity equality.
+    Deferred(GcRef<DeferredKind>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -518,6 +526,7 @@ impl Value {
             Value::Generator(_) => "generator",
             Value::GreenHandle(_) => "green_thread",
             Value::LocalChannel(_) => "local_channel",
+            Value::Deferred(_) => "deferred",
         }
     }
 
@@ -671,6 +680,7 @@ impl PartialEq for Value {
             (Generator(a), Generator(b)) => a == b,
             (GreenHandle(a), GreenHandle(b)) => a == b,
             (LocalChannel(a), LocalChannel(b)) => a == b,
+            (Deferred(a), Deferred(b)) => a == b,
             (BigInt(a), BigInt(b)) => a == b,
             // A `BigInt` and an `Int` of equal value compare equal,
             // mirroring `Int`/`Float` cross-type equality above.
@@ -811,6 +821,7 @@ impl fmt::Display for Value {
             Value::Generator(_) => f.write_str("<generator>"),
             Value::GreenHandle(_) => f.write_str("<green thread>"),
             Value::LocalChannel(_) => f.write_str("<local channel>"),
+            Value::Deferred(_) => f.write_str("<deferred>"),
         }
     }
 }

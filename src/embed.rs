@@ -402,6 +402,25 @@ impl Session {
         self.vm.call_function(callee, args)
     }
 
+    /// Resolve a `Deferred` the host holds (one a tigr native handed back,
+    /// e.g. from a queued GPU readback) with `value`, waking every
+    /// coroutine parked in `join(d)`. Non-blocking: the woken coroutines
+    /// run on the next [`drain_ready`](Session::drain_ready). Returns
+    /// `true` if it settled the deferred, `false` if it was already
+    /// settled. This is the async-completion seam — the host supplies a
+    /// value from outside the worker pool once it is ready, typically from
+    /// its own frame loop. See [`Vm::resolve_deferred`].
+    pub fn resolve(&mut self, deferred: Value, value: Value) -> Result<bool, RuntimeError> {
+        self.vm.resolve_deferred(deferred, value)
+    }
+
+    /// Reject a `Deferred` the host holds, so each awaiter's `join`
+    /// re-raises `error`. The failure counterpart of
+    /// [`resolve`](Session::resolve).
+    pub fn reject(&mut self, deferred: Value, error: Value) -> Result<bool, RuntimeError> {
+        self.vm.reject_deferred(deferred, error)
+    }
+
     /// `true` iff `name` is bound to a callable value (tigr closure or
     /// native). Lets a host probe for optional callbacks before a
     /// frame loop, e.g. skip `update` if the game never defined one.
@@ -542,6 +561,26 @@ mod tests {
         s.load("x := Host.answer();").expect("load");
         s.reload("y := Host.answer() + 1;").expect("reload");
         assert_eq!(int(&s.binding("y").expect("y")), 8);
+    }
+
+    /// Hot-reload records a result on a handle the program holds across the
+    /// reload. `cancel_coroutines` discards the parked coroutine, so without
+    /// the fix the handle would dangle at `result = None` forever: a later
+    /// `join` would hang and `go_alive` report it live. After the reload the
+    /// surviving handle reads as not alive and `join` returns
+    /// `${cancelled: true}` rather than blocking. The coroutine parks at a
+    /// `yield` (valid in a synchronous load, unlike `wait`); the handle is
+    /// grabbed before the reload and fed back through a reloaded function so
+    /// it is rooted on the call stack when queried.
+    #[test]
+    fn reload_records_cancelled_on_surviving_handles() {
+        let mut s = Session::new();
+        s.load("h := go fn() { yield; 'x' }; yield;").expect("load");
+        let handle = s.binding("h").expect("h");
+        s.reload("probe := fn(x) { [go_alive(x), join(x).cancelled] };")
+            .expect("reload");
+        let r = s.call("probe", vec![handle]).expect("probe");
+        assert_eq!(format!("{r:?}"), "[false, true]");
     }
 
     /// Host-facing helpers: `Value::get_field` reads an `Object` field,
@@ -869,6 +908,66 @@ mod tests {
         // Clock reaches the wake time — coroutine resumes and finishes.
         s.vm().drain_ready(1.0).expect("drain @1.0");
         assert_eq!(int(&s.binding("flag").expect("flag")), 1);
+    }
+
+    /// The async-completion seam: a host resolves a `Deferred` minted by
+    /// tigr code from outside the worker pool (here, between drains, as a
+    /// frame loop would after a render), waking the coroutine parked in
+    /// `join(d)`. The first drain runs the coroutine up to its `join` and
+    /// parks it; `resolve` settles it; the second drain runs the awaiter.
+    #[test]
+    fn host_resolves_a_deferred_across_drain() {
+        let mut s = Session::new();
+        s.load("done := 0; d := Deferred.new(); go fn(){ done = join(d); };")
+            .expect("load");
+        // First drain steps the coroutine to `join(d)`, where it parks —
+        // non-blocking, so this returns with `done` still 0.
+        s.vm().drain_ready(0.0).expect("drain 1");
+        assert_eq!(int(&s.binding("done").expect("done")), 0);
+        // Host completes it from outside; the next drain runs the awaiter.
+        let d = s.binding("d").expect("d");
+        assert!(s.resolve(d, Value::Int(99)).expect("resolve"));
+        s.vm().drain_ready(0.0).expect("drain 2");
+        assert_eq!(int(&s.binding("done").expect("done")), 99);
+    }
+
+    /// `reject` from the host re-raises at the awaiter's `join`, where its
+    /// own `try`/`catch` handles it.
+    #[test]
+    fn host_rejects_a_deferred_across_drain() {
+        let mut s = Session::new();
+        s.load(
+            "outcome := 'pending'; d := Deferred.new(); \
+             go fn(){ outcome = try { join(d) } catch (e) { 'rejected: ' + e }; };",
+        )
+        .expect("load");
+        s.vm().drain_ready(0.0).expect("drain 1");
+        let d = s.binding("d").expect("d");
+        assert!(s.reject(d, Value::Str("nope".into())).expect("reject"));
+        s.vm().drain_ready(0.0).expect("drain 2");
+        match s.binding("outcome").expect("outcome") {
+            Value::Str(msg) => assert_eq!(&*msg, "rejected: nope"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    /// Settle-once holds across the host boundary too: a second `resolve`
+    /// returns `false` and changes nothing.
+    #[test]
+    fn host_resolve_is_settle_once() {
+        let mut s = Session::new();
+        s.load("d := Deferred.new();").expect("load");
+        let d = s.binding("d").expect("d");
+        assert!(s.resolve(d.clone(), Value::Int(1)).expect("first"));
+        assert!(!s.resolve(d, Value::Int(2)).expect("second"));
+    }
+
+    /// Resolving a value that is not a deferred is a clean error, not a
+    /// panic.
+    #[test]
+    fn host_resolve_type_errors_on_non_deferred() {
+        let mut s = Session::new();
+        assert!(s.resolve(Value::Int(5), Value::Int(1)).is_err());
     }
 
     /// A host-provided frame-yield (built with [`native_frame_wait`], as

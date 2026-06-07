@@ -101,16 +101,22 @@ const BUILTINS: &[Spec] = &[
     // `GameTime.wait_frame` via `embed::native_frame_wait`.
     Spec { name: "wait", arity: Arity::Exact(1), kind: NativeKind::Park(park_wait) },
     // Cooperative cancellation of a `go` green thread. Pure and
-    // non-blocking: it only marks the handle (see [`native_cancel`]); the
+    // non-blocking: it only marks the handle (see [`native_go_cancel`]); the
     // cancellation itself fires in the VM the next time that coroutine
     // resumes from a park (`Vm::load_green`). No VM interception needed —
-    // unlike `join`, `cancel` never suspends the caller.
-    Spec { name: "cancel", arity: Arity::Exact(1), kind: pure(native_cancel) },
+    // unlike `join`, `go_cancel` never suspends the caller.
+    Spec { name: "go_cancel", arity: Arity::Exact(1), kind: pure(native_go_cancel) },
+    // Non-destructive liveness query for a `go` green thread. Pure: it
+    // only reads the handle (no scheduler access), so unlike `go_cancel`
+    // it needs no VM interception. Part of the `go_*` family — operations
+    // that act exclusively on a green handle (`join` stays bare because it
+    // also joins actor `Task`s).
+    Spec { name: "go_alive", arity: Arity::Exact(1), kind: pure(native_go_alive) },
 ];
 
-const BUILTIN_NAMES: [&str; 15] = [
+const BUILTIN_NAMES: [&str; 16] = [
     "print", "str", "num", "int", "float", "bool", "floor", "ceil", "rand",
-    "type", "gc", "__select", "join", "wait", "cancel",
+    "type", "gc", "__select", "join", "wait", "go_cancel", "go_alive",
 ];
 
 fn native_print(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -162,7 +168,7 @@ fn park_wait(args: &[Value]) -> Result<WaitKind, RuntimeError> {
     }
 }
 
-/// `cancel(handle)` — request cooperative cancellation of a `go` green
+/// `go_cancel(handle)` — request cooperative cancellation of a `go` green
 /// thread. Non-blocking and idempotent: it marks the handle so the
 /// target raises a catchable `cancelled` at its *next* park (any
 /// `wait`/`wait_frame`/`join`/channel-recv/blocking-IO/`yield`), which
@@ -172,7 +178,7 @@ fn park_wait(args: &[Value]) -> Result<WaitKind, RuntimeError> {
 /// Cancellation is observed only at park points — a coroutine that never
 /// parks again runs to completion. Cancelling anything but a green-thread
 /// handle is a type error.
-fn native_cancel(args: &[Value]) -> Result<Value, RuntimeError> {
+fn native_go_cancel(args: &[Value]) -> Result<Value, RuntimeError> {
     match args.first() {
         Some(Value::GreenHandle(h)) => {
             let mut g = h.borrow_mut();
@@ -185,7 +191,31 @@ fn native_cancel(args: &[Value]) -> Result<Value, RuntimeError> {
         }
         other => Err(RuntimeError::new(
             RuntimeErrorKind::TypeMismatch(format!(
-                "cancel expects a green-thread handle, got {}",
+                "go_cancel expects a green-thread handle, got {}",
+                other.map(|v| v.type_name()).unwrap_or("nothing"),
+            )),
+            0,
+        )),
+    }
+}
+
+/// `go_alive(handle)` — non-destructive liveness query for a `go` green
+/// thread. Returns `true` while the coroutine is still live, `false` once
+/// it has finished (returned, raised, or was cancelled). A handle marked
+/// by `go_cancel` but not yet unwound reads as **not** alive, so the
+/// answer reflects the cancellation synchronously rather than waiting for
+/// the target to next park and unwind. Reads the handle only — no park,
+/// no mutation. Querying anything but a green-thread handle is a type
+/// error (mirroring `go_cancel`); covering actor `Task`s is out of scope.
+fn native_go_alive(args: &[Value]) -> Result<Value, RuntimeError> {
+    match args.first() {
+        Some(Value::GreenHandle(h)) => {
+            let g = h.borrow();
+            Ok(Value::Bool(g.result.is_none() && !g.cancel_requested))
+        }
+        other => Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(format!(
+                "go_alive expects a green-thread handle, got {}",
                 other.map(|v| v.type_name()).unwrap_or("nothing"),
             )),
             0,

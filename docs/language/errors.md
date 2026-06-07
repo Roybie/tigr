@@ -91,7 +91,7 @@ A built-in runtime error reifies with one of these `kind` values:
 - `stack_underflow`: an internal stack-balance failure.
 - `cycle`: a cyclic structure where one is not allowed, for example `JSON.stringify` of a self-referential value.
 - `no_match`: a `match` with no arm matching the subject and no `_` wildcard.
-- `cancelled`: a green thread was [`cancel`led](concurrency.md#cancelling-a-coroutine-cancel) while parked; raised at its park call site.
+- `cancelled`: a green thread was [`go_cancel`led](concurrency.md#cancelling-a-coroutine-go_cancel) while parked; raised at its park call site.
 
 Native stdlib modules such as `Math`, `IO`, `JSON`, and `Path` raise plain string messages, so `catch` binds those as strings rather than structured objects. The one exception is `JSON.stringify` on a circular structure, which raises a structured `cycle` error. The `Net` module is also structured: its failures arrive as `${kind, message}` objects.
 

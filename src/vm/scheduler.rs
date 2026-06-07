@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 
 use crate::vm::error::RuntimeError;
-use crate::vm::gc::{GcRef, GreenHandleKind, UpvalueKind};
+use crate::vm::gc::{DeferredKind, GcRef, GreenHandleKind, UpvalueKind};
 use crate::vm::value::Value;
 use crate::vm::vm::CallFrame;
 
@@ -75,6 +75,20 @@ pub struct GreenHandle {
     pub(crate) cancel_requested: bool,
 }
 
+/// A first-class deferred result on the GC heap. Minted by
+/// `Deferred.new()`, completed by `Deferred.resolve`/`reject`, awaited by
+/// `join`. Like a [`GreenHandle`] it records its outcome once and hands
+/// it back to every later `join`; unlike one, no coroutine produces it —
+/// anything (another coroutine, or a host) supplies the value.
+pub struct Deferred {
+    /// `None` until settled. `Some(ResumeOutcome::Value(v))` once
+    /// `resolve`d, `Some(ResumeOutcome::Raise(e))` once `reject`ed.
+    /// Write-once: `result.is_some()` *is* "settled", so a second
+    /// `resolve`/`reject` is a no-op (it returns `false`). A `join`
+    /// after settle reads this without parking (the latch).
+    pub result: Option<ResumeOutcome>,
+}
+
 /// A coroutine parked in a cooperative `join`, waiting for another
 /// green thread to finish before it can resume.
 struct BlockedThread {
@@ -88,6 +102,17 @@ struct BlockedThread {
 struct IoBlockedThread {
     /// The offload job id this thread is waiting on.
     job_id: u64,
+    thread: GreenThread,
+}
+
+/// A coroutine parked in `join(d)` on a [`Deferred`], waiting for it to
+/// be `resolve`d or `reject`ed. The completer may be another coroutine
+/// or, for a host-driven deferred, the embedder; either way
+/// [`wake_deferred`](Scheduler::wake_deferred) re-enqueues this thread.
+/// Keyed by the deferred's `GcRef` handle, which has identity equality.
+struct DeferredBlockedThread {
+    /// The deferred this thread is awaiting.
+    deferred: GcRef<DeferredKind>,
     thread: GreenThread,
 }
 
@@ -156,6 +181,14 @@ pub struct Scheduler {
     /// off `queue`, and deliberately excluded from `can_make_progress`
     /// (only the host wakes these, never another coroutine).
     timer_blocked: Vec<TimerBlockedThread>,
+    /// Coroutines parked in `join(d)` on a [`Deferred`] — not ready until
+    /// the deferred is settled. Like `blocked`, an internal completer
+    /// (another coroutine's `resolve`/`reject`) re-readies these; unlike
+    /// it, a host may also settle the deferred from outside the VM, so
+    /// these are deliberately excluded from `can_make_progress` (a
+    /// deferred awaiter is not, by itself, evidence the actor can make
+    /// progress on its own thread).
+    deferred_blocked: Vec<DeferredBlockedThread>,
     next_id: u32,
     current_id: u32,
     current_is_main: bool,
@@ -168,6 +201,7 @@ impl Scheduler {
             blocked: Vec::new(),
             io_blocked: Vec::new(),
             timer_blocked: Vec::new(),
+            deferred_blocked: Vec::new(),
             next_id: 1,
             current_id: 0,
             current_is_main: true,
@@ -181,6 +215,7 @@ impl Scheduler {
         self.blocked.clear();
         self.io_blocked.clear();
         self.timer_blocked.clear();
+        self.deferred_blocked.clear();
         self.next_id = 1;
         self.current_id = 0;
         self.current_is_main = true;
@@ -307,6 +342,35 @@ impl Scheduler {
         !self.timer_blocked.is_empty()
     }
 
+    /// Park `thread` in a `join(d)` on deferred `d` until it is settled.
+    /// Re-enqueued by [`wake_deferred`].
+    pub fn park_deferred(&mut self, d: GcRef<DeferredKind>, thread: GreenThread) {
+        self.deferred_blocked.push(DeferredBlockedThread { deferred: d, thread });
+    }
+
+    /// Deferred `d` was settled with `outcome`: move *every* coroutine
+    /// parked on it back onto the run-queue, delivering `outcome` — the
+    /// `resolve`d value, or a `Raise` re-surfacing the `reject`ed value at
+    /// each awaiter's `join` site. Broadcasts (a deferred can have many
+    /// awaiters), mirroring [`wake_joiners`](Scheduler::wake_joiners).
+    pub fn wake_deferred(&mut self, d: GcRef<DeferredKind>, outcome: &ResumeOutcome) {
+        let mut i = 0;
+        while i < self.deferred_blocked.len() {
+            if self.deferred_blocked[i].deferred == d {
+                let mut bt = self.deferred_blocked.swap_remove(i);
+                bt.thread.parked_resume = Some(outcome.clone());
+                self.queue.push_back(bt.thread);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Is any coroutine parked in a `join` on a deferred?
+    pub fn has_deferred_blocked(&self) -> bool {
+        !self.deferred_blocked.is_empty()
+    }
+
     /// The earliest `wake_time` among timer-parked coroutines, if any.
     /// The standalone driver sleeps the actor thread to this point.
     pub fn next_timer_wake(&self) -> Option<f64> {
@@ -328,6 +392,7 @@ impl Scheduler {
             && self.blocked.is_empty()
             && self.io_blocked.is_empty()
             && self.timer_blocked.is_empty()
+            && self.deferred_blocked.is_empty()
     }
 
     /// Could the actor make progress if the running coroutine parked
@@ -380,6 +445,14 @@ impl Scheduler {
             self.queue.push_back(t.thread);
             return true;
         }
+        if let Some(pos) =
+            self.deferred_blocked.iter().position(|t| t.thread.id == id)
+        {
+            let mut t = self.deferred_blocked.swap_remove(pos);
+            t.thread.parked_resume = ready;
+            self.queue.push_back(t.thread);
+            return true;
+        }
         false
     }
 
@@ -389,14 +462,15 @@ impl Scheduler {
         self.current_is_main = is_main;
     }
 
-    /// Every parked coroutine — ready, `join`-blocked, IO-blocked *and*
-    /// timer-blocked — for GC root tracing.
+    /// Every parked coroutine — ready, `join`-blocked, IO-blocked,
+    /// timer-blocked *and* deferred-blocked — for GC root tracing.
     pub fn queued(&self) -> impl Iterator<Item = &GreenThread> {
         self.queue
             .iter()
             .chain(self.blocked.iter().map(|bt| &bt.thread))
             .chain(self.io_blocked.iter().map(|t| &t.thread))
             .chain(self.timer_blocked.iter().map(|t| &t.thread))
+            .chain(self.deferred_blocked.iter().map(|t| &t.thread))
     }
 
     /// Borrow a parked coroutine's value stack by id — used to resolve
@@ -410,6 +484,7 @@ impl Scheduler {
             .chain(self.blocked.iter().map(|bt| &bt.thread))
             .chain(self.io_blocked.iter().map(|t| &t.thread))
             .chain(self.timer_blocked.iter().map(|t| &t.thread))
+            .chain(self.deferred_blocked.iter().map(|t| &t.thread))
             .find(|gt| gt.id == id)
             .map(|gt| &gt.stack)
     }
@@ -421,6 +496,7 @@ impl Scheduler {
             .chain(self.blocked.iter_mut().map(|bt| &mut bt.thread))
             .chain(self.io_blocked.iter_mut().map(|t| &mut t.thread))
             .chain(self.timer_blocked.iter_mut().map(|t| &mut t.thread))
+            .chain(self.deferred_blocked.iter_mut().map(|t| &mut t.thread))
             .find(|gt| gt.id == id)
             .map(|gt| &mut gt.stack)
     }

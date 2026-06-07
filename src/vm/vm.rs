@@ -28,15 +28,16 @@ use num_traits::{Pow, Zero};
 use crate::vm::chunk::Chunk;
 use crate::vm::error::{RuntimeError, RuntimeErrorKind, TraceFrame};
 use crate::vm::gc::{
-    self, ArrayKind, ClosureKind, GcRef, GeneratorKind, GreenHandleKind,
-    IterKind, Marker, ObjectKind, Trace, UpvalueKind,
+    self, ArrayKind, ClosureKind, DeferredKind, GcRef, GeneratorKind,
+    GreenHandleKind, IterKind, Marker, ObjectKind, Trace, UpvalueKind,
 };
 use crate::vm::offload::{self, BlockingJob, CompletionMailbox};
 use crate::vm::opcode::OpCode;
 use crate::vm::reactor;
 use crate::vm::socket::ReactorOp;
 use crate::vm::scheduler::{
-    GenStatus, GeneratorState, GreenHandle, GreenThread, ResumeOutcome, Scheduler,
+    GenStatus, GeneratorState, GreenHandle, GreenThread, ResumeOutcome,
+    Scheduler,
 };
 use crate::vm::source_map::SourceMap;
 use crate::vm::stdlib;
@@ -432,6 +433,41 @@ impl Vm {
         self.call_value(callee, args, 0)
     }
 
+    /// Host entry: resolve a `Deferred` (minted by tigr code and held by
+    /// the host) with `value`, waking every coroutine parked in
+    /// `join(d)`. Non-blocking — the woken coroutines run on the host's
+    /// next [`drain_ready`](Vm::drain_ready). Returns `true` if it settled
+    /// the deferred, `false` if it was already settled; errors if
+    /// `deferred` is not a [`Value::Deferred`]. This is tigr's
+    /// async-completion seam: a host completes a parked coroutine from
+    /// *outside* the worker pool — a GPU readback, an OS event, a file
+    /// dialog — by resolving the deferred it handed back. Must be called
+    /// on the VM's own thread (the common embedder model, where the host
+    /// drives the VM on one thread).
+    pub fn resolve_deferred(
+        &mut self,
+        deferred: Value,
+        value: Value,
+    ) -> Result<bool, RuntimeError> {
+        let d = as_deferred(&deferred, "resolve_deferred")?;
+        Ok(self.settle_deferred(d, ResumeOutcome::Value(value)))
+    }
+
+    /// Host counterpart of [`resolve_deferred`](Vm::resolve_deferred):
+    /// reject the deferred so each awaiter's `join` re-raises `error`.
+    pub fn reject_deferred(
+        &mut self,
+        deferred: Value,
+        error: Value,
+    ) -> Result<bool, RuntimeError> {
+        let d = as_deferred(&deferred, "reject_deferred")?;
+        let outcome = ResumeOutcome::Raise(RuntimeError::new(
+            RuntimeErrorKind::Raised(error),
+            0,
+        ));
+        Ok(self.settle_deferred(d, outcome))
+    }
+
     /// Read a top-level binding by stack slot. Returns `None` if the
     /// slot is out of range. Hosts use this (via
     /// [`crate::embed::Session::binding`]) to fetch `update`/`draw`
@@ -463,7 +499,26 @@ impl Vm {
     /// Any in-flight worker IO posts harmlessly (its completion finds no
     /// parked coroutine and is dropped). Call at a frame boundary, never
     /// mid-[`drain_ready`](Vm::drain_ready).
+    ///
+    /// A handle the program holds across the reload would otherwise dangle
+    /// at `result = None` forever — `reset` discards the parked thread but
+    /// not its handle — so a later `join` on it would hang and `go_alive`
+    /// report it alive permanently. Record the same `${cancelled: true}` a
+    /// parked-cancel records (see [`fail_current_green`]) on every live
+    /// handle before discarding, so both stay correct across a reload. Only
+    /// the parked threads are walked; the currently-running coroutine (the
+    /// one driving the reload) is not marked cancelled.
     pub fn cancel_coroutines(&mut self) {
+        let live: Vec<GcRef<GreenHandleKind>> = self
+            .scheduler
+            .queued()
+            .filter_map(|gt| gt.handle)
+            .filter(|h| h.borrow().result.is_none())
+            .collect();
+        for h in live {
+            h.borrow_mut().result =
+                Some(ResumeOutcome::Value(cancelled_result()));
+        }
         self.scheduler.reset();
         self.current_handle = None;
         self.current_gen = None;
@@ -1401,6 +1456,26 @@ impl Vm {
                                     0,
                                 ));
                             }
+                            // The actor is about to end with nothing
+                            // runnable. If a coroutine is still parked in
+                            // `join` on a deferred, no internal completer
+                            // remains and (not being in a host drain)
+                            // there is no host to settle it — surface the
+                            // deadlock rather than exiting with a stranded
+                            // awaiter. The common single-coroutine case is
+                            // already caught at the join site in
+                            // `coop_join_deferred`; this is the backstop
+                            // for a deferred stranded after other work ran.
+                            None if self.scheduler.has_deferred_blocked() => {
+                                return Err(RuntimeError::new(
+                                    RuntimeErrorKind::Raised(Value::Str(
+                                        "deadlock: a deferred was never \
+                                         resolved"
+                                            .into(),
+                                    )),
+                                    0,
+                                ));
+                            }
                             None => return Ok(result),
                         }
                     }
@@ -1602,11 +1677,29 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
-                            // `cancel` on a handle needs scheduler access
+                            // `go_cancel` on a handle needs scheduler access
                             // to abandon the target's pending park; the
                             // bare native can only mark the flag.
-                            if let Some(h) = cancel_target(&nf, &args) {
+                            if let Some(h) = go_cancel_target(&nf, &args) {
                                 self.do_cancel(h);
+                                continue;
+                            }
+                            // `join`/`resolve`/`reject` on a deferred need
+                            // scheduler access (to park or wake awaiters),
+                            // so they are intercepted before the bare
+                            // native runs. The `Deferred`-typed first arg
+                            // gates each, so a native of the same name on
+                            // another type (e.g. `Path.join`) is untouched.
+                            if let Some(d) = deferred_join_target(&nf, &args) {
+                                self.coop_join_deferred(d, line)?;
+                                continue;
+                            }
+                            if let Some((d, v)) = deferred_resolve_target(&nf, &args) {
+                                self.do_resolve(d, v);
+                                continue;
+                            }
+                            if let Some((d, v)) = deferred_reject_target(&nf, &args) {
+                                self.do_reject(d, v, line);
                                 continue;
                             }
                             if !nf.arity.check(args.len()) {
@@ -1723,11 +1816,25 @@ impl Vm {
                                 self.coop_join(h, line)?;
                                 continue;
                             }
-                            // A tail-positioned `cancel` on a handle —
+                            // A tail-positioned `go_cancel` on a handle —
                             // marks it (and unparks the target) without
                             // suspending; pushes its bool for the Return.
-                            if let Some(h) = cancel_target(&nf, &args) {
+                            if let Some(h) = go_cancel_target(&nf, &args) {
                                 self.do_cancel(h);
+                                continue;
+                            }
+                            // Tail-positioned deferred ops — see the
+                            // `Call` arm above for the rationale.
+                            if let Some(d) = deferred_join_target(&nf, &args) {
+                                self.coop_join_deferred(d, line)?;
+                                continue;
+                            }
+                            if let Some((d, v)) = deferred_resolve_target(&nf, &args) {
+                                self.do_resolve(d, v);
+                                continue;
+                            }
+                            if let Some((d, v)) = deferred_reject_target(&nf, &args) {
+                                self.do_reject(d, v, line);
                                 continue;
                             }
                             if !nf.arity.check(args.len()) {
@@ -3063,6 +3170,102 @@ impl Vm {
         self.stack.push(Value::Bool(true));
     }
 
+    /// Settle a deferred with `outcome` if it is not already settled,
+    /// waking every coroutine parked on it (broadcast). Returns whether
+    /// it settled it (`false` = it was already settled). The shared core
+    /// of the in-language `Deferred.resolve`/`reject` and the host
+    /// `resolve_deferred`/`reject_deferred` entries.
+    fn settle_deferred(
+        &mut self,
+        d: GcRef<DeferredKind>,
+        outcome: ResumeOutcome,
+    ) -> bool {
+        if d.borrow().result.is_some() {
+            return false;
+        }
+        d.borrow_mut().result = Some(outcome.clone());
+        self.scheduler.wake_deferred(d, &outcome);
+        true
+    }
+
+    /// `Deferred.resolve(d, value)`. Non-blocking, like `do_cancel`:
+    /// records the value, wakes every awaiter, and pushes `true`, or
+    /// pushes `false` if `d` was already settled. Settle-once-returns-bool
+    /// mirrors `go_cancel`.
+    fn do_resolve(&mut self, d: GcRef<DeferredKind>, value: Value) {
+        let settled = self.settle_deferred(d, ResumeOutcome::Value(value));
+        self.stack.push(Value::Bool(settled));
+    }
+
+    /// `Deferred.reject(d, err)`. Like `do_resolve`, but the recorded
+    /// outcome re-raises `err` verbatim at each awaiter's `join` site —
+    /// the same `Raised` path a `go` body's uncaught raise takes to its
+    /// joiner, so it composes with `try`/`catch`.
+    fn do_reject(&mut self, d: GcRef<DeferredKind>, err: Value, line: u32) {
+        let outcome = ResumeOutcome::Raise(RuntimeError::new(
+            RuntimeErrorKind::Raised(err),
+            line,
+        ));
+        let settled = self.settle_deferred(d, outcome);
+        self.stack.push(Value::Bool(settled));
+    }
+
+    /// Cooperative `join(d)` on a deferred. Like [`coop_join`], but the
+    /// wake source is `Deferred.resolve`/`reject` (or a host completion),
+    /// not a finishing coroutine. If `d` is already settled, deliver its
+    /// recorded value or re-raise; otherwise park on it and switch away.
+    ///
+    /// The deadlock guard differs from `coop_join`'s: a deferred can be
+    /// settled from *outside* the VM (a host resolving it on a later
+    /// frame), so "nothing else can run right now" is not, in itself, a
+    /// deadlock. Only a standalone program that owns its own thread
+    /// (`blocking_timers_ok`) with no other internal progress possible is
+    /// a genuine deadlock; under a host drive park and unwind via
+    /// `HostYield` so the host can resolve later. A deferred that nothing
+    /// ever resolves leaves its awaiter parked, the same accepted
+    /// tradeoff as a channel receive with no sender; the actor-end
+    /// backstop in the dispatch loop catches a standalone program that
+    /// quiesces with a stranded awaiter.
+    fn coop_join_deferred(
+        &mut self,
+        d: GcRef<DeferredKind>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let settled = d.borrow().result.clone();
+        match settled {
+            Some(ResumeOutcome::Value(v)) => {
+                self.stack.push(v);
+                return Ok(());
+            }
+            Some(ResumeOutcome::Raise(e)) => return Err(e),
+            None => {}
+        }
+        if self.current_gen.is_some() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "cannot join a deferred from inside a generator".into(),
+                )),
+                line,
+            ));
+        }
+        if self.blocking_timers_ok && !self.scheduler.can_make_progress() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Raised(Value::Str(
+                    "deadlock: join on a deferred that nothing can resolve"
+                        .into(),
+                )),
+                line,
+            ));
+        }
+        self.check_self_cancelled(line)?;
+        let parked = self.save_current(None);
+        self.scheduler.park_deferred(d, parked);
+        match self.pick_next() {
+            Some(next) => self.load_green(next),
+            None => Err(RuntimeError::new(RuntimeErrorKind::HostYield, 0)),
+        }
+    }
+
     /// Cooperative `join` on a green-thread handle. If the coroutine
     /// has already finished, push its recorded return value. Otherwise
     /// park the running coroutine until it does (`Scheduler::block`,
@@ -3814,19 +4017,83 @@ fn green_join_target(
     None
 }
 
-/// The handle a `cancel(handle)` call targets, if this native call is a
-/// `cancel` of a green-thread handle. Like [`green_join_target`], the
+/// The handle a `go_cancel(handle)` call targets, if this native call is a
+/// `go_cancel` of a green-thread handle. Like [`green_join_target`], the
 /// `Call`/`TailCall` opcode arms intercept it so the VM can reach the
 /// scheduler (to abandon the target's pending park); the bare
-/// `native_cancel` fallback can only mark the flag. A `cancel` of any
+/// `native_go_cancel` fallback can only mark the flag. A `go_cancel` of any
 /// other value falls through to that native, which type-errors.
-fn cancel_target(
+fn go_cancel_target(
     nf: &crate::vm::value::NativeFn,
     args: &[Value],
 ) -> Option<GcRef<GreenHandleKind>> {
-    if nf.name == "cancel" && args.len() == 1 {
+    if nf.name == "go_cancel" && args.len() == 1 {
         if let Value::GreenHandle(h) = &args[0] {
             return Some(*h);
+        }
+    }
+    None
+}
+
+/// Extract the `GcRef<DeferredKind>` from a host-supplied `Value`, or a
+/// type error tagged with the calling method's name. Used by the public
+/// [`Vm::resolve_deferred`] / [`Vm::reject_deferred`] host entries.
+fn as_deferred(v: &Value, what: &str) -> Result<GcRef<DeferredKind>, RuntimeError> {
+    match v {
+        Value::Deferred(d) => Ok(*d),
+        other => Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(format!(
+                "{what} expects a deferred, got {}",
+                other.type_name()
+            )),
+            0,
+        )),
+    }
+}
+
+/// If a native-fn call is `join` applied to a single [`Deferred`], return
+/// that deferred — the VM intercepts it for a cooperative wait, the same
+/// way [`green_join_target`] handles a green-thread handle. The
+/// `Deferred`-typed argument is what distinguishes it from a `join` on a
+/// `Task` or a green handle.
+fn deferred_join_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<GcRef<DeferredKind>> {
+    if nf.name == "join" && args.len() == 1 {
+        if let Value::Deferred(d) = &args[0] {
+            return Some(*d);
+        }
+    }
+    None
+}
+
+/// The `(deferred, value)` a `Deferred.resolve(d, v)` call targets, if
+/// this native call is `resolve` of a deferred. Intercepted so it can
+/// reach the scheduler to wake awaiters; the `Deferred`-typed first arg
+/// gates it, so any other native named `resolve` is unaffected.
+fn deferred_resolve_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<(GcRef<DeferredKind>, Value)> {
+    if nf.name == "resolve" && args.len() == 2 {
+        if let Value::Deferred(d) = &args[0] {
+            return Some((*d, args[1].clone()));
+        }
+    }
+    None
+}
+
+/// The `(deferred, value)` a `Deferred.reject(d, e)` call targets. Like
+/// [`deferred_resolve_target`], but the value is re-raised at each
+/// awaiter's `join` rather than returned.
+fn deferred_reject_target(
+    nf: &crate::vm::value::NativeFn,
+    args: &[Value],
+) -> Option<(GcRef<DeferredKind>, Value)> {
+    if nf.name == "reject" && args.len() == 2 {
+        if let Value::Deferred(d) = &args[0] {
+            return Some((*d, args[1].clone()));
         }
     }
     None

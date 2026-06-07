@@ -64,7 +64,7 @@ squares := parallel[] (n, 1..=8) { n * n };
 print(squares);   // => [1, 4, 9, 16, 25, 36, 49, 64]
 ```
 
-Each body is deep-copied per actor, so the same sendability rule as `spawn` applies. The first body to raise aborts the block, and that error propagates out. Sibling actors already started run to completion, but their results are discarded; `parallel[]` cannot interrupt an actor mid-flight. (The cooperative [`cancel`](#cancelling-a-coroutine-cancel) below is a green-thread primitive, not a `parallel[]` one.)
+Each body is deep-copied per actor, so the same sendability rule as `spawn` applies. The first body to raise aborts the block, and that error propagates out. Sibling actors already started run to completion, but their results are discarded; `parallel[]` cannot interrupt an actor mid-flight. (The cooperative [`go_cancel`](#cancelling-a-coroutine-go_cancel) below is a green-thread primitive, not a `parallel[]` one.)
 
 `parallel[]` is the structured, common-case form for a simple fan-out. Reach for raw `spawn`, `Channel`, and `select` when the work is not a plain fan-out, for example a pipeline or a worker pool.
 
@@ -104,9 +104,9 @@ print(join(h));   // => 5050
 
 A handle may be joined more than once; every `join` returns the recorded result. An uncaught `raise` in a `go` body does not abort the actor: the coroutine ends, and its error is recorded on the handle so a later `join` re-raises it (the raised value reaches `catch` verbatim, a built-in error as the usual `${kind, message, line}` object). A body that wants the joiner to keep going regardless can `catch` internally and return a tagged value instead. `join` from inside a generator body, or a `join` that would block with no other coroutine able to run, raises rather than hanging.
 
-### Cancelling a coroutine: `cancel`
+### Cancelling a coroutine: `go_cancel`
 
-`cancel(handle)` requests cancellation of a `go` coroutine. It does not block: it marks the handle and returns straight away, `true` if the coroutine was still live and is now marked, `false` if it had already finished. Marking it twice is harmless. The cancellation takes effect the next time the coroutine resumes from a park. Any park counts, not only `wait`: a `yield`, a `join`, a channel receive, a blocking IO call, and a host frame wait (`wait_frame` in a purr game) are all cancellation points. On that resume the park's normal value is replaced by a catchable `cancelled` raised at the park's call site, which unwinds the body the same way any other error does, so a `try`/`catch` and its cleanup still run.
+`go_cancel(handle)` requests cancellation of a `go` coroutine. It does not block: it marks the handle and returns straight away, `true` if the coroutine was still live and is now marked, `false` if it had already finished. Marking it twice is harmless. The cancellation takes effect the next time the coroutine resumes from a park. Any park counts, not only `wait`: a `yield`, a `join`, a channel receive, a blocking IO call, and a host frame wait (`wait_frame` in a purr game) are all cancellation points. On that resume the park's normal value is replaced by a catchable `cancelled` raised at the park's call site, which unwinds the body the same way any other error does, so a `try`/`catch` and its cleanup still run.
 
 ```tigr
 h := go fn() {
@@ -115,15 +115,30 @@ h := go fn() {
     work_finished();     // never reached once cancelled
 };
 yield;                   // let the coroutine reach its wait
-cancel(h);
+go_cancel(h);
 print(join(h));          // => ${cancelled: true}
 ```
 
-If the coroutine was parked when it got cancelled, `join` on it returns `${cancelled: true}` instead of re-raising. That is the same shape `LocalChannel` uses for `${closed: true}` and `${value}`, so it reads well in a `match`. A `cancel` of anything that is not a green-thread handle is a type error.
+If the coroutine was parked when it got cancelled, `join` on it returns `${cancelled: true}` instead of re-raising. That is the same shape `LocalChannel` uses for `${closed: true}` and `${value}`, so it reads well in a `match`. A `go_cancel` of anything that is not a green-thread handle is a type error.
 
 Because cancellation fires only at a park, two things follow, both on purpose. First, there is no preemption. A coroutine is interrupted only where it parks, so one whose body has no park, or that is cancelled before it starts and then never parks, runs to completion. Cancellation has nowhere to fire and the coroutine is left alone. Second, `cancelled` is an ordinary catchable error, so a `try` around a park can catch it, clean up, and carry on. It fires once per request and is cleared as it is raised, so a cleanup handler may itself `wait` or `yield` without being cancelled again. A body that catches `cancelled` and keeps going is making the same kind of choice it makes when it catches any other error.
 
-A coroutine can also cancel itself by passing its own handle to `cancel`; the mark takes effect at its own next park. Cancelling one that is asleep in `wait(10)` does not sit through the ten seconds. The pending park is dropped and the coroutine resumes right away to see the cancellation.
+A coroutine can also cancel itself by passing its own handle to `go_cancel`; the mark takes effect at its own next park. Cancelling one that is asleep in `wait(10)` does not sit through the ten seconds. The pending park is dropped and the coroutine resumes right away to see the cancellation.
+
+`go_cancel` and `join` belong to a family of operations on a `go` handle. `go_cancel` is prefixed `go_` because it acts only on a green-thread handle; `join` is left bare because it also waits on actor `Task`s. The third member, `go_alive`, only reads the handle.
+
+### Querying a coroutine: `go_alive`
+
+`go_alive(handle)` reports whether a `go` coroutine is still live, and unlike its two siblings it neither blocks nor mutates: `join` blocks until the coroutine finishes and `go_cancel` marks it for cancellation, but `go_alive` just reads the handle. It returns `true` while the coroutine is running or parked and `false` once it has finished — returned, raised an uncaught error, or been cancelled. A coroutine that has been `go_cancel`led but has not yet unwound already reads as not alive, so the answer reflects a `go_cancel` synchronously rather than waiting for the target to next park. Because it is side-effect-free, the handle can still be `join`ed afterward, and like `go_cancel` it is green-only — a `Task` or any non-handle value is a type error.
+
+```tigr
+h := go fn() { wait(10) };
+yield;                   // let the coroutine reach its wait
+print(go_alive(h));      // => true
+go_cancel(h);
+print(go_alive(h));      // => false, immediately
+print(join(h));          // => ${cancelled: true}
+```
 
 ### Intra-actor channels: `LocalChannel`
 
@@ -164,6 +179,46 @@ for (x, ramp(3)) { print(x); };   // => 0, 1, 2
 Because a generator speaks the ordinary iterator protocol, a `for` loop, the spread forms `[...g]` and `f(...g)`, and the whole [`Iter`](../stdlib/iter.md) module drive it directly. Generators are the natural way to write infinite or streaming sequences: a `gen fn` with `while true` only computes the next value when it is pulled. They compose, too, a generator can `for`-loop over another generator and `yield` transformed values. A `raise` that escapes a generator's body surfaces at the `next()` call site, so it can be caught with an ordinary `try` around the pull.
 
 `Iter` itself is built from `gen fn` generators, so a generator you write drops straight into an `Iter` pipeline.
+
+## Deferred values: `Deferred`
+
+A `Deferred` is a write-once result a coroutine can wait on and anything can complete. Mint one with `Deferred.new()`, wait on it with the ordinary `join`, and settle it with `Deferred.resolve` or `Deferred.reject`.
+
+```tigr
+d := Deferred.new();
+go fn() { Deferred.resolve(d, 42) };
+print(join(d));   // => 42
+```
+
+This generalises `join`. Where `join` waits on a coroutine's return, a deferred waits on a value anyone can supply, so you can write a barrier, fan-in, a one-shot signal, or first-to-complete in pure tigr without a host. A deferred is a latch: the result is recorded once, so a `join` after the settle returns immediately, and a value resolved before anyone waits is still delivered.
+
+```tigr
+d := Deferred.new();
+Deferred.resolve(d, 'ready');
+print(join(d));   // => ready, delivered from the latch
+```
+
+`resolve` and `reject` broadcast: every coroutine parked in `join(d)` wakes with the same value. `reject` re-raises its value at each awaiter's `join`, the same way an uncaught error in a `go` body reaches its joiner, so it drops into an ordinary `try`/`catch`.
+
+```tigr
+d := Deferred.new();
+go fn() { Deferred.reject(d, 'boom') };
+r := try { join(d) } catch (e) { 'caught: ' + e };
+print(r);   // => caught: boom
+```
+
+Settling is once. `resolve` and `reject` return `true` if they settled the deferred and `false` if it was already settled, mirroring `go_cancel`. That makes a race safe to write directly: several coroutines can try to resolve and the first one wins, the rest are harmless no-ops, no guarding needed.
+
+```tigr
+d := Deferred.new();
+go fn() { Deferred.resolve(d, 'a') };
+go fn() { Deferred.resolve(d, 'b') };
+print(join(d));   // => a (whichever ran first; the other returned false)
+```
+
+A `join(d)` is a cancellation point like any other park, so `go_cancel` unblocks a coroutine waiting on a deferred. A deferred that nothing ever resolves leaves its awaiters parked, the same as a `recv` with no sender; a standalone program that would block on a deferred with no way to resolve it raises a catchable deadlock rather than hanging. `type` is `'deferred'`; a `Deferred` is neither sendable across actors nor JSON-serializable.
+
+The same machinery gives an embedding host an async-completion seam. A host that drives the VM can hand back a `Deferred` from a native and complete it later from its own loop (a GPU readback, an OS event, a file dialog) with `Session::resolve` / `reject`, which resume the parked coroutine on the next `drain_ready`. The waiting tigr code reads top to bottom: `img := join(screenshot())`.
 
 ## See also
 

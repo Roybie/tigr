@@ -714,49 +714,63 @@ install.
   is a stable release to install — but the binaries and curl script do
   not depend on 1.0 and can ship as soon as releases are tagged.
 
-### 32. Green-thread / coroutine liveness query  *(concurrency)*
+### 32. Green-thread / coroutine liveness query  ✅ done (green threads)  *(concurrency)*
 
 There is no non-destructive way to ask whether a `go` coroutine is still
-live. `cancel(handle)` returns liveness but *mutates* (it marks the
-handle for cancellation), and `join(handle)` blocks. A consumer that
-only wants to *check* a coroutine — "is this timer still pending?" — has
-nothing to call. This surfaced in the purr framework: its `Timer.running`
-falls back to a flag the module sets on completion/cancel, which a hot
-reload silently desyncs (see the reload note below), so the feature is
-documented as dev-only-flawed pending this item.
+live. `go_cancel(handle)` (formerly `cancel`) returns liveness but
+*mutates* (it marks the handle for cancellation), and `join(handle)`
+blocks. A consumer that only wants to *check* a coroutine — "is this
+timer still pending?" — has nothing to call. This surfaced in the purr
+framework: its `Timer.running` falls back to a flag the module sets on
+completion/cancel, which a hot reload silently desyncs (see the reload
+note below), so the feature is documented as dev-only-flawed pending
+this item.
 
-- **The query.** A non-destructive predicate over a handle. Semantics
-  for a green handle: live iff `result.is_none()`, and treat a pending
-  `cancel_requested` as not-live so the answer reflects a `cancel`
-  *synchronously*, before the coroutine next parks and unwinds. A pure
-  native (reads the handle, no VM access) is enough for green handles.
-- **Design detail — naming (settle first).** Do **not** add a bare
-  common global like `alive` / `live`: those collide with ubiquitous
-  user variable names (`alive := true`, `entity.alive`), and even as a
-  shadowable global it invites "why does my `alive` behave oddly"
-  confusion. Prefer a less collision-prone form — a method/field on the
-  handle, or a namespaced helper — over a new top-level builtin.
-- **Design detail — actor vs green-thread consistency.** `join` spans
-  both a `Task` (actor) and a `GreenHandle` (green thread); `cancel` is
-  green-thread-only. Decide whether the liveness query covers `Task`
-  handles too, and what "alive" means for an actor running on another
-  thread, so this does not deepen the join/cancel asymmetry. This is the
-  part that needs real design, not a bolt-on.
-- **Reload latent bug (worth fixing regardless).** `Vm::cancel_coroutines`
-  (the hot-reload path in `embed.rs`) calls `scheduler.reset()` but does
-  **not** record a result on the surviving handles. A `GreenThread`
-  carries its `handle` (`scheduler.rs`), so a handle a program holds
-  across a reload dangles at `result = None` forever: a later `join` on
-  it misbehaves, and any result-based liveness reports it as alive. Fix:
-  before resetting, walk the queued/blocked/timer-blocked/io-blocked
-  threads and record `${cancelled: true}` on each live handle (the shape
-  a parked-cancel already records). Do this independent of the query
-  above — it makes both `join` and any future liveness check correct
-  across a reload.
-- **Consumer follow-up.** purr's `Timer.running` switches from its
-  module flag to this query once it lands, removing the hot-reload
-  desync. (purr also has `Signal.listening`, which needs nothing here —
-  it reads its own registry.)
+Shipped as **`go_alive(handle) -> Bool`**, a pure native that reads the
+handle and returns `result.is_none() && !cancel_requested` — live unless
+the coroutine has finished *or* has been `go_cancel`led but not yet
+unwound, so the answer reflects a `go_cancel` synchronously. Green-only,
+like `go_cancel`; a `Task` or non-handle raises `type_mismatch`. The
+cooperative `cancel` builtin was **renamed `go_cancel`** in the same
+change, establishing the naming rule below: a `go_*` builtin acts only on
+a green-thread handle, while a bare name is either not a handle op
+(`wait`) or spans both concurrency models (`join`, polymorphic over a
+green handle and an actor `Task`). Actor-`Task` liveness was *not* added
+(a racy cross-thread `TaskState` peek with different semantics) — left
+for a concrete need. The reload latent bug below was fixed alongside.
+
+- **The query.** ✅ A non-destructive predicate over a handle, shipped as
+  `go_alive`. Semantics for a green handle: live iff `result.is_none()`,
+  treating a pending `cancel_requested` as not-live so the answer reflects
+  a `go_cancel` *synchronously*, before the coroutine next parks and
+  unwinds. A pure native (reads the handle, no VM access).
+- **Design detail — naming (resolved).** The bare-common-global trap
+  (`alive` / `live` collide with `alive := true`, `entity.alive`) was
+  avoided by a `go_` prefix: `go_alive` for the query, and `cancel` was
+  renamed `go_cancel` to match. The prefix is a collision-proof
+  pseudo-namespace tied to the `go` keyword that mints the handle, and it
+  keeps the flat bare-builtin surface `join`/`wait` already use rather
+  than introducing a method-on-handle or module form the language has no
+  precedent for. Rule: `go_*` = green-handle-only.
+- **Design detail — actor vs green-thread consistency (resolved).** `join`
+  spans both a `Task` (actor) and a `GreenHandle`; `go_cancel`/`go_alive`
+  are green-only. The `go_` prefix *encodes* that split — a bare name
+  signals "also works on actors" — so `join` stays unprefixed. `go_alive`
+  deliberately does **not** cover `Task` handles (a racy cross-thread
+  `TaskState` peek with different semantics); revisit if a concrete need
+  appears.
+- **Reload latent bug (fixed).** ✅ `Vm::cancel_coroutines` (the hot-reload
+  path in `embed.rs`) called `scheduler.reset()` without recording a
+  result on the surviving handles, so a handle a program holds across a
+  reload dangled at `result = None` forever: a later `join` hung and
+  `go_alive` reported it alive. Fixed by walking
+  `scheduler.queued()` before the reset and recording `${cancelled: true}`
+  on each live handle (the shape a parked-cancel already records), so both
+  `join` and `go_alive` stay correct across a reload.
+- **Consumer follow-up.** purr's `Timer.running` can switch from its
+  module flag to `go_alive` now that it has landed, removing the
+  hot-reload desync. (purr also has `Signal.listening`, which needs
+  nothing here — it reads its own registry.)
 
 ### 33. Windows networking parity  ✅ done  *(networking)*
 

@@ -1,0 +1,139 @@
+// tests/deferred_test.tg — first-class deferred values.
+//
+// A `Deferred` is a write-once result: mint with `Deferred.new()`, wait
+// with the existing `join(d)`, settle with `Deferred.resolve(d, v)` or
+// `Deferred.reject(d, e)`. It generalises `join`: where `join` waits on a
+// coroutine's return, a deferred waits on a value anyone can supply.
+//
+// Properties exercised here:
+//   - resolve then join hands back the value;
+//   - it is a latch: a join after settle returns immediately, and a
+//     value resolved before anyone waits is still delivered;
+//   - resolve/reject broadcast to every awaiter;
+//   - reject re-raises at each join site and composes with try/catch;
+//   - settle is once: a second resolve/reject returns false and changes
+//     nothing (the first value/outcome stands);
+//   - a deferred awaiter is cancellable like any other park;
+//   - a join on a deferred nothing can resolve raises a catchable
+//     deadlock rather than hanging.
+//
+// Cases that spawn coroutines drain them (join, or cancel-then-join) so
+// the scheduler queue is empty between cases.
+
+Test := import 'Test';
+
+[
+    Test.suite('Deferred — basics', [
+        Test.case('resolve then join hands back the value', fn() {
+            d := Deferred.new();
+            go fn() { Deferred.resolve(d, 42) };
+            Test.assert_eq(join(d), 42)
+        }),
+
+        Test.case('latch: resolve before anyone joins', fn() {
+            d := Deferred.new();
+            Deferred.resolve(d, 'ready');
+            Test.assert_eq(join(d), 'ready')
+        }),
+
+        Test.case('latch: a settled deferred joins repeatedly', fn() {
+            d := Deferred.new();
+            Deferred.resolve(d, 7);
+            Test.assert_eq([join(d), join(d), join(d)], [7, 7, 7])
+        }),
+    ]),
+
+    Test.suite('Deferred — broadcast', [
+        Test.case('resolve wakes every parked awaiter', fn() {
+            d := Deferred.new();
+            a := go fn() { join(d) + 1 };
+            b := go fn() { join(d) + 2 };
+            // One yield lets both coroutines run to their `join` and park
+            // (round-robin FIFO: a parks, b parks, then main resumes).
+            yield;
+            Deferred.resolve(d, 10);
+            Test.assert_eq([join(a), join(b)], [11, 12])
+        }),
+
+        Test.case('reject wakes every parked awaiter', fn() {
+            d := Deferred.new();
+            catch_it := fn() { try { join(d) } catch (e) { 'got ' + e } };
+            a := go catch_it;
+            b := go catch_it;
+            yield;
+            Deferred.reject(d, 'x');
+            Test.assert_eq([join(a), join(b)], ['got x', 'got x'])
+        }),
+
+        Test.case('a resolved heap value survives until the awaiter reads it', fn() {
+            d := Deferred.new();
+            a := go fn() { join(d) };
+            yield;                       // park `a` on `d`
+            // Under gc-torture this object must stay rooted while it sits
+            // in the deferred's result and the awaiter's pending resume.
+            Deferred.resolve(d, ${ items: [1, 2, 3], tag: 'ok' });
+            r := join(a);
+            Test.assert_eq([r.tag, r.items], ['ok', [1, 2, 3]])
+        }),
+    ]),
+
+    Test.suite('Deferred — reject', [
+        Test.case('reject re-raises at the join site, catchable', fn() {
+            d := Deferred.new();
+            go fn() { Deferred.reject(d, 'boom') };
+            r := try { join(d) } catch (e) { 'caught: ' + e };
+            Test.assert_eq(r, 'caught: boom')
+        }),
+
+        Test.case('reject carries a structured value verbatim', fn() {
+            d := Deferred.new();
+            go fn() { Deferred.reject(d, ${ code: 13, msg: 'nope' }) };
+            r := try { join(d) } catch (e) { e.code };
+            Test.assert_eq(r, 13)
+        }),
+    ]),
+
+    Test.suite('Deferred — settle once', [
+        Test.case('second resolve is a no-op and returns false', fn() {
+            d := Deferred.new();
+            first := Deferred.resolve(d, 1);
+            second := Deferred.resolve(d, 2);
+            Test.assert_eq([first, second, join(d)], [true, false, 1])
+        }),
+
+        Test.case('reject after resolve is a no-op', fn() {
+            d := Deferred.new();
+            Deferred.resolve(d, 1);
+            rejected := Deferred.reject(d, 'boom');
+            Test.assert_eq([rejected, join(d)], [false, 1])
+        }),
+
+        Test.case('first resolver wins a race', fn() {
+            d := Deferred.new();
+            // Several coroutines race to resolve; the first wins, the
+            // rest are harmless no-ops (this is why settle returns a bool
+            // rather than raising).
+            go fn() { Deferred.resolve(d, 'a') };
+            go fn() { Deferred.resolve(d, 'b') };
+            go fn() { Deferred.resolve(d, 'c') };
+            Test.assert_eq(join(d), 'a')
+        }),
+    ]),
+
+    Test.suite('Deferred — cancellation and deadlock', [
+        Test.case('a coroutine parked on a deferred is cancellable', fn() {
+            d := Deferred.new();
+            h := go fn() { join(d) };
+            yield;                       // let it park on `d`
+            alive := go_alive(h);
+            go_cancel(h);
+            Test.assert_eq([alive, join(h)], [true, ${ cancelled: true }])
+        }),
+
+        Test.case('join on a deferred nothing can resolve deadlocks', fn() {
+            d := Deferred.new();
+            r := try { join(d); 'returned' } catch (e) { 'deadlock' };
+            Test.assert_eq(r, 'deadlock')
+        }),
+    ]),
+]

@@ -2562,8 +2562,8 @@ v0.17; not separately version-numbered in the roadmap.)
     uncaught `raise` in a `go` body does not abort the actor: the
     coroutine ends and its error is recorded on the handle, so a later
     `join` re-raises it; a body that wants the joiner to keep going can
-    `catch` internally and return a tagged value instead. The `cancel`
-    built-in requests cancellation of a `go` coroutine: `cancel(handle)`
+    `catch` internally and return a tagged value instead. The `go_cancel`
+    built-in requests cancellation of a `go` coroutine: `go_cancel(handle)`
     is non-blocking and idempotent, returning `true` if the coroutine
     was still live and is now marked or `false` if it had already
     finished. The mark takes effect the next time the coroutine resumes
@@ -2574,7 +2574,13 @@ v0.17; not separately version-numbered in the roadmap.)
     never parks again runs to completion. An uncaught `cancelled` ends
     only that coroutine, recorded so a later `join` returns
     `${cancelled: true}` rather than re-raising, and never aborts the
-    actor. Two-level model: `spawn` is parallelism
+    actor. The `go_alive(handle)` built-in is the non-destructive query
+    that completes the trio: it reads the handle and returns `true` while
+    the coroutine is live, `false` once it has finished or been cancelled
+    (a pending `go_cancel` reads as not-alive synchronously), without
+    blocking like `join` or mutating like `go_cancel`. Both `go_cancel`
+    and `go_alive` are green-only (`join` stays unprefixed because it also
+    waits on actor `Task`s). Two-level model: `spawn` is parallelism
     across cores with separate heaps and copied messages; `go` is cheap
     concurrency on one core with a shared heap and cooperative hand-off.
 
@@ -2634,3 +2640,35 @@ v0.17; not separately version-numbered in the roadmap.)
     `Channel.recv` from a sibling green thread in the same actor without
     deadlocking, because the receive parks the coroutine rather than
     sleeping the shared OS thread.
+
+63. **Deferred values: `Deferred`.** A `Deferred` is a first-class,
+    write-once result a coroutine can wait on and anything can complete.
+    `Deferred.new()` mints one; `join(d)` waits on it (the same `join`
+    that waits on a `Task` and a green-thread handle, now extended to a
+    deferred); `Deferred.resolve(d, v)` settles it with a value and
+    `Deferred.reject(d, e)` settles it with an error. It generalises
+    `join`: where `join` waits on a *coroutine's* return, a deferred waits
+    on a value *anyone* can supply, so barriers, fan-in, one-shot
+    signalling, and first-to-complete are writable in pure tigr with no
+    host. It is a latch: `result` is recorded once, so a `join` after a
+    settle returns (or re-raises) immediately, and a value resolved before
+    anyone waits is still delivered. `resolve`/`reject` broadcast — every
+    coroutine parked in `join(d)` wakes, all with the same value.
+    `reject` re-raises its value verbatim at each awaiter's `join` site,
+    the same `Raised` path a `go` body's uncaught error takes to its
+    joiner, so it composes with `try`/`catch`. Settling is once:
+    `resolve`/`reject` return `true` if they settled the deferred and
+    `false` if it was already settled (mirroring `go_cancel`'s bool), so a
+    first-to-complete race needs no guarding. A `join(d)` is a
+    cancellation point like any other park, so `go_cancel` reaches a
+    deferred awaiter. A deferred that nothing ever resolves leaves its
+    awaiters parked, the same accepted tradeoff as a channel receive with
+    no sender; a standalone program that would block on a deferred with no
+    way to resolve it raises a catchable deadlock rather than hanging.
+    `type` is `'deferred'`; a `Deferred` is neither sendable across actors
+    nor JSON-serializable. Embedders complete one from outside the worker
+    pool through `Vm::resolve_deferred` / `reject_deferred` (and the
+    `Session` wrappers), the async-completion seam for a host value that
+    arrives later (a GPU readback, an OS event, a dialog result): the host
+    hands a coroutine a value from its own loop, not from a blocking
+    worker.

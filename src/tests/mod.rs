@@ -5793,32 +5793,32 @@ fn v14_actor_error_propagates_to_join() {
     assert_eq!(format!("{:?}", run(src)), "'div_by_zero'");
 }
 
-// ---- Green-thread cancellation: cancel(handle) ----
+// ---- Green-thread cancellation: go_cancel(handle) ----
 
-/// `cancel` raises a catchable `cancelled` at a parked coroutine's park
+/// `go_cancel` raises a catchable `cancelled` at a parked coroutine's park
 /// site, so the statements after the `wait` never run; `join` then
 /// reports `${cancelled: true}` rather than the body's value.
 #[test]
-fn cancel_fires_at_a_wait_park() {
+fn go_cancel_fires_at_a_wait_park() {
     let src = "
         ran := false;
         h := go fn() { wait(10); ran = true };
         yield;
-        cancel(h);
+        go_cancel(h);
         r := join(h);
         [ran, r.cancelled]
     ";
     assert_eq!(format!("{:?}", run(src)), "[false, true]");
 }
 
-/// `cancel` on a coroutine that has already finished is a no-op and
+/// `go_cancel` on a coroutine that has already finished is a no-op and
 /// returns `false`; on a still-live one it returns `true`.
 #[test]
-fn cancel_returns_false_for_a_finished_coroutine() {
+fn go_cancel_returns_false_for_a_finished_coroutine() {
     let src = "
         h := go fn() { 42 };
         join(h);
-        cancel(h)
+        go_cancel(h)
     ";
     assert_eq!(run(src), Value::Bool(false));
 }
@@ -5826,11 +5826,11 @@ fn cancel_returns_false_for_a_finished_coroutine() {
 /// The checkpoint is the generic park, not the `wait` builtin: a
 /// coroutine that only ever `yield`s is cancellable just the same.
 #[test]
-fn cancel_fires_at_a_yield_park() {
+fn go_cancel_fires_at_a_yield_park() {
     let src = "
         h := go fn() { while (true) { yield } };
         yield;
-        cancel(h);
+        go_cancel(h);
         join(h).cancelled
     ";
     assert_eq!(run(src), Value::Bool(true));
@@ -5839,10 +5839,10 @@ fn cancel_fires_at_a_yield_park() {
 /// No preemption: a coroutine whose body never parks runs to completion
 /// even when cancelled before it starts.
 #[test]
-fn cancel_does_not_preempt_a_coroutine_that_never_parks() {
+fn go_cancel_does_not_preempt_a_coroutine_that_never_parks() {
     let src = "
         h := go fn() { 99 };
-        cancel(h);
+        go_cancel(h);
         join(h)
     ";
     assert_eq!(run(src), Value::Int(99));
@@ -5851,11 +5851,11 @@ fn cancel_does_not_preempt_a_coroutine_that_never_parks() {
 /// An uncaught `cancelled` is reified as the structured `${kind, ...}`
 /// error a `catch` binds, with the snake-case tag `cancelled`.
 #[test]
-fn cancel_is_catchable_with_kind_cancelled() {
+fn go_cancel_is_catchable_with_kind_cancelled() {
     let src = "
         h := go fn() { try { wait(10); 'no' } catch (e) { e.kind } };
         yield;
-        cancel(h);
+        go_cancel(h);
         join(h)
     ";
     assert_eq!(format!("{:?}", run(src)), "'cancelled'");
@@ -5864,14 +5864,57 @@ fn cancel_is_catchable_with_kind_cancelled() {
 /// Self-cancel followed by a park raises at that park rather than
 /// blocking on it — the entry-side cancellation check.
 #[test]
-fn cancel_self_then_park_raises_at_the_park() {
+fn go_cancel_self_then_park_raises_at_the_park() {
     let src = "
         hbox := [null];
-        h := go fn() { cancel(hbox[0]); wait(10); 'never' };
+        h := go fn() { go_cancel(hbox[0]); wait(10); 'never' };
         hbox[0] = h;
         join(h).cancelled
     ";
     assert_eq!(run(src), Value::Bool(true));
+}
+
+// ---- Green-thread liveness query: go_alive(handle) ----
+
+/// `go_alive` reports a parked coroutine as live, and a finished one as
+/// not live — without consuming or mutating the handle (it is queried
+/// twice, and a later `join` still returns the body's value).
+#[test]
+fn go_alive_tracks_a_coroutine_from_live_to_finished() {
+    let src = "
+        h := go fn() { yield; 'done' };
+        yield;
+        before := go_alive(h);
+        r := join(h);
+        after := go_alive(h);
+        [before, after, r]
+    ";
+    assert_eq!(format!("{:?}", run(src)), "[true, false, done]");
+}
+
+/// A `go_cancel`led but not-yet-unwound coroutine reads as not alive —
+/// the answer reflects the cancellation synchronously, before the target
+/// next parks and unwinds.
+#[test]
+fn go_alive_is_false_immediately_after_go_cancel() {
+    let src = "
+        h := go fn() { wait(10); 'no' };
+        yield;
+        live := go_alive(h);
+        go_cancel(h);
+        marked := go_alive(h);
+        [live, marked]
+    ";
+    assert_eq!(format!("{:?}", run(src)), "[true, false]");
+}
+
+/// Querying a non-handle value is a type error, mirroring `go_cancel`.
+#[test]
+fn go_alive_type_errors_on_a_non_handle() {
+    let src = "
+        try { go_alive(42); 'no' } catch (e) { 'caught' }
+    ";
+    assert_eq!(format!("{:?}", run(src)), "'caught'");
 }
 
 // ---- Bytecode format limits: pool dedup, wide operands, big literals ----

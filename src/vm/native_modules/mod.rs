@@ -12,6 +12,7 @@ pub mod bigint;
 pub mod bytes;
 pub mod channel;
 pub mod datetime;
+pub mod deferred;
 pub mod io;
 pub mod json;
 pub mod local_channel;
@@ -60,7 +61,7 @@ use crate::vm::value::{Arity, NativeFn, NativeKind, Value, WaitKind};
 pub fn names() -> &'static [&'static str] {
     &[
         "IO", "Path", "Time", "DateTime", "JSON", "Random", "Bytes",
-        "BigInt", "Os", "Net",
+        "BigInt", "Os", "Net", "Deferred",
     ]
 }
 
@@ -77,6 +78,10 @@ pub fn resolve(name: &str) -> Option<Value> {
         "Random" => Some(random::module()),
         "Bytes" => Some(bytes::module()),
         "BigInt" => Some(bigint::module()),
+        // First-class deferred results. Pure VM machinery (GC + the
+        // cooperative scheduler), so available on every target including
+        // `wasm32` — no threads, sockets or processes involved.
+        "Deferred" => Some(deferred::module()),
         // `Os` (processes/env) and the cross-actor `_NativeChannel` use
         // `std::process` and OS threads — portable to every native
         // target, so they stay enabled on Windows. Only `wasm32` (no

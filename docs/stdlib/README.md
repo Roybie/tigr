@@ -44,6 +44,7 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 
 - [Channel](channel.md): typed message channels between actors
 - [LocalChannel](localchannel.md): no-copy message channels between green threads of one actor
+- [Deferred](deferred.md): a write-once result a coroutine waits on and anything can complete
 
 ## Networking
 

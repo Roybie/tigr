@@ -32,7 +32,7 @@ use std::sync::Arc;
 use indexmap::{IndexMap, IndexSet};
 
 use crate::vm::local_channel::LocalChannel;
-use crate::vm::scheduler::{GeneratorState, GreenHandle};
+use crate::vm::scheduler::{Deferred, GeneratorState, GreenHandle};
 use crate::vm::value::{Closure, IterState, MapKey, Upvalue, Value};
 
 /// Object-count the heap starts (and never drops below) as a collection
@@ -287,6 +287,8 @@ pub struct Heap {
     green_handles: Arena<GreenHandle>,
     /// green threads — intra-actor channels (Phase 4).
     local_channels: Arena<LocalChannel>,
+    /// first-class deferred results (`Deferred.new()`).
+    deferreds: Arena<Deferred>,
     /// Live object count across all arenas — the collection trigger.
     live: usize,
     /// `live` value at which the next collection fires.
@@ -310,6 +312,7 @@ impl Heap {
             generators: Arena::new(),
             green_handles: Arena::new(),
             local_channels: Arena::new(),
+            deferreds: Arena::new(),
             live: 0,
             threshold: MIN_THRESHOLD,
             collections: 0,
@@ -340,6 +343,7 @@ impl Heap {
             + self.generators.sweep()
             + self.green_handles.sweep()
             + self.local_channels.sweep()
+            + self.deferreds.sweep()
     }
 }
 
@@ -406,6 +410,7 @@ gc_kind!(UpvalueKind, Upvalue, upvalues, alloc_upvalue);
 gc_kind!(GeneratorKind, GeneratorState, generators, alloc_generator);
 gc_kind!(GreenHandleKind, GreenHandle, green_handles, alloc_green_handle);
 gc_kind!(LocalChannelKind, LocalChannel, local_channels, alloc_local_channel);
+gc_kind!(DeferredKind, Deferred, deferreds, alloc_deferred);
 
 // ---------------------------------------------------------------------
 // Tracing: the `Trace` trait, the `Marker`, and `collect`
@@ -429,6 +434,7 @@ enum AnyRef {
     Generator(GcRef<GeneratorKind>),
     GreenHandle(GcRef<GreenHandleKind>),
     LocalChannel(GcRef<LocalChannelKind>),
+    Deferred(GcRef<DeferredKind>),
 }
 
 /// Drives the mark phase. Carries the heap plus an explicit worklist —
@@ -498,6 +504,11 @@ impl<'h> Marker<'h> {
             self.worklist.push(AnyRef::LocalChannel(r));
         }
     }
+    pub fn mark_deferred(&mut self, r: GcRef<DeferredKind>) {
+        if self.heap.deferreds.mark(r.index, r.generation) {
+            self.worklist.push(AnyRef::Deferred(r));
+        }
+    }
 
     /// Drain the worklist, tracing each freshly-marked object.
     fn run(&mut self) {
@@ -542,6 +553,10 @@ impl<'h> Marker<'h> {
                         self.heap.local_channels.cell(r.index, r.generation);
                     cell.borrow().trace(self);
                 }
+                AnyRef::Deferred(r) => {
+                    let cell = self.heap.deferreds.cell(r.index, r.generation);
+                    cell.borrow().trace(self);
+                }
             }
         }
     }
@@ -560,6 +575,7 @@ impl Trace for Value {
             Value::Generator(r) => m.mark_generator(*r),
             Value::GreenHandle(r) => m.mark_green_handle(*r),
             Value::LocalChannel(r) => m.mark_local_channel(*r),
+            Value::Deferred(r) => m.mark_deferred(*r),
             Value::Null
             | Value::Bool(_)
             | Value::Int(_)
@@ -593,6 +609,23 @@ impl Trace for GreenHandle {
     fn trace(&self, m: &mut Marker) {
         // The recorded outcome holds live values: a returned `Value`,
         // or the payload of a `raise`d error a later `join` re-raises.
+        match &self.result {
+            Some(crate::vm::scheduler::ResumeOutcome::Value(v)) => v.trace(m),
+            Some(crate::vm::scheduler::ResumeOutcome::Raise(e)) => {
+                if let crate::vm::error::RuntimeErrorKind::Raised(v) = &e.kind {
+                    v.trace(m);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// A deferred roots its recorded outcome the same way a `go` handle
+/// does: a resolved `Value`, or the payload of a `reject`ed error a
+/// later `join` re-raises.
+impl Trace for Deferred {
+    fn trace(&self, m: &mut Marker) {
         match &self.result {
             Some(crate::vm::scheduler::ResumeOutcome::Value(v)) => v.trace(m),
             Some(crate::vm::scheduler::ResumeOutcome::Raise(e)) => {

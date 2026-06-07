@@ -256,6 +256,7 @@ fn encode_inner(v: &Value, g: &mut CycleGuard) -> Result<Transfer, RuntimeError>
         Value::LocalChannel(_) => {
             return Err(not_sendable("a local channel"))
         }
+        Value::Deferred(_) => return Err(not_sendable("a deferred")),
         Value::NativeFn(_) => return Err(not_sendable("a native function")),
     })
 }

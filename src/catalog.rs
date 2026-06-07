@@ -71,6 +71,7 @@ const MODULE_DOCS: &[(&str, &str)] = &[
     ("BigInt", include_str!("../docs/stdlib/bigint.md")),
     ("Os", include_str!("../docs/stdlib/os.md")),
     ("Net", include_str!("../docs/stdlib/net.md")),
+    ("Deferred", include_str!("../docs/stdlib/deferred.md")),
 ];
 
 /// The builtins page has the same `### `sig`` shape but no module name.
@@ -290,8 +291,10 @@ mod tests {
         assert!(print.signature.starts_with("print("));
         assert!(cat.builtin("type").is_some());
         // The concurrency builtins parse too (so the LSP surfaces them).
-        let cancel = cat.builtin("cancel").expect("cancel builtin");
-        assert!(cancel.signature.starts_with("cancel("));
+        let go_cancel = cat.builtin("go_cancel").expect("go_cancel builtin");
+        assert!(go_cancel.signature.starts_with("go_cancel("));
+        let go_alive = cat.builtin("go_alive").expect("go_alive builtin");
+        assert!(go_alive.signature.starts_with("go_alive("));
         assert!(cat.builtin("nonesuch").is_none());
     }
 

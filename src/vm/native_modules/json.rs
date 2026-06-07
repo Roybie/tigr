@@ -470,7 +470,8 @@ fn write_value(
         | Value::File(_)
         | Value::Generator(_)
         | Value::GreenHandle(_)
-        | Value::LocalChannel(_) => {
+        | Value::LocalChannel(_)
+        | Value::Deferred(_) => {
             return Err(raise(format!(
                 "JSON.stringify: cannot serialize {}",
                 v.type_name()

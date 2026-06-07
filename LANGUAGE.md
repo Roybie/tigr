@@ -1693,6 +1693,30 @@ A response `body` is always `Bytes` (`text` / `json` decode it) and
 wins). 3xx redirects are followed automatically. v1 has no keep-alive.
 See Appendix N.
 
+#### `WS`
+
+> Navigable reference: [`docs/stdlib/ws.md`](docs/stdlib/ws.md).
+
+A WebSocket (RFC 6455) client. On native targets it is pure tigr over
+`Net`; in a browser the same API is backed by the host's `WebSocket`.
+WebSockets are the one transport shared by every target, so a networked
+game writes its messaging against `WS` once.
+
+| Entry     | Signature                  | Behavior                                                   |
+|-----------|----------------------------|------------------------------------------------------------|
+| `connect` | `connect(url) -> handle`   | Open a `ws://` / `wss://` connection and run the handshake |
+| `send`    | `send(ws, data) -> Null`   | Send a `String` as a text frame, `Bytes` as binary         |
+| `poll`    | `poll(ws) -> value`        | Next inbound message, or `null` (never blocks)             |
+| `drain`   | `drain(ws) -> Array`       | Every message buffered this tick (never blocks)            |
+| `state`   | `state(ws) -> String`      | `'connecting'` \| `'open'` \| `'closed'`                   |
+| `close`   | `close(ws) -> Null`        | Close the connection                                       |
+
+The API is poll-based, so it drops into a frame loop with no callbacks.
+A text message arrives as a `String`, a binary message as `Bytes`. The
+client masks every frame, reassembles fragments, and auto-answers pings.
+`wss://` runs over TLS. On native, `connect` returns already `open`; in
+a browser it may be `'connecting'` first.
+
 ### 13.4 `JSON` (v0.4)
 
 > Navigable reference: [`docs/stdlib/json.md`](docs/stdlib/json.md).

@@ -17,7 +17,7 @@
 pub fn names() -> &'static [&'static str] {
     &[
         "Array", "Channel", "Http", "Iter", "LocalChannel", "Map",
-        "Math", "Object", "Set", "String", "Test", "Url",
+        "Math", "Object", "Set", "String", "Test", "Url", "WS",
     ]
 }
 
@@ -37,6 +37,12 @@ pub fn source(name: &str) -> Option<&'static str> {
         "String" => Some(include_str!("../../stdlib/String.tg")),
         "Test"   => Some(include_str!("../../stdlib/Test.tg")),
         "Url"    => Some(include_str!("../../stdlib/Url.tg")),
+        // `WS.tg` is the pure-tigr WebSocket client (over `Net`). On
+        // `wasm32` there is no `Net`, so it is not offered here — the
+        // import falls through to `native_modules::resolve`, which
+        // returns the browser-`WebSocket` backend (`ws_web`).
+        #[cfg(not(target_arch = "wasm32"))]
+        "WS"     => Some(include_str!("../../stdlib/WS.tg")),
         _ => None,
     }
 }

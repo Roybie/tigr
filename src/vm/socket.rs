@@ -459,6 +459,40 @@ impl SocketInner {
         Ok(tmp)
     }
 
+    /// Read up to `n` bytes that are available *right now*, without
+    /// blocking. `Some(non-empty)` is data; `Some(empty)` means the
+    /// stream is open but nothing is ready yet; `None` is a clean
+    /// end-of-stream. The internal read buffer is drained first, then at
+    /// most one non-blocking syscall runs. Unlike the reactor read path
+    /// this never parks: the pure-tigr `WS` module owns the socket's
+    /// read side and polls it with this each frame. Putting the socket
+    /// in non-blocking mode here is safe because `WS` never also hands
+    /// the read side to the reactor.
+    pub fn read_available(&self, n: usize) -> Result<Option<Vec<u8>>, NetError> {
+        self.ensure_open()?;
+        if n == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        {
+            let mut buf = self.read_buf.lock().unwrap();
+            if !buf.is_empty() {
+                let k = n.min(buf.len());
+                return Ok(Some(buf.drain(..k).collect()));
+            }
+        }
+        self.set_nonblocking_mode(true).map_err(NetError::Io)?;
+        let mut tmp = vec![0u8; n.min(MAX_DIRECT_READ)];
+        match self.nb_read(&mut tmp) {
+            Ok(0) => Ok(None),
+            Ok(got) => {
+                tmp.truncate(got);
+                Ok(Some(tmp))
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Some(Vec::new())),
+            Err(e) => Err(NetError::Io(e)),
+        }
+    }
+
     /// Append one syscall's worth of bytes to `read_buf`; returns the
     /// count added (0 = end-of-stream). The buffer lock is not held
     /// across the syscall.

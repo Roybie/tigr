@@ -47,6 +47,9 @@ pub fn module() -> Value {
         // on the async-IO reactor inside a green thread; see
         // `crate::vm::reactor`.)
         ("read",        native_socket("read",       Arity::Exact(2), n_read)),
+        // Non-blocking, inline (never parks) — the poll primitive the
+        // pure-tigr `WS` module reads frames with each frame.
+        ("read_available", native("read_available", Arity::Exact(2), n_read_available)),
         ("write",       native_socket("write",      Arity::Exact(2), n_write)),
         ("read_exact",  native_socket("read_exact", Arity::Exact(2), n_read_exact)),
         ("read_line",   native_socket("read_line",  Arity::Exact(1), n_read_line)),
@@ -378,6 +381,20 @@ fn n_read(args: &[Value]) -> Result<ReactorOp, RuntimeError> {
     let socket = take_socket(&args[0], "read")?;
     let n = expect_count(&args[1], "read")?;
     Ok(ReactorOp { socket, op: SocketOp::ReadChunk(n), label: "read" })
+}
+
+/// `read_available(sock, n)` — read up to `n` bytes available right now
+/// without blocking. Returns a `Bytes` (possibly empty when the stream
+/// is open but idle), or `null` at end-of-stream. Unlike `read`, this
+/// runs inline and never parks the calling coroutine on the reactor —
+/// the `WS` module polls a connection with it once per frame.
+fn n_read_available(args: &[Value]) -> Result<Value, RuntimeError> {
+    let sock = as_socket(&args[0], "read_available")?;
+    let n = expect_count(&args[1], "read_available")?;
+    match sock.read_available(n).map_err(|e| map_err("read_available", e))? {
+        Some(data) => Ok(super::bytes(data)),
+        None => Ok(Value::Null),
+    }
 }
 
 /// `write(sock, bytes)` — write every byte; returns the count written.

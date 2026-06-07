@@ -1,0 +1,43 @@
+// ws_echo.tg — a WebSocket round-trip over TLS (wss://).
+//
+// Connects to a public echo server, sends a text message and a binary
+// message, and prints what comes back. A `wss://` URL verifies the
+// server certificate against the host's OS trust store, exactly like
+// Net.connect_tls. Needs network access — `tigr test` skips examples,
+// so this is never run offline. The public echo endpoint may change or
+// go away; swap URL for any reachable echo server.
+//
+// The same source runs in a browser when the host loads web/tigr_ws.js:
+// the `WS` API is identical on native and web.
+
+URL := 'wss://echo.websocket.org';
+
+ws := WS.connect(URL);
+print('state after connect:', WS.state(ws));
+
+WS.send(ws, 'hello over websocket');
+
+bin := Bytes.new(0);
+for (i, 0..8) { Bytes.push(bin, i * 16) };
+WS.send(ws, bin);
+
+// WS.poll / WS.drain never block, so a real app calls WS.drain once per
+// frame. Here we spin briefly with a sleep, printing every message until
+// the echoes arrive or the budget runs out.
+seen := 0;
+for (tick, 0..250) {
+    for (msg, WS.drain(ws)) {
+        seen = seen + 1;
+        if type(msg) == 'string' {
+            print('text  echo:', msg)
+        } else {
+            print('binary echo:', #msg, 'bytes')
+        }
+    };
+    if seen >= 3 { break };           // greeting + the two echoes
+    if WS.state(ws) == 'closed' { break };
+    Time.sleep_ms(20)
+};
+
+WS.close(ws);
+print('done')

@@ -1,0 +1,331 @@
+// tests/ws_test.tg — the pure-tigr `WS` WebSocket client (RFC 6455).
+//
+// Every case is hermetic: a `spawn`ed actor runs a minimal WebSocket
+// *server* over the loopback interface (HTTP upgrade response, then
+// frame decode/echo), and the test body is the `WS` client. The server
+// actor shares nothing, so it imports `Net`/`Bytes` itself and captures
+// only the socket handle. No case touches the public network.
+//
+// The server side is written out by hand here (the `WS` module is a
+// client only), which doubles as an independent check of the client's
+// framing: the client masks every frame it sends (mandatory per RFC
+// 6455) and the server unmasks; the server replies unmasked and the
+// client decodes. Text, binary, the 2-byte and 8-byte extended length
+// forms, ping/pong, and close are all exercised.
+//
+// Evaluates to an array of suites so `tigr test` aggregates each tally.
+
+WS    := import 'WS';
+Net   := import 'Net';
+Bytes := import 'Bytes';
+Test  := import 'Test';
+Time  := import 'Time';
+
+// -- server-side frame helpers (run inside the spawned server actor) ---
+//
+// These are duplicated verbatim inside each server closure, because a
+// `spawn`ed actor is a fresh deep copy that captures no outer bindings.
+// To keep the cases readable the bodies below call a small set of
+// helpers that each server re-declares; rather than repeat ~40 lines per
+// case, every server `import`s this very file is *not* possible (it has
+// no name yet), so the helpers live as source the servers paste in via a
+// shared string is also awkward. Instead each server is kept minimal and
+// self-contained.
+
+// Poll a `WS` handle until it yields a message or the budget runs out.
+// `WS.poll` never blocks, so we sleep briefly between attempts to let the
+// server actor make progress. Returns the message or null on timeout.
+_await_msg := fn(ws) {
+    msg := null;
+    for (attempt, 0..400) {
+        msg = WS.poll(ws);
+        if msg != null { break };
+        if WS.state(ws) == 'closed' { break };
+        Time.sleep_ms(5)
+    };
+    msg
+};
+
+// Poll a `WS` handle until it reports closed or the budget runs out.
+_await_closed := fn(ws) {
+    for (attempt, 0..400) {
+        WS.poll(ws);
+        if WS.state(ws) == 'closed' { break };
+        Time.sleep_ms(5)
+    };
+    WS.state(ws)
+};
+
+[
+    Test.suite('WS — handshake & data frames', [
+
+        Test.case('a text frame round-trips through the handshake', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                // consume the HTTP upgrade request
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\n' +
+                    'Connection: Upgrade\r\n' +
+                    'Sec-WebSocket-Accept: test\r\n\r\n'));
+                // read one masked client frame, echo it back unmasked
+                h := N.read_exact(conn, 2);
+                opcode := h[0] & 0x0F;
+                len := h[1] & 0x7F;            // < 126 for this case
+                mask := N.read_exact(conn, 4);
+                payload := N.read_exact(conn, len);
+                out := B.new(0);
+                for (i, 0..len) { B.push(out, payload[i] ^ mask[i % 4]) };
+                frame := B.new(0);
+                B.push(frame, 0x80 | opcode);
+                B.push(frame, len);
+                B.extend(frame, out);
+                N.write(conn, frame);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+
+            ws := WS.connect('ws://127.0.0.1:' + str(port) + '/');
+            Test.assert_eq(WS.state(ws), 'open', 'handshake should open');
+            WS.send(ws, 'hello world');
+            msg := _await_msg(ws);
+            Test.assert_eq(msg, 'hello world', 'text echo');
+            WS.close(ws);
+            join(server)
+        }),
+
+        Test.case('a binary frame uses the 2-byte length form', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+                // 256-byte payload -> the client sends len == 126 + 2 bytes
+                h := N.read_exact(conn, 2);
+                opcode := h[0] & 0x0F;
+                ext := N.read_exact(conn, 2);
+                len := ext[0] * 256 + ext[1];
+                mask := N.read_exact(conn, 4);
+                payload := N.read_exact(conn, len);
+                out := B.new(0);
+                for (i, 0..len) { B.push(out, payload[i] ^ mask[i % 4]) };
+                frame := B.new(0);
+                B.push(frame, 0x80 | opcode);
+                B.push(frame, 126);
+                B.push(frame, (len >> 8) & 255);
+                B.push(frame, len & 255);
+                B.extend(frame, out);
+                N.write(conn, frame);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+
+            data := Bytes.new(0);
+            for (i, 0..256) { Bytes.push(data, i) };
+
+            ws := WS.connect('ws://127.0.0.1:' + str(port) + '/');
+            WS.send(ws, data);
+            msg := _await_msg(ws);
+            Test.assert(type(msg) == 'bytes', 'binary echo is Bytes');
+            Test.assert_eq(Bytes.to_hex(msg), Bytes.to_hex(data),
+                'binary echo content');
+            WS.close(ws);
+            join(server)
+        }),
+
+        Test.case('a large frame uses the 8-byte length form and spans reads', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+                // > 65535 bytes -> the client sends len == 127 + 8 bytes
+                h := N.read_exact(conn, 2);
+                opcode := h[0] & 0x0F;
+                ext := N.read_exact(conn, 8);
+                len := 0;
+                for (i, 0..8) { len = len * 256 + ext[i] };
+                mask := N.read_exact(conn, 4);
+                payload := N.read_exact(conn, len);
+                out := B.new(0);
+                for (i, 0..len) { B.push(out, payload[i] ^ mask[i % 4]) };
+                frame := B.new(0);
+                B.push(frame, 0x80 | opcode);
+                B.push(frame, 127);
+                for (i, 0..8) { B.push(frame, (len >> (8 * (7 - i))) & 255) };
+                B.extend(frame, out);
+                N.write(conn, frame);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+
+            data := Bytes.new(70000, 0x5A);     // 70000 bytes, all 0x5A
+
+            ws := WS.connect('ws://127.0.0.1:' + str(port) + '/');
+            WS.send(ws, data);
+            msg := _await_msg(ws);
+            Test.assert(type(msg) == 'bytes', 'large echo is Bytes');
+            Test.assert_eq(#msg, 70000, 'large echo length');
+            Test.assert_eq(Bytes.to_hex(msg), Bytes.to_hex(data),
+                'large echo content');
+            WS.close(ws);
+            join(server)
+        }),
+    ]),
+
+    Test.suite('WS — control frames', [
+
+        Test.case('a server ping is answered with a matching pong', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+
+            // The server sends a ping, then reads the client's auto-pong
+            // and returns its payload as text for the client to assert.
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+                // send an unmasked ping "hi"
+                ping := B.new(0);
+                B.push(ping, 0x89);             // FIN + opcode 0x9 (ping)
+                B.push(ping, 2);
+                B.extend(ping, B.from_string('hi'));
+                N.write(conn, ping);
+                // read the client's masked pong, unmask, return its text
+                h := N.read_exact(conn, 2);
+                opcode := h[0] & 0x0F;
+                len := h[1] & 0x7F;
+                mask := N.read_exact(conn, 4);
+                payload := N.read_exact(conn, len);
+                out := B.new(0);
+                for (i, 0..len) { B.push(out, payload[i] ^ mask[i % 4]) };
+                N.close(conn);
+                N.close(listener);
+                ${opcode: opcode, text: B.to_string(out)}
+            };
+
+            ws := WS.connect('ws://127.0.0.1:' + str(port) + '/');
+            // Drive the pump so the incoming ping is answered. The pong
+            // carries no data message, so polling returns null throughout.
+            for (attempt, 0..400) {
+                WS.poll(ws);
+                if WS.state(ws) == 'closed' { break };
+                Time.sleep_ms(5)
+            };
+            result := join(server);
+            Test.assert_eq(result.opcode, 0xA, 'client replied with a pong');
+            Test.assert_eq(result.text, 'hi', 'pong echoes the ping payload');
+            WS.close(ws)
+        }),
+
+        Test.case('a server close moves the client to closed', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                T := import 'Time';
+                conn := N.accept(listener);
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+                // send an unmasked close frame, then drop the connection
+                close := B.new(0);
+                B.push(close, 0x88);            // FIN + opcode 0x8 (close)
+                B.push(close, 0);
+                N.write(conn, close);
+                T.sleep_ms(50);
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+
+            ws := WS.connect('ws://127.0.0.1:' + str(port) + '/');
+            state := _await_closed(ws);
+            Test.assert_eq(state, 'closed', 'client observes the close');
+            // send after close is a catchable error
+            Test.assert_raises(fn() { WS.send(ws, 'nope') }, 'closed');
+            join(server)
+        }),
+    ]),
+
+    Test.suite('WS — errors', [
+
+        Test.case('a non-ws scheme is rejected', fn() {
+            Test.assert_raises(
+                fn() { WS.connect('http://127.0.0.1:1/') },
+                'unsupported_scheme')
+        }),
+
+        Test.case('a server that does not upgrade raises handshake', fn() {
+            listener := Net.listen('127.0.0.1', 0);
+            port := Net.local_addr(listener).port;
+            server := spawn fn() {
+                N := import 'Net';
+                B := import 'Bytes';
+                conn := N.accept(listener);
+                while true {
+                    line := N.read_line(conn);
+                    if line == null { break };
+                    if #line == 0 { break }
+                };
+                N.write(conn, B.from_string(
+                    'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n'));
+                N.close(conn);
+                N.close(listener);
+                null
+            };
+            Test.assert_raises(
+                fn() { WS.connect('ws://127.0.0.1:' + str(port) + '/') },
+                'handshake');
+            join(server)
+        }),
+    ]),
+]

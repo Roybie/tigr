@@ -1,0 +1,328 @@
+// Tigr stdlib — `import 'WS'`.
+//
+// A WebSocket (RFC 6455) client, layered on the native `Net`, `Bytes`,
+// `Url`, `Random`, `String`, and `Array` modules. Pure tigr — no Rust.
+// One poll-based API, identical on every native target. A browser host
+// provides the same surface over its own `WebSocket` (see
+// `docs/stdlib/ws.md`), so the same tigr source runs native and on web.
+//
+//   WS.connect(url)    -> handle      # ws:// or wss://; runs the handshake
+//   WS.send(ws, data)  -> null        # String -> text frame, Bytes -> binary
+//   WS.poll(ws)        -> msg | null  # next inbound message, or null
+//   WS.drain(ws)       -> [msg]       # every message buffered this tick
+//   WS.state(ws)       -> 'open' | 'closed'
+//   WS.close(ws)       -> null
+//
+// An inbound text message arrives as a String, a binary message as
+// Bytes — use `type(msg)` to tell them apart. `poll` / `drain` never
+// block, so they fit a game frame loop:
+//
+//   for (m, WS.drain(ws)) { ... }     # inside `update`
+//
+// When the peer closes, `poll` returns null and `WS.state` is 'closed'.
+//
+// The client masks every outbound frame (mandatory per RFC 6455),
+// reassembles fragmented messages, and answers pings with pongs
+// automatically. `wss://` runs over `Net.connect_tls`, inheriting the OS
+// trust store. There is no permessage-deflate, and the server's
+// `Sec-WebSocket-Accept` is not validated (TLS provides the real
+// security); both are possible later hardening.
+
+_net    := import 'Net';
+_bytes  := import 'Bytes';
+_url    := import 'Url';
+_random := import 'Random';
+_str    := import 'String';
+_arr    := import 'Array';
+
+// -- opcodes ----------------------------------------------------------
+
+_OP_CONT  := 0x0;
+_OP_TEXT  := 0x1;
+_OP_BIN   := 0x2;
+_OP_CLOSE := 0x8;
+_OP_PING  := 0x9;
+_OP_PONG  := 0xA;
+
+// -- frame encoding ---------------------------------------------------
+
+// XOR `data` with the 4-byte `key`, repeating the key. Self-inverse, so
+// it both masks an outbound payload and unmasks an inbound one.
+_xor := fn(data, key) {
+    out := _bytes.new(0);
+    for (i, 0..#data) { _bytes.push(out, data[i] ^ key[i % 4]) };
+    out
+};
+
+// Four random bytes — the per-frame mask key a client must apply.
+_mask_key := fn() {
+    k := _bytes.new(0);
+    for (i, 0..4) { _bytes.push(k, _random.int(0, 255)) };
+    k
+};
+
+// Append `len` as the variable-width payload-length field the second
+// header byte selects. `base` carries the high bit (MASK for a client).
+_push_len := fn(frame, base, len) {
+    if len <= 125 {
+        _bytes.push(frame, base | len)
+    } else if len <= 0xFFFF {
+        _bytes.push(frame, base | 126);
+        _bytes.push(frame, (len >> 8) & 255);
+        _bytes.push(frame, len & 255)
+    } else {
+        _bytes.push(frame, base | 127);
+        for (i, 0..8) { _bytes.push(frame, (len >> (8 * (7 - i))) & 255) }
+    }
+};
+
+// Encode and send one masked, unfragmented frame. `payload` is Bytes.
+_send_frame := fn(sock, opcode, payload) {
+    frame := _bytes.new(0);
+    _bytes.push(frame, 0x80 | opcode);          // FIN=1, no RSV
+    _push_len(frame, 0x80, #payload);           // MASK=1
+    key := _mask_key();
+    _bytes.extend(frame, key);
+    _bytes.extend(frame, _xor(payload, key));
+    _net.write(sock, frame)
+};
+
+// -- handshake --------------------------------------------------------
+
+// 16 random bytes, base64 — the `Sec-WebSocket-Key` nonce.
+_nonce := fn() {
+    raw := _bytes.new(0);
+    for (i, 0..16) { _bytes.push(raw, _random.int(0, 255)) };
+    _bytes.to_base64(raw)
+};
+
+// The numeric status of an "HTTP/1.1 101 ..." line, or -1 if malformed.
+_status_code := fn(line) {
+    sp1 := _str.index_of(line, ' ');
+    if sp1 < 0 { return -1 };
+    after := line[sp1 + 1 .. #line];
+    sp2 := _str.index_of(after, ' ');
+    code := if sp2 >= 0 { after[0 .. sp2] } else { after };
+    int(_str.trim(code))
+};
+
+// Read response header lines through the blank line, discarding them —
+// the upgrade is confirmed by the 101 status alone (see file header).
+_drain_headers := fn(sock) {
+    while true {
+        line := _net.read_line(sock);
+        if line == null { break };
+        if #line == 0 { break }
+    }
+};
+
+// Open a connection and perform the RFC 6455 client handshake. Raises a
+// structured error (`unsupported_scheme`, `closed`, `handshake`) on
+// failure. The connect and the handshake reads block (or, in a green
+// thread, park on the reactor); steady-state I/O is poll-based.
+_connect := fn(url) {
+    u := _url.parse(url);
+    port := u.port;
+    sock := if u.scheme == 'wss' {
+        if port == null { port = 443 };
+        _net.connect_tls(u.host, port)
+    } else if u.scheme == 'ws' {
+        if port == null { port = 80 };
+        _net.connect(u.host, port)
+    } else {
+        raise ${kind: 'unsupported_scheme',
+                message: 'WS.connect: expected ws:// or wss://, got ' + str(u.scheme) + '://'}
+    };
+
+    target := u.path;
+    if u.query != null { target = target + '?' + u.query };
+    host_hdr := u.host;
+    if u.port != null { host_hdr = host_hdr + ':' + str(u.port) };
+
+    req := _bytes.from_string(
+        'GET ' + target + ' HTTP/1.1\r\n' +
+        'Host: ' + host_hdr + '\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Sec-WebSocket-Key: ' + _nonce() + '\r\n' +
+        'Sec-WebSocket-Version: 13\r\n' +
+        '\r\n');
+    _net.write(sock, req);
+
+    status := _net.read_line(sock);
+    if status == null {
+        _net.close(sock);
+        raise ${kind: 'closed',
+                message: 'WS.connect: connection closed during handshake'}
+    };
+    code := _status_code(status);
+    if code != 101 {
+        _drain_headers(sock);
+        _net.close(sock);
+        raise ${kind: 'handshake',
+                message: 'WS.connect: server did not upgrade (status ' + str(code) + ')'}
+    };
+    _drain_headers(sock);
+
+    ${
+        sock:         sock,
+        buf:          _bytes.new(0),
+        inbox:        [],
+        frag_op:      null,
+        frag_payload: _bytes.new(0),
+        state:        'open',
+    }
+};
+
+// -- inbound ----------------------------------------------------------
+
+// Queue one finished message: a text payload as a String, binary as Bytes.
+_deliver := fn(ws, opcode, payload) {
+    if opcode == _OP_TEXT {
+        _arr.push(ws.inbox, _bytes.to_string(payload))
+    } else {
+        _arr.push(ws.inbox, payload)
+    }
+};
+
+// Act on one decoded frame. Control frames are answered or update state;
+// data frames accumulate, respecting fragmentation.
+_handle := fn(ws, fin, opcode, payload) {
+    if opcode == _OP_PING {
+        _send_frame(ws.sock, _OP_PONG, payload)
+    } else if opcode == _OP_PONG {
+        null                                    // unsolicited pong: ignore
+    } else if opcode == _OP_CLOSE {
+        if ws.state == 'open' {
+            try { _send_frame(ws.sock, _OP_CLOSE, _bytes.new(0)) } catch (e) { null }
+        };
+        ws.state = 'closed';
+        _net.close(ws.sock)
+    } else if opcode == _OP_CONT {
+        _bytes.extend(ws.frag_payload, payload);
+        if fin {
+            _deliver(ws, ws.frag_op, ws.frag_payload);
+            ws.frag_op = null;
+            ws.frag_payload = _bytes.new(0)
+        }
+    } else {                                    // _OP_TEXT or _OP_BIN
+        if fin {
+            _deliver(ws, opcode, payload)
+        } else {
+            ws.frag_op = opcode;
+            ws.frag_payload = payload
+        }
+    }
+};
+
+// Parse every complete frame in `ws.buf`, leaving any partial trailing
+// frame for the next pump.
+_parse := fn(ws) {
+    buf := ws.buf;
+    n := #buf;
+    pos := 0;
+    while true {
+        if n - pos < 2 { break };
+        b0 := buf[pos];
+        b1 := buf[pos + 1];
+        fin := (b0 & 0x80) != 0;
+        opcode := b0 & 0x0F;
+        masked := (b1 & 0x80) != 0;
+        len := b1 & 0x7F;
+        hdr := 2;
+        if len == 126 {
+            if n - pos < 4 { break };
+            len = buf[pos + 2] * 256 + buf[pos + 3];
+            hdr = 4
+        } else if len == 127 {
+            if n - pos < 10 { break };
+            len = 0;
+            for (i, 0..8) { len = len * 256 + buf[pos + 2 + i] };
+            hdr = 10
+        };
+        mlen := if masked { 4 } else { 0 };
+        total := hdr + mlen + len;
+        if n - pos < total { break };
+        start := pos + hdr + mlen;
+        payload := _bytes.slice(buf, start, start + len);
+        if masked {
+            payload = _xor(payload, _bytes.slice(buf, pos + hdr, pos + hdr + 4))
+        };
+        _handle(ws, fin, opcode, payload);
+        pos = pos + total
+    };
+    if pos > 0 { ws.buf = _bytes.slice(buf, pos, n) }
+};
+
+// Drain every byte available on the socket into `ws.buf`, then parse.
+// Never blocks: `Net.read_available` returns at once.
+_pump := fn(ws) {
+    if ws.state == 'closed' { return null };
+    while true {
+        chunk := _net.read_available(ws.sock, 65536);
+        if chunk == null {
+            ws.state = 'closed';
+            break
+        };
+        if #chunk == 0 { break };
+        _bytes.extend(ws.buf, chunk)
+    };
+    _parse(ws);
+    null
+};
+
+// -- public API -------------------------------------------------------
+
+_send := fn(ws, data) {
+    if ws.state != 'open' {
+        raise ${kind: 'closed', message: 'WS.send: socket is not open'}
+    };
+    if type(data) == 'string' {
+        _send_frame(ws.sock, _OP_TEXT, _bytes.from_string(data))
+    } else if type(data) == 'bytes' {
+        _send_frame(ws.sock, _OP_BIN, data)
+    } else {
+        raise ${kind: 'type', message: 'WS.send: expected String or Bytes, got ' + type(data)}
+    };
+    null
+};
+
+// Next inbound message, or null if none is ready this tick.
+_poll := fn(ws) {
+    _pump(ws);
+    if #ws.inbox > 0 {
+        msg := ws.inbox[0];
+        ws.inbox = ws.inbox[1 .. #ws.inbox];
+        msg
+    } else {
+        null
+    }
+};
+
+// Every message buffered this tick, as an array (possibly empty).
+_drain := fn(ws) {
+    _pump(ws);
+    msgs := ws.inbox;
+    ws.inbox = [];
+    msgs
+};
+
+_state := fn(ws) { ws.state };
+
+_close := fn(ws) {
+    if ws.state == 'open' {
+        try { _send_frame(ws.sock, _OP_CLOSE, _bytes.new(0)) } catch (e) { null }
+    };
+    ws.state = 'closed';
+    _net.close(ws.sock);
+    null
+};
+
+${
+    connect: _connect,
+    send:    _send,
+    poll:    _poll,
+    drain:   _drain,
+    state:   _state,
+    close:   _close,
+}

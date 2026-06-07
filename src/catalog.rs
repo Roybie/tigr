@@ -56,6 +56,7 @@ const MODULE_DOCS: &[(&str, &str)] = &[
     ("Iter", include_str!("../docs/stdlib/iter.md")),
     ("Http", include_str!("../docs/stdlib/http.md")),
     ("Url", include_str!("../docs/stdlib/url.md")),
+    ("WS", include_str!("../docs/stdlib/ws.md")),
     ("Channel", include_str!("../docs/stdlib/channel.md")),
     ("LocalChannel", include_str!("../docs/stdlib/localchannel.md")),
     ("Test", include_str!("../docs/stdlib/test.md")),

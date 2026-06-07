@@ -1,6 +1,6 @@
 # Standard library
 
-Tigr's standard library is 22 modules plus a handful of global builtin functions. Every module is **ambient**: you reach it by name, with no `import`.
+Tigr's standard library is 23 modules plus a handful of global builtin functions. Every module is **ambient**: you reach it by name, with no `import`.
 
 ```tigr
 print(Math.sqrt(144));      // => 12.0
@@ -50,6 +50,7 @@ Modules come in two kinds. **Source modules** are written in Tigr itself and liv
 - [Net](net.md): TCP, UDP, and TLS sockets
 - [Url](url.md): URL parsing, building, and percent-coding
 - [Http](http.md): an HTTP/1.1 client and server helpers
+- [WS](ws.md): a WebSocket client, the one transport shared by native and web
 
 ## Testing
 

@@ -30,6 +30,13 @@ pub mod random;
 pub mod set;
 pub mod string;
 pub mod time;
+// The browser `WebSocket` backend for `import 'WS'`. Built only for a
+// plain-wasm host (purr): on `wasm32` there is no `Net` for the
+// pure-tigr `WS.tg` to use, so the same `WS` API is served by this
+// native module over host `env` imports. Excluded from the
+// `wasm-bindgen` playground, whose loader cannot supply those imports.
+#[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+pub mod ws_web;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -84,6 +91,12 @@ pub fn resolve(name: &str) -> Option<Value> {
         // panicking.
         #[cfg(not(target_arch = "wasm32"))]
         "Net" => Some(net::module()),
+        // `WS` on a plain-wasm host: no `Net` exists for the source
+        // `WS.tg`, so the browser-`WebSocket` backend serves the same
+        // API. On native, `WS` resolves earlier via `source_stdlib`
+        // (`WS.tg`); on the playground it stays unavailable.
+        #[cfg(all(target_arch = "wasm32", not(feature = "playground")))]
+        "WS" => Some(ws_web::module()),
         // Underscore-prefixed names are backends for source stdlibs
         // (Math.tg / String.tg wrap these). User code can also import
         // them directly if it wants the raw primitives.

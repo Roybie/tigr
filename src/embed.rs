@@ -45,7 +45,8 @@ use crate::vm::value::Closure;
 // `call` returns.
 pub use crate::vm::error::{Error, RuntimeError, RuntimeErrorKind};
 pub use crate::vm::native_modules::{
-    bytes, native, native_blocking, native_frame_wait, native_socket, object,
+    bytes, deferred, native, native_blocking, native_frame_wait, native_socket,
+    object,
 };
 pub use crate::vm::value::{Arity, NativeFn, NativeKind, Value};
 pub use crate::vm::vm::Vm;

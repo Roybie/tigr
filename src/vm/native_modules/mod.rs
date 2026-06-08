@@ -209,3 +209,16 @@ pub fn object(entries: &[(&'static str, Value)]) -> Value {
 pub fn bytes(data: Vec<u8>) -> Value {
     Value::Bytes(gc::alloc_bytes(data))
 }
+
+/// Mint a fresh, unsettled `Value::Deferred` from host/native code, the
+/// embed-side counterpart of the `Deferred.new()` core builtin. A native
+/// that completes asynchronously from outside the worker pool (a GPU
+/// readback, an OS event, a file dialog) hands one of these back and the
+/// host settles it later with
+/// [`Vm::resolve_deferred`](crate::vm::vm::Vm::resolve_deferred) /
+/// [`Vm::reject_deferred`](crate::vm::vm::Vm::reject_deferred). The caller
+/// must keep the value reachable until it is settled — a coroutine parked
+/// in `join` on it roots it for the collector.
+pub fn deferred() -> Value {
+    Value::Deferred(gc::alloc_deferred(crate::vm::scheduler::Deferred { result: None }))
+}
